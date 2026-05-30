@@ -29,8 +29,11 @@ function getPathExtensions(): string[] {
   if (process.platform !== 'win32') {
     return [''];
   }
+  // 真正的執行檔副檔名排在 '' 之前：npm 全域安裝會同時放 extensionless 的
+  // bash shim 與 <name>.cmd。cmd.exe 無法執行 extensionless bash 腳本（exit 1
+  // 空輸出），所以必須優先解析到 <name>.cmd / <name>.exe。
   const rawPathext = process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM';
-  return ['', ...rawPathext.split(';').filter(Boolean)];
+  return [...rawPathext.split(';').filter(Boolean), ''];
 }
 
 function isExecutableFile(filePath: string): boolean {
