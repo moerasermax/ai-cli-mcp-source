@@ -1,0 +1,47 @@
+// 端對端：透過新 server 實際 run agy(ConPTY 關鍵路徑) + claude(一般 pipe)，wait 拿結果。
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { writeFileSync } from 'node:fs';
+
+const logs = [];
+const log = (...a) => logs.push(a.join(' '));
+process.on('exit', () => writeFileSync('e2e-out.txt', logs.join('\n') + '\n'));
+
+const transport = new StdioClientTransport({
+  command: 'node',
+  args: ['C:\\Users\\Moera\\ai-cli-mcp-source\\dist\\server.js'],
+});
+const client = new Client({ name: 'e2e', version: '1.0.0' }, { capabilities: {} });
+await client.connect(transport);
+log('connected');
+
+const cwd = 'C:\\Users\\Moera';
+
+async function runAndWait(model, prompt, timeout) {
+  const started = await client.callTool({ name: 'run', arguments: { model, prompt, workFolder: cwd } });
+  const { pid } = JSON.parse(started.content[0].text);
+  log(`[${model}] started pid=${pid}, waiting...`);
+  const waited = await client.callTool({ name: 'wait', arguments: { pids: [pid], timeout } });
+  return JSON.parse(waited.content[0].text)[0];
+}
+
+log('--- claude (haiku, pipe) ---');
+try {
+  const claudeRes = await runAndWait('haiku', 'Reply with exactly one word: PONG', 90);
+  log('  status: ' + claudeRes.status + ' | exitCode: ' + claudeRes.exitCode);
+  log('  output: ' + JSON.stringify(claudeRes.agentOutput || claudeRes.stdout || '').slice(0, 200));
+} catch (e) { log('  claude ERROR: ' + e.message); }
+
+log('--- antigravity (agy, ConPTY) ---');
+try {
+  const agyRes = await runAndWait('agy', 'Reply with exactly one word: PONG', 150);
+  log('  status: ' + agyRes.status + ' | exitCode: ' + agyRes.exitCode);
+  const agyOut = JSON.stringify(agyRes.agentOutput || agyRes.stdout || '');
+  log('  output: ' + agyOut.slice(0, 300));
+  const ok = agyOut.length > 5 && agyOut !== '""' && agyOut !== '{}';
+  log(ok ? '  OK agy 有輸出（ConPTY 正常，非 silent no-op）' : '  FAIL agy 無輸出！ConPTY 可能壞了');
+} catch (e) { log('  agy ERROR: ' + e.message); }
+
+await client.close();
+log('=== e2e done ===');
+process.exit(0);
