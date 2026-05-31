@@ -6,6 +6,7 @@
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { stripAnsi } from '../core/ansi.js';
 
 const _patchRequire = createRequire(import.meta.url);
@@ -114,7 +115,65 @@ export function parseClaudeUsage(text: string) {
 }
 
 export function parseCodexUsage(text: string) {
-  try { return _parseLooseUsage(text); } catch { return { raw: _cleanUsageText(text) }; }
+  const raw = _cleanUsageText(text);
+  // 去掉進度條方塊與框線字元，只留文字，方便比對
+  const s = raw.replace(/[█░▓▒■□▪▫]+/g, ' ').replace(/[│╭╮╰╯┌┐└┘┃━]+/g, ' ');
+
+  // 帳號 / 方案 / 模型都只在「單行」內擷取，避免 \s* 跨行誤抓下一行括號內容。
+  const accountLine = s.match(/Account:[^\n]*/i)?.[0] ?? '';
+  const email = accountLine.match(/(\S+@\S+)/)?.[1] ?? null;
+  const plan  = accountLine.match(/\(([^)\n]+)\)/)?.[1]?.trim() ?? null;
+  // 用大小寫敏感的 "Model:" 只抓面板那行，避開啟動框的小寫 "model:     loading"。
+  const modelLine = s.match(/^[ \t]*Model:[^\n]*/m)?.[0] ?? '';
+  const model = modelLine
+    ? (modelLine.replace(/^[ \t]*Model:[ \t]*/, '').replace(/\s*\([^)]*\)\s*$/, '').trim() || null)
+    : null;
+
+  // 解析單一額度行；同時支援新版「N% left」與舊版「N% used」，統一輸出剩餘/已用百分比。
+  const resetFrom = (str: string) =>
+    str.match(/resets?\s+(?:in\s+)?([^)\n]+?)\s*\)/i)?.[1]?.trim()
+    ?? str.match(/resets?\s+(?:in\s+)?([^\n)]+)/i)?.[1]?.trim()
+    ?? null;
+  const limitInfo = (labelRe: RegExp) => {
+    const m = labelRe.exec(s);
+    if (!m || m.index === undefined) return null;
+    const lineEnd = s.indexOf('\n', m.index);
+    const line = lineEnd === -1 ? s.slice(m.index) : s.slice(m.index, lineEnd);
+    // 百分比只在「當前行」抓，避免某額度行無數字時誤抓到下一個額度行的數字。
+    const pm = line.match(/(\d+(?:\.\d+)?)\s*%\s*(left|remaining|used)?/i);
+    if (!pm) return null;
+    const pct = _toNumber(pm[1]);
+    const basis: 'left' | 'used' = /used/i.test(pm[2] ?? '') ? 'used' : 'left';
+    const percentRemaining = pct === null ? null : (basis === 'used' ? 100 - pct : pct);
+    const percentUsed      = pct === null ? null : (basis === 'used' ? pct : 100 - pct);
+    // reset 先找當前行；窄終端會把「(resets …)」折到下一行，故下一行（非另一個 limit）也找。
+    let resetAt = resetFrom(line);
+    if (!resetAt && lineEnd !== -1) {
+      const next2 = s.indexOf('\n', lineEnd + 1);
+      const nextLine = s.slice(lineEnd + 1, next2 === -1 ? undefined : next2);
+      if (nextLine && !/(?:5h|weekly|hour)[^\n]*limit\s*:/i.test(nextLine)) resetAt = resetFrom(nextLine);
+    }
+    return { percentRemaining, percentUsed, basis, resetAt };
+  };
+
+  const fiveHour = limitInfo(/5h\s*limit\s*:/i) ?? limitInfo(/\b5\s*hour[^:]*:/i);
+  const weekly   = limitInfo(/weekly\s*limit\s*:/i) ?? limitInfo(/\bweek(?:ly)?[^:]*limit[^:]*:/i);
+
+  // 抓不到任何額度行時，退回寬鬆解析，至少回傳可見資訊
+  if (!fiveHour && !weekly) {
+    try { return { type: 'raw', ...(_parseLooseUsage(raw)) }; }
+    catch { return { type: 'raw', raw }; }
+  }
+
+  return {
+    type: 'rate_limits',
+    account: email,
+    plan,
+    model,
+    fiveHour: fiveHour ?? null,
+    weekly: weekly ?? null,
+    raw,
+  };
 }
 
 export function parseAgyUsage(text: string) {
@@ -189,47 +248,86 @@ class KiroUsageProvider {
   }
 }
 
-class PtyUsageProvider {
+class CodexUsageProvider {
+  provider = 'codex';
   transport = 'pty';
-  constructor(
-    public provider: string,
-    private cliPath: string,
-    private command: string,
-    private parser: (text: string) => unknown,
-  ) {}
+  constructor(private cliPath: string) {}
 
   async query() {
     const result = await this._run();
     const text = _cleanUsageText(result.output);
-    if (!text) throw new Error(`${this.provider} usage: no output`);
-    return this.parser(text);
+    if (!text) throw new Error('codex usage: no output');
+    return parseCodexUsage(text);
   }
 
+  // Codex 啟動時會 booting MCP servers，model 框會先閃現真實模型再退回 "loading"，
+  // 數秒後才穩定；若太早送 /status 會被吃掉。因此等輸出靜止(quiescence)再送，
+  // 並在面板未出現時重試。
   private _run(): Promise<PtyRunResult> {
     return new Promise((resolve, reject) => {
       let ptyProc: any;
       try {
         const pty = _loadPtyModule();
-        ptyProc = pty.spawn(this.cliPath, [], { name: 'xterm-color', cols: 200, rows: 50, cwd: process.cwd(), env: process.env });
+        // 在 homedir 啟動，盡量避免專案層級 MCP server 拖慢開機
+        ptyProc = pty.spawn(this.cliPath, [], { name: 'xterm-color', cols: 200, rows: 50, cwd: homedir(), env: process.env });
       } catch (e) { reject(e); return; }
-      if (!ptyProc?.pid) { reject(new Error(`${this.provider} pty.spawn returned no pid`)); return; }
+      if (!ptyProc?.pid) { try { ptyProc?.kill?.(); } catch {} reject(new Error('codex pty.spawn returned no pid')); return; }
 
-      let output = '', timedOut = false, settled = false;
-      let writeT: ReturnType<typeof setTimeout> | null = null;
-      let killT: ReturnType<typeof setTimeout> | null = null;
-      let forceT: ReturnType<typeof setTimeout> | null = null;
-      const cleanup = () => { if (writeT) clearTimeout(writeT); if (killT) clearTimeout(killT); if (forceT) clearTimeout(forceT); };
-      const settle = (v: PtyRunResult) => { if (settled) return; settled = true; cleanup(); resolve(v); };
+      let output = '', timedOut = false, settled = false, sent = false, sends = 0;
+      let lastDataAt = Date.now(), lastSendAt = 0;
+      let pollT: ReturnType<typeof setTimeout> | null = null;
+      let hardKillT: ReturnType<typeof setTimeout> | null = null;
+      const clearPoll = () => { if (pollT) { clearTimeout(pollT); pollT = null; } };
+      const cleanup = () => { clearPoll(); if (hardKillT) { clearTimeout(hardKillT); hardKillT = null; } };
+      const kill = () => {
+        const pid = ptyProc?.pid;
+        try { ptyProc.kill(); } catch {}
+        // codex 會 fork 多個子程序（MCP servers），ptyProc.kill 未必收得掉整棵樹；
+        // Windows 上用 taskkill /T 連同子孫一起終止，只針對本次 spawn 的 pid，不影響其他 codex。
+        if (pid && process.platform === 'win32') {
+          try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', shell: false }).on('error', () => {}); } catch {}
+        }
+        // 保險：若 graceful kill 沒讓進程退出，1 秒後再強制 SIGKILL
+        setTimeout(() => { try { ptyProc.kill('SIGKILL'); } catch {} }, 1000);
+      };
+      const settle = (v: PtyRunResult) => {
+        if (settled) return; settled = true; cleanup(); kill(); resolve(v);
+      };
 
-      ptyProc.onData((d: string) => { output += d; });
+      const strip = (x: string) => x.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+      const latestModel = (str: string) => { const re = /model:\s+(\S+)/g; let mm, last: string | null = null; while ((mm = re.exec(str)) !== null) last = mm[1]; return last; };
+      const panelRe = /(?:5h|weekly|rate)\s*limit|%\s*(?:left|used)|resets?\s+\d{1,2}:\d{2}/i;
+      const sendStatus = () => { sent = true; sends++; lastSendAt = Date.now(); try { ptyProc.write('/status\r'); } catch {} };
+
+      hardKillT = setTimeout(() => { timedOut = true; settle({ output, exitCode: null, signal: null, timedOut }); }, 60_000);
+
+      ptyProc.onData((d: string) => { output += d; lastDataAt = Date.now(); });
       ptyProc.onExit(({ exitCode, signal }: { exitCode: number; signal: string }) => settle({ output, exitCode, signal, timedOut }));
 
-      writeT = setTimeout(() => { try { ptyProc.write(this.command); } catch {} }, 1500);
-      killT = setTimeout(() => {
-        timedOut = true;
-        try { ptyProc.kill(); } catch {}
-        forceT = setTimeout(() => settle({ output, exitCode: null, signal: null, timedOut }), 1500);
-      }, 6500);
+      const poll = () => {
+        pollT = null;
+        if (settled) return;
+        const s = strip(output);
+        const tail = s.slice(-1500);
+        const model = latestModel(s);
+        const idleMs = Date.now() - lastDataAt;
+        // booting 不納入 "esc to interrupt"（那是執行中常駐提示，非開機訊號）
+        const booting = /loading|Starting MCP|Booting MCP/i.test(tail);
+        // 就緒：抓到非 loading 的模型、未在 booting、且輸出已靜止
+        const stableReady = !!model && !/^loading$/i.test(model) && !booting && idleMs > 1500;
+
+        if (!sent) {
+          if (stableReady) sendStatus();
+        } else if (!panelRe.test(s)) {
+          // 重試以「距上次送出」計時，避免畫面持續刷新時 idleMs 偏低而永遠不重試
+          if (sends < 4 && Date.now() - lastSendAt > 2500) sendStatus();
+        } else {
+          // 面板已出現：等輸出靜止再擷取，確保 5h 與 weekly 兩行都到齊
+          if (idleMs > 800) { settle({ output, exitCode: null, signal: null, timedOut: false }); return; }
+        }
+        pollT = setTimeout(poll, 250);
+      };
+      pollT = setTimeout(poll, 500);
     });
   }
 }
@@ -394,7 +492,7 @@ export class UsageService {
     const entries: [string, { query(): Promise<unknown> }][] = [
       ['kiro',   new KiroUsageProvider(cliPaths.kiro ?? '')],
       ['claude', new ClaudeUsageProvider(cliPaths.claude ?? '')],
-      ['codex',  new PtyUsageProvider('codex', cliPaths.codex ?? '', '/status\r', parseCodexUsage)],
+      ['codex',  new CodexUsageProvider(cliPaths.codex ?? '')],
       ['agy',    new AgyUsageProvider(cliPaths.antigravity ?? '')],
     ];
     this.providers = new Map(entries);
