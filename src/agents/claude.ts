@@ -21,11 +21,14 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
   if (reasoningEffort) {
     args.push('--effort', reasoningEffort);
   }
-  args.push('-p', prompt);
+  // prompt 走 stdin（print mode 下無 positional 時讀 stdin），不當作 -p 的 arg：
+  // Windows 下 claude 是 npm .CMD shim，spawn 需 shell:true，cmd.exe 會對含空白/
+  // 換行/全形標點的長 prompt 重新切詞並在換行處截斷。比照 codex 走 stdin 即可繞過。
+  args.push('-p');
   if (resolvedModel) {
     args.push('--model', resolvedModel);
   }
-  return { cliPath, args, cwd, agent: 'claude', prompt, resolvedModel };
+  return { cliPath, args, cwd, agent: 'claude', prompt, resolvedModel, stdinPrompt: prompt };
 }
 
 function parseOutput(stdout: string): unknown {
