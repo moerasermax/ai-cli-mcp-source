@@ -23,6 +23,8 @@ import {
 } from '../models/catalog.js';
 import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
 import { ProcessService } from '../core/process-service.js';
+import { CircuitBreakerError } from '../core/circuit-breaker.js';
+import { UsageService } from '../plugins/usage-service.js';
 
 const require = createRequire(import.meta.url);
 const SERVER_VERSION = (require('../../package.json') as { version: string }).version;
@@ -33,6 +35,7 @@ const serverStartupTime = new Date().toISOString();
 export class AiCliMcpServer {
   private server: Server;
   private processService: ProcessService;
+  private usageService: UsageService;
   private sigintHandler?: () => Promise<void>;
 
   constructor() {
@@ -45,6 +48,7 @@ export class AiCliMcpServer {
     console.error(`[Setup] OpenCode CLI: ${cliPaths.opencode}`);
 
     this.processService = new ProcessService({ cliPaths });
+    this.usageService = new UsageService(cliPaths);
 
     this.server = new Server(
       { name: 'ai_cli_mcp', version: SERVER_VERSION },
@@ -228,6 +232,24 @@ ${getSupportedModelsDescription()}
           description: 'List supported model names, model aliases, and dynamic backend discovery hints.',
           inputSchema: { type: 'object', properties: {} },
         },
+        {
+          name: 'query_usage',
+          description: 'Query remaining token/credit usage for AI CLI tools (Kiro, Claude, Codex, Antigravity/agy). Results are cached for 120 seconds. Use refresh=true to force a fresh query.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              agents: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Optional list of agents to query (kiro, claude, codex, agy/antigravity). Defaults to all.',
+              },
+              refresh: {
+                type: 'boolean',
+                description: 'Optional: If true, bypass cache and force a fresh query. Defaults to false.',
+              },
+            },
+          },
+        },
       ],
     }));
 
@@ -254,6 +276,8 @@ ${getSupportedModelsDescription()}
           return this.jsonResult(getCliDoctorStatus());
         case 'models':
           return this.jsonResult(getModelsPayload());
+        case 'query_usage':
+          return this.handleQueryUsage(toolArguments);
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Tool ${toolName} not found`);
       }
@@ -284,6 +308,10 @@ ${getSupportedModelsDescription()}
       });
       return this.jsonResult(result);
     } catch (error) {
+      // 熔斷器攔截：回傳清楚的錯誤，讓呼叫端知道是框架迴圈防護而非一般失敗。
+      if (error instanceof CircuitBreakerError) {
+        throw new McpError(ErrorCode.InvalidRequest, error.message);
+      }
       const message = (error as Error).message;
       const code = /Failed to start/.test(message) ? ErrorCode.InternalError : ErrorCode.InvalidParams;
       throw new McpError(code, message);
@@ -367,6 +395,17 @@ ${getSupportedModelsDescription()}
       const finalMessage =
         code === ErrorCode.InternalError ? `Failed to terminate process: ${message}` : message;
       throw new McpError(code, finalMessage);
+    }
+  }
+
+  private async handleQueryUsage(toolArguments: Record<string, unknown>): Promise<ServerResult> {
+    try {
+      const agents = Array.isArray(toolArguments.agents) ? toolArguments.agents as string[] : undefined;
+      const refresh = toolArguments.refresh === true;
+      const result = await this.usageService.queryAll({ agents, refresh });
+      return this.jsonResult(result);
+    } catch (error) {
+      throw new McpError(ErrorCode.InternalError, `query_usage failed: ${(error as Error).message}`);
     }
   }
 
