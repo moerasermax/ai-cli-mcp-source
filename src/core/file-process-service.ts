@@ -36,6 +36,7 @@ import { buildCliCommand, type BuildCliCommandOptions } from './command-builder.
 import { resolveAllCliPaths } from './doctor.js';
 import { buildProcessResult } from './process-result.js';
 import { stripAnsi } from './ansi.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 import {
   PeekEventExtractor,
 } from './peek-extractor.js';
@@ -108,10 +109,14 @@ export class FileProcessService {
   private stateDir: string;
   private cliPaths: Record<AgentId, string>;
   private ptyManagedPids = new Set<number>();
+  private breaker: CircuitBreaker;
 
-  constructor(options: { stateDir?: string; cliPaths?: Record<AgentId, string> } = {}) {
+  constructor(
+    options: { stateDir?: string; cliPaths?: Record<AgentId, string>; breaker?: CircuitBreaker } = {}
+  ) {
     this.stateDir = options.stateDir || resolveDefaultStateDir();
     this.cliPaths = options.cliPaths || resolveAllCliPaths();
+    this.breaker = options.breaker ?? new CircuitBreaker();
     mkdirSync(this.stateDir, { recursive: true });
   }
 
@@ -125,6 +130,8 @@ export class FileProcessService {
       reasoning_effort: options.reasoning_effort,
       cliPaths: this.cliPaths,
     } as BuildCliCommandOptions);
+    // 熔斷器：偵測同一行程內框架迴圈造成的爆量/重複啟動。
+    this.breaker.check(cmd.agent, cmd.prompt);
     return this.startDetachedTracked(cmd, options.model);
   }
 

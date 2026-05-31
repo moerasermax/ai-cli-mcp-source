@@ -24,6 +24,7 @@ import {
   type PeekProcessResult,
 } from './peek.js';
 import { spawnPty, type PtyChild } from './pty-runner.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 
 export interface CliPaths {
   claude: string;
@@ -62,9 +63,11 @@ interface ProcessEntry {
 export class ProcessService {
   private processManager = new Map<number, ProcessEntry>();
   private cliPaths: CliPaths;
+  private breaker: CircuitBreaker;
 
-  constructor(options: { cliPaths: CliPaths }) {
+  constructor(options: { cliPaths: CliPaths; breaker?: CircuitBreaker }) {
     this.cliPaths = options.cliPaths;
+    this.breaker = options.breaker ?? new CircuitBreaker();
   }
 
   startProcess(options: StartProcessOptions): {
@@ -77,6 +80,9 @@ export class ProcessService {
       ...options,
       cliPaths: this.cliPaths as Record<AgentId, string>,
     } as BuildCliCommandOptions);
+
+    // 熔斷器：偵測框架迴圈造成的爆量/重複啟動，啟動前先攔截。
+    this.breaker.check(cmd.agent, cmd.prompt);
 
     const agent = getAgent(cmd.agent);
     const isWin = process.platform === 'win32';
