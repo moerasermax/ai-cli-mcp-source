@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+### 新增
+- **熔斷器 rate 路徑回歸測試**：新增純邏輯測試腳本 `verify-rate.mjs`，注入固定時鐘餵 33 個不同
+  prompt 給已編譯的 `CircuitBreaker`，斷言爆量 rate 門檻（`maxStarts=30`）在第 31 次觸發；
+  不啟動任何 AI 子程序，與既有 `verify-breaker.mjs`（測 duplicate 路徑）同性質、互補覆蓋兩條電路。
+  此腳本曾協助定位「磁碟 dist 已重編但運行中 server 仍載入過期 in-memory build」的問題。（@claude-code，moerasermax 指示）
+- **`test` npm script**：`package.json` 新增 `"test": "node verify-breaker.mjs && node verify-rate.mjs"`，
+  把兩支純邏輯測試串成正式測試入口，供本地與 CI 快速防回歸（任一支失敗即中止並回傳非零碼）。（@claude-code，moerasermax 指示）
+
 ## [3.1.0] - 2026-05-31
 
 ### 新增
