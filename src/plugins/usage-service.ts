@@ -159,8 +159,22 @@ export function parseCodexUsage(text: string) {
   const fiveHour = limitInfo(/5h\s*limit\s*:/i) ?? limitInfo(/\b5\s*hour[^:]*:/i);
   const weekly   = limitInfo(/weekly\s*limit\s*:/i) ?? limitInfo(/\bweek(?:ly)?[^:]*limit[^:]*:/i);
 
-  // 抓不到任何額度行時，退回寬鬆解析，至少回傳可見資訊
+  // 抓不到任何額度行時，先試 Codex /status 格式：「N% context left」
   if (!fiveHour && !weekly) {
+    const contextLeftMatch = s.match(/(\d+(?:\.\d+)?)\s*%\s*context\s+left/i);
+    if (contextLeftMatch) {
+      const contextLeft = _toNumber(contextLeftMatch[1]);
+      const promptModel = s.match(/([^\n\s][^\n]+?)\s+·\s+~/)?.[1]?.trim() ?? model;
+      return {
+        type: 'context_usage',
+        account: email,
+        plan,
+        model: promptModel ?? model,
+        contextPercentLeft: contextLeft,
+        contextPercentUsed: contextLeft !== null ? 100 - contextLeft : null,
+        raw,
+      };
+    }
     try { return { type: 'raw', ...(_parseLooseUsage(raw)) }; }
     catch { return { type: 'raw', raw }; }
   }
@@ -296,7 +310,7 @@ class CodexUsageProvider {
 
       const strip = (x: string) => x.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
       const latestModel = (str: string) => { const re = /model:\s+(\S+)/g; let mm, last: string | null = null; while ((mm = re.exec(str)) !== null) last = mm[1]; return last; };
-      const panelRe = /(?:5h|weekly|rate)\s*limit|%\s*(?:left|used)|resets?\s+\d{1,2}:\d{2}/i;
+      const panelRe = /(?:5h|weekly|rate)\s*limit|%\s*(?:left|used)|resets?\s+\d{1,2}:\d{2}|\d+%\s*context\s+left/i;
       const sendStatus = () => { sent = true; sends++; lastSendAt = Date.now(); try { ptyProc.write('/status\r'); } catch {} };
 
       hardKillT = setTimeout(() => { timedOut = true; settle({ output, exitCode: null, signal: null, timedOut }); }, 60_000);
@@ -320,7 +334,11 @@ class CodexUsageProvider {
           if (stableReady) sendStatus();
         } else if (!panelRe.test(s)) {
           // 重試以「距上次送出」計時，避免畫面持續刷新時 idleMs 偏低而永遠不重試
-          if (sends < 4 && Date.now() - lastSendAt > 2500) sendStatus();
+          if (sends < 3 && Date.now() - lastSendAt > 2500) sendStatus();
+          else if (sends >= 3 && idleMs > 2000) {
+            // Codex 未輸出 rate limit 面板，快速 settle 避免等到 60s hardKillT
+            settle({ output, exitCode: null, signal: null, timedOut: false }); return;
+          }
         } else {
           // 面板已出現：等輸出靜止再擷取，確保 5h 與 weekly 兩行都到齊
           if (idleMs > 800) { settle({ output, exitCode: null, signal: null, timedOut: false }); return; }
@@ -429,13 +447,18 @@ class ClaudeUsageProvider {
           commandSent = true;
           setTimeout(() => {
             try { ptyProc.write('/usage\r'); } catch {}
-            // 等輸出包含 usage 相關內容後再截取
+            // 等 Claude Max usage 資料真正載入後再截取
             const poll = () => {
               const cleaned = _cleanUsageText(output);
-              const hasUsage = /session|token|usage|remaining|plan|limit/i.test(cleaned);
-              // 等第二個 ❯ 出現（代表 /usage 輸出完畢，prompt 回來了）
-              const promptCount = (output.match(/❯/g) ?? []).length;
-              if (hasUsage && promptCount >= 2) {
+              // 等實際的配額百分比數字出現（"Current session N%" 或 "N% used"）
+              // 且確保 "Loading usage data" 已消失
+              const hasActualData = /Current\s+session|Current\s+week|session\s+\d+\s*%|\d+\s*%\s*used/i.test(cleaned)
+                && !/Loading usage data/i.test(cleaned);
+              // 退路：若整個 Usage tab 已渲染但此帳號無配額限制（e.g. 純 API key）
+              const hasCostOnly = /Session\s+cost.*\$[\d.]+/i.test(cleaned)
+                && !/Loading usage data/i.test(cleaned)
+                && (output.match(/❯/g) ?? []).length >= 3;
+              if (hasActualData || hasCostOnly) {
                 if (captureT) clearTimeout(captureT);
                 captureT = setTimeout(() => settle({ output, exitCode: null, signal: null, timedOut: false }), 500);
               } else {
