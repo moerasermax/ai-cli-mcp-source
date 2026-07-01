@@ -144,8 +144,66 @@ export class FileProcessService {
     }
 
     const cwdKey = this.resolveCwdKey(cmd.cwd);
+    if (isWin) {
+      return this.startDetachedWin32(cmd, cwdKey, model);
+    }
     const wrapperPath = this.ensureDetachedWrapperScript();
     const childProcess = spawn(wrapperPath, [this.stateDir, cwdKey, cmd.cliPath, ...cmd.args], {
+      cwd: cmd.cwd,
+      detached: true,
+      stdio: 'ignore',
+    });
+    const pid = childProcess.pid;
+    childProcess.unref();
+    if (!pid) {
+      throw new Error(`Failed to start ${cmd.agent} CLI process`);
+    }
+    const processDir = this.resolveProcessDir(cmd.cwd, pid);
+    mkdirSync(processDir, { recursive: true });
+    const stdoutPath = this.resolveStdoutPath(processDir);
+    const stderrPath = this.resolveStderrPath(processDir);
+    this.touchFile(stdoutPath);
+    this.touchFile(stderrPath);
+    const stored: StoredProcess = {
+      pid,
+      prompt: cmd.prompt,
+      workFolder: cmd.cwd,
+      cwdKey,
+      model,
+      toolType: cmd.agent,
+      startTime: new Date().toISOString(),
+      stdoutPath,
+      stderrPath,
+      status: 'running',
+    };
+    this.writeProcess(stored);
+    return { pid, status: 'started', agent: cmd.agent, message: `${cmd.agent} process started successfully` };
+  }
+
+  /**
+   * Windows detached spawn：用 Node 腳本當 wrapper（避開 batch 引號地獄）。
+   * Node 子程序可取得自己的 PID，對齊 FileProcessService 的 PID→目錄映射。
+   */
+  private startDetachedWin32(
+    cmd: ReturnType<typeof buildCliCommand>,
+    cwdKey: string,
+    model?: string
+  ): { pid: number; status: string; agent: AgentId; message: string } {
+    const wrapperPath = this.ensureDetachedWrapperNodeWin32();
+    const hasStdinPrompt = typeof cmd.stdinPrompt === 'string';
+
+    // 把 spawn 資訊寫入暫存 JSON，wrapper 讀這個檔即可
+    const specPath = join(this.stateDir, `spec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.json`);
+    writeFileSync(specPath, JSON.stringify({
+      stateDir: this.stateDir,
+      cwdKey,
+      cliPath: cmd.cliPath,
+      args: cmd.args,
+      cwd: cmd.cwd,
+      stdinPrompt: hasStdinPrompt ? cmd.stdinPrompt : null,
+    }), 'utf-8');
+
+    const childProcess = spawn(process.execPath, [wrapperPath, specPath], {
       cwd: cmd.cwd,
       detached: true,
       stdio: 'ignore',
@@ -541,6 +599,44 @@ export class FileProcessService {
   private resolveExitStatusPath(processDir: string): string {
     return join(processDir, 'exit-status.json');
   }
+  private resolveDetachedWrapperNodeWin32Path(): string {
+    return join(this.stateDir, 'detached-runner-win32.cjs');
+  }
+
+  private ensureDetachedWrapperNodeWin32(): string {
+    const wrapperPath = this.resolveDetachedWrapperNodeWin32Path();
+    if (existsSync(wrapperPath)) return wrapperPath;
+    writeFileSync(wrapperPath, `"use strict";
+const{readFileSync,writeFileSync,unlinkSync,appendFileSync,statSync,mkdirSync}=require("node:fs");
+const{spawn}=require("node:child_process");
+const{join}=require("node:path");
+const spec=JSON.parse(readFileSync(process.argv[2],"utf-8"));
+try{unlinkSync(process.argv[2]);}catch{}
+const dir=join(spec.stateDir,"cwds",spec.cwdKey,String(process.pid));
+const out=join(dir,"stdout.log");
+const errP=join(dir,"stderr.log");
+const ext=join(dir,"exit-status.json");
+function waitDir(cb){const p=()=>{try{statSync(dir);cb();}catch{setTimeout(p,50);}};p();}
+waitDir(()=>{
+const child=spawn(spec.cliPath,spec.args,{cwd:spec.cwd,stdio:[spec.stdinPrompt?"pipe":"ignore","pipe","pipe"],shell:false,windowsVerbatimArguments:true});
+if(spec.stdinPrompt&&child.stdin){child.stdin.on("error",()=>{});try{child.stdin.write(spec.stdinPrompt);child.stdin.end();}catch{}}
+child.stdout.on("data",d=>{try{appendFileSync(out,d);}catch{}});
+child.stderr.on("data",d=>{try{appendFileSync(errP,d);}catch{}});
+child.on("close",code=>{
+const s=code===0?"completed":"failed";
+try{writeFileSync(ext,JSON.stringify({status:s,exitCode:code??-1}));}catch{}
+process.exit(code??1);
+});
+child.on("error",e=>{
+try{appendFileSync(errP,"\\nProcess error: "+e.message);}catch{}
+try{writeFileSync(ext,JSON.stringify({status:"failed",exitCode:-1}));}catch{}
+process.exit(1);
+});
+});
+`);
+    return wrapperPath;
+  }
+
   private resolveDetachedWrapperPath(): string {
     return join(this.stateDir, 'detached-runner-v2.sh');
   }
@@ -602,7 +698,7 @@ exit "$exit_code"
   }
 
   private removeLegacyDetachedWrappers(): void {
-    for (const fileName of ['detached-runner-v1.sh']) {
+    for (const fileName of ['detached-runner-v1.sh', 'detached-runner-v2.cmd']) {
       const legacyPath = join(this.stateDir, fileName);
       if (!existsSync(legacyPath)) continue;
       try {
