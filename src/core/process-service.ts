@@ -94,12 +94,25 @@ export class ProcessService {
 
     // 一般 pipe spawn
     const useStdinPrompt = typeof cmd.stdinPrompt === 'string';
-    const useShell = isWin && !agent.win32DirectExec;
-    const childProcess = spawn(cmd.cliPath, cmd.args, {
+    const needsShell = isWin && !agent.win32DirectExec;
+    // Windows: 不用 shell:true（Node v24 DEP0190 + 沙盒 EFTYPE），
+    // 改走明確 cmd.exe /c，跟 cross-spawn 相同策略。
+    let spawnCmd: string;
+    let spawnArgs: string[];
+    if (needsShell) {
+      const comSpec = process.env.ComSpec || process.env.COMSPEC || 'cmd.exe';
+      spawnCmd = comSpec;
+      spawnArgs = ['/d', '/s', '/c', `""${cmd.cliPath}" ${cmd.args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}"`];
+    } else {
+      spawnCmd = cmd.cliPath;
+      spawnArgs = cmd.args;
+    }
+    const childProcess = spawn(spawnCmd, spawnArgs, {
       cwd: cmd.cwd,
       stdio: [useStdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       detached: false,
-      shell: useShell,
+      shell: false,
+      windowsVerbatimArguments: needsShell,
       env: process.env,
     });
 
