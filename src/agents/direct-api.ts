@@ -33,6 +33,9 @@ const MAX_API_CALLS = 30;
 const MAX_TOOL_OUTPUT_CHARS = 10000;
 const TOOL_OUTPUT_PREVIEW_CHARS = 200;
 const BASH_TIMEOUT_MS = 30000;
+const XML_TOOL_CALL_RE = /<function=(\w+)>\s*([\s\S]*?)<\/function>/g;
+const XML_PARAM_RE = /<parameter=(\w+)>([\s\S]*?)<\/parameter>/g;
+const XML_WRAPPED_TOOL_CALL_RE = /<tool_call>\s*<function=\w+>\s*[\s\S]*?<\/function>\s*<\/tool_call>/g;
 
 const TOOL_DEFINITIONS = [
   {
@@ -913,6 +916,35 @@ function normalizeToolCalls(value: unknown): ChatToolCall[] {
   return calls;
 }
 
+function parseXmlToolCalls(text: string): ChatToolCall[] {
+  const calls: ChatToolCall[] = [];
+  XML_TOOL_CALL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = XML_TOOL_CALL_RE.exec(text)) !== null) {
+    const name = match[1];
+    const body = match[2];
+    const args: Record<string, string> = {};
+    const paramRe = new RegExp(XML_PARAM_RE.source, XML_PARAM_RE.flags);
+    let paramMatch: RegExpExecArray | null;
+    while ((paramMatch = paramRe.exec(body)) !== null) {
+      args[paramMatch[1]] = paramMatch[2].trim();
+    }
+    calls.push({
+      id: `xml_call_${calls.length}`,
+      type: 'function',
+      function: { name, arguments: JSON.stringify(args) },
+    });
+  }
+  return calls;
+}
+
+function stripXmlToolCallText(text: string): string {
+  return text
+    .replace(XML_WRAPPED_TOOL_CALL_RE, '')
+    .replace(new RegExp(XML_TOOL_CALL_RE.source, XML_TOOL_CALL_RE.flags), '')
+    .trim();
+}
+
 function finalizeStreamToolCalls(turn: CompletionTurn): void {
   if (turn.toolCalls.length > 0) return;
   turn.toolCalls = normalizeToolCalls(
@@ -1156,6 +1188,16 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
       state,
       io,
     });
+    if (toolsEnabled && turn.finishReason !== 'tool_calls' && turn.toolCalls.length === 0 && turn.assistantText) {
+      const xmlToolCalls = parseXmlToolCalls(turn.assistantText);
+      if (xmlToolCalls.length > 0) {
+        debugLog(`[Debug][xml-fallback] Parsed ${xmlToolCalls.length} XML tool call(s).`);
+        turn.toolCalls = xmlToolCalls;
+        const strippedAssistantText = stripXmlToolCallText(turn.assistantText);
+        state.assistantText = `${state.assistantText.slice(0, -turn.assistantText.length)}${strippedAssistantText}`;
+        turn.assistantText = strippedAssistantText;
+      }
+    }
     messages.push(buildAssistantMessage(turn));
     if (!toolsEnabled || turn.toolCalls.length === 0) {
       reachedLimit = false;

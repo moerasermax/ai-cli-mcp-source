@@ -32,6 +32,9 @@ process.env.AI_CLI_PROVIDERS_PATH = providersPath;
 let capturedUrl = '';
 const capturedBodies = [];
 let capturedAuthorization = '';
+const xmlReportPath = '.tmp/plan027_qwen_tool_test.md';
+const xmlReportContent = '# Report content here\n\nGenerated through XML fallback.';
+const xmlReportOutputPreview = `Wrote ${xmlReportContent.length} chars to ${join('.tmp', 'plan027_qwen_tool_test.md')}.`;
 
 function streamResponse(events) {
   const encoder = new TextEncoder();
@@ -50,9 +53,14 @@ function streamResponse(events) {
 
 globalThis.fetch = async (url, init = {}) => {
   capturedUrl = String(url);
-  capturedBodies.push(JSON.parse(String(init.body)));
+  const requestBody = JSON.parse(String(init.body));
+  capturedBodies.push(requestBody);
   capturedAuthorization = String(init.headers.authorization || init.headers.Authorization || '');
-  if (capturedBodies.length === 1) {
+  const messages = Array.isArray(requestBody.messages) ? requestBody.messages : [];
+  const firstUser = messages.find((message) => message?.role === 'user');
+  const firstUserContent = typeof firstUser?.content === 'string' ? firstUser.content : '';
+
+  if (firstUserContent === 'Read package.json and tell me the version' && !messages.some((message) => message?.role === 'tool')) {
     return streamResponse([
       {
         choices: [
@@ -88,10 +96,44 @@ globalThis.fetch = async (url, init = {}) => {
       { usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } },
     ]);
   }
+  if (messages.some((message) => message?.tool_call_id === 'call_read')) {
+    return streamResponse([
+      { choices: [{ delta: { content: 'Version ' } }] },
+      { choices: [{ delta: { content: '9.9.9' }, finish_reason: 'stop' }] },
+      { usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } },
+    ]);
+  }
+  if (firstUserContent === 'Write XML fallback report' && !messages.some((message) => message?.role === 'tool')) {
+    return streamResponse([
+      {
+        choices: [
+          {
+            delta: {
+              content: `<tool_call>
+<function=write_file>
+<parameter=path>${xmlReportPath}</parameter>
+<parameter=content>
+${xmlReportContent}
+</parameter>
+</function>
+</tool_call>`,
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+      { usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } },
+    ]);
+  }
+  if (messages.some((message) => message?.tool_call_id === 'xml_call_0')) {
+    return streamResponse([
+      { choices: [{ delta: { content: 'XML fallback wrote report' }, finish_reason: 'stop' }] },
+      { usage: { prompt_tokens: 6, completion_tokens: 4, total_tokens: 10 } },
+    ]);
+  }
   return streamResponse([
-    { choices: [{ delta: { content: 'Version ' } }] },
-    { choices: [{ delta: { content: '9.9.9' }, finish_reason: 'stop' }] },
-    { usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } },
+    { choices: [{ delta: { content: 'Hello without tools' }, finish_reason: 'stop' }] },
+    { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
   ]);
 };
 
@@ -171,5 +213,42 @@ assert.strictEqual(capturedBodies[2].tools, undefined);
 assert.deepStrictEqual(capturedBodies[2].messages, [
   { role: 'user', content: 'Say hello without tools' },
 ]);
+
+const xmlStarted = service.startProcess({
+  workFolder: tempRoot,
+  model: 'or-test/model',
+  prompt: 'Write XML fallback report',
+});
+const [xmlResult] = await service.waitForProcesses([xmlStarted.pid], 5, true);
+assert.strictEqual(xmlResult.status, 'completed');
+assert.strictEqual(xmlResult.exitCode, 0);
+assert.strictEqual(xmlResult.agentOutput.message, 'XML fallback wrote report');
+assert.deepStrictEqual(xmlResult.agentOutput.tools, [
+  {
+    tool: 'write_file',
+    input: { path: xmlReportPath, content: xmlReportContent },
+    status: 'completed',
+    output_preview: xmlReportOutputPreview,
+  },
+]);
+assert.strictEqual(readFileSync(join(tempRoot, xmlReportPath), 'utf-8'), xmlReportContent);
+assert.strictEqual(capturedBodies.length, 5);
+assert.deepStrictEqual(capturedBodies[4].messages[1], {
+  role: 'assistant',
+  content: null,
+  tool_calls: [
+    {
+      id: 'xml_call_0',
+      type: 'function',
+      function: {
+        name: 'write_file',
+        arguments: JSON.stringify({ path: xmlReportPath, content: xmlReportContent }),
+      },
+    },
+  ],
+});
+assert.strictEqual(capturedBodies[4].messages[2].role, 'tool');
+assert.strictEqual(capturedBodies[4].messages[2].tool_call_id, 'xml_call_0');
+assert.ok(capturedBodies[4].messages[2].content.includes(`Wrote ${xmlReportContent.length} chars`));
 
 console.log('PASS: direct-api mock fetch route/output/session verified');
