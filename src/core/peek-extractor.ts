@@ -214,6 +214,22 @@ function extractPeekEventsFromParsedEvent(
     return [];
   }
   if (agent === 'claude' || agent === 'direct-api') {
+    if (agent === 'direct-api' && parsed.type === 'message' && typeof parsed.content === 'string' && parsed.content.trim()) {
+      return [{ kind: 'message', ts: observedAt, text: parsed.content }];
+    }
+    if (agent === 'direct-api' && includeToolCalls && parsed.type === 'tool_use') {
+      return [
+        createToolCallEvent({
+          ts: observedAt,
+          phase: 'completed',
+          id: typeof parsed.id === 'string' ? parsed.id : undefined,
+          tool: typeof parsed.tool === 'string' ? parsed.tool : 'tool_use',
+          command: typeof parsed.input?.command === 'string' ? parsed.input.command : undefined,
+          status: parsed.status,
+          defaultStatus: 'success',
+        }),
+      ];
+    }
     if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
       const events: PeekEvent[] = [];
       for (const content of parsed.message.content) {

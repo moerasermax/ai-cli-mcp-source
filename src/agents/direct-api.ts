@@ -5,10 +5,11 @@
  * in the current Node.js process and tracks it with the same PID/result API.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, extname, isAbsolute, join, resolve as pathResolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative as pathRelative, resolve as pathResolve } from 'node:path';
 import type {
   AgentDefinition,
   BuildCommandInput,
@@ -26,6 +27,105 @@ const DIRECT_API_MODELS = [
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const IMAGE_MARKER = /\[image:([^\]\r\n]+)\]/g;
+const NO_TOOLS_MARKER = /^\s*\[no-tools\]\s*/i;
+const MAX_TOOL_LOOP_ITERATIONS = 30;
+const MAX_API_CALLS = 30;
+const MAX_TOOL_OUTPUT_CHARS = 10000;
+const TOOL_OUTPUT_PREVIEW_CHARS = 200;
+const BASH_TIMEOUT_MS = 30000;
+
+const TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read a file from the workspace. Supports line offset and limit.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to read, relative to the workspace.' },
+          offset: { type: 'number', description: 'Optional zero-based line offset.' },
+          limit: { type: 'number', description: 'Optional maximum number of lines to return.' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Write a file in the workspace, creating parent directories automatically.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to write, relative to the workspace.' },
+          content: { type: 'string', description: 'Complete file content to write.' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grep',
+      description: 'Search file contents in the workspace using ripgrep.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Pattern to search for.' },
+          path: { type: 'string', description: 'Directory or file path to search under.' },
+          glob: { type: 'string', description: 'Optional ripgrep glob filter.' },
+        },
+        required: ['pattern', 'path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'glob',
+      description: 'Find file names in the workspace using ripgrep file listing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Ripgrep glob pattern.' },
+          path: { type: 'string', description: 'Optional directory path to list under.' },
+        },
+        required: ['pattern'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bash',
+      description: 'Run a shell command in the workspace.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to run.' },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_dir',
+      description: 'List a directory in the workspace.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Directory path to list, relative to the workspace.' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+] as const;
 
 const PROVIDER_PREFIX_ALIASES: Record<string, string> = {
   or: 'openrouter',
@@ -72,9 +172,20 @@ interface ImageContentPart {
 type ChatContentPart = TextContentPart | ImageContentPart;
 type ChatContent = string | ChatContentPart[];
 
+interface ChatToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: ChatContent;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content?: ChatContent | null;
+  tool_calls?: ChatToolCall[];
+  tool_call_id?: string;
 }
 
 interface SessionFile {
@@ -109,6 +220,28 @@ interface StreamState {
   usage?: CompletionUsage;
   cost?: unknown;
   finishReason?: string;
+}
+
+interface StreamToolCallAccumulator {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+}
+
+interface CompletionTurn {
+  assistantText: string;
+  reasoningText: string;
+  toolCallAccumulators: StreamToolCallAccumulator[];
+  toolCalls: ChatToolCall[];
+  finishReason?: string;
+}
+
+interface ToolExecutionResult {
+  status: 'completed' | 'failed';
+  output: string;
 }
 
 function providersPath(): string {
@@ -300,6 +433,7 @@ function parseOutput(stdout: string): unknown {
   let sessionPath: string | undefined;
   let finishReason: string | undefined;
   let reasoning: string | undefined;
+  const toolsMap = new Map<string, { tool: string; input: unknown; status?: string; output_preview?: string }>();
 
   for (const line of stdout.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -322,6 +456,18 @@ function parseOutput(stdout: string): unknown {
     if (parsed.type === 'reasoning' && typeof parsed.delta === 'string') {
       reasoning = `${reasoning || ''}${parsed.delta}`;
     }
+    if (parsed.type === 'message' && typeof parsed.content === 'string') {
+      message = parsed.content;
+    }
+    if (parsed.type === 'tool_use' && typeof parsed.tool === 'string') {
+      const key = typeof parsed.id === 'string' ? parsed.id : `${parsed.tool}:${toolsMap.size}`;
+      toolsMap.set(key, {
+        tool: parsed.tool,
+        input: parsed.input,
+        status: typeof parsed.status === 'string' ? parsed.status : undefined,
+        output_preview: typeof parsed.output_preview === 'string' ? parsed.output_preview : undefined,
+      });
+    }
     if (parsed.type === 'result') {
       if (typeof parsed.result === 'string') {
         message = parsed.result;
@@ -333,7 +479,8 @@ function parseOutput(stdout: string): unknown {
     }
   }
 
-  if (!message && !sessionId && !tokens && cost === undefined) {
+  const tools = Array.from(toolsMap.values());
+  if (!message && !sessionId && !tokens && cost === undefined && tools.length === 0) {
     return null;
   }
   return {
@@ -344,11 +491,178 @@ function parseOutput(stdout: string): unknown {
     sessionPath,
     finish_reason: finishReason,
     reasoning,
+    tools: tools.length > 0 ? tools : undefined,
   };
 }
 
 function emitJsonLine(write: (chunk: string) => void, value: unknown): void {
   write(`${JSON.stringify(value)}\n`);
+}
+
+function truncateText(text: string, maxChars = MAX_TOOL_OUTPUT_CHARS): string {
+  if (text.length <= maxChars) return text;
+  const suffix = '\n[truncated]';
+  return `${text.slice(0, Math.max(0, maxChars - suffix.length))}${suffix}`;
+}
+
+function toolOutputPreview(output: string): string {
+  return truncateText(output, TOOL_OUTPUT_PREVIEW_CHARS);
+}
+
+function requireObject(value: unknown, toolName: string): Record<string, unknown> {
+  const record = asRecord(value);
+  if (!record) {
+    throw new Error(`${toolName} arguments must be an object.`);
+  }
+  return record;
+}
+
+function requireStringArg(args: Record<string, unknown>, key: string, toolName: string): string {
+  const value = args[key];
+  if (typeof value !== 'string') {
+    throw new Error(`${toolName}.${key} must be a string.`);
+  }
+  return value;
+}
+
+function optionalLineNumberArg(args: Record<string, unknown>, key: string, toolName: string): number | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${toolName}.${key} must be a non-negative integer.`);
+  }
+  return value;
+}
+
+function resolveSandboxPath(workFolder: string, toolPath = '.'): string {
+  const root = pathResolve(workFolder);
+  const target = pathResolve(root, toolPath);
+  const relative = pathRelative(root, target);
+  if (relative === '' || (!relative.startsWith('..') && !isAbsolute(relative))) {
+    return target;
+  }
+  throw new Error(`Path is outside the workspace: ${toolPath}`);
+}
+
+function sandboxRelativePath(workFolder: string, toolPath = '.'): string {
+  const root = pathResolve(workFolder);
+  const target = resolveSandboxPath(root, toolPath);
+  const relative = pathRelative(root, target);
+  return relative || '.';
+}
+
+function shellQuote(value: string): string {
+  if (process.platform === 'win32') {
+    return `"${value.replace(/(["^&|<>%])/g, '^$1')}"`;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function stringifyExecOutput(value: unknown): string {
+  if (Buffer.isBuffer(value)) return value.toString('utf-8');
+  return typeof value === 'string' ? value : '';
+}
+
+function formatExecError(error: unknown): string {
+  const err = error as Error & {
+    stdout?: Buffer | string;
+    stderr?: Buffer | string;
+    status?: number;
+    signal?: NodeJS.Signals | string;
+  };
+  const parts: string[] = [];
+  if (typeof err.status === 'number') parts.push(`Exit code: ${err.status}`);
+  if (err.signal) parts.push(`Signal: ${err.signal}`);
+  const stdout = stringifyExecOutput(err.stdout).trim();
+  const stderr = stringifyExecOutput(err.stderr).trim();
+  if (stdout) parts.push(`STDOUT:\n${stdout}`);
+  if (stderr) parts.push(`STDERR:\n${stderr}`);
+  if (parts.length === 0 && err.message) parts.push(err.message);
+  return parts.join('\n\n') || 'Command failed.';
+}
+
+function execRg(command: string, workFolder: string, noMatchOk = true): string {
+  try {
+    return execSync(command, {
+      cwd: pathResolve(workFolder),
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (error) {
+    const err = error as Error & { stdout?: Buffer | string; status?: number };
+    const stdout = stringifyExecOutput(err.stdout);
+    if (noMatchOk && err.status === 1) return stdout;
+    throw error;
+  }
+}
+
+function executeTool(name: string, rawArgs: unknown, workFolder: string): ToolExecutionResult {
+  try {
+    const args = requireObject(rawArgs, name);
+    if (name === 'read_file') {
+      const targetPath = resolveSandboxPath(workFolder, requireStringArg(args, 'path', name));
+      const offset = optionalLineNumberArg(args, 'offset', name);
+      const limit = optionalLineNumberArg(args, 'limit', name);
+      const content = readFileSync(targetPath, 'utf-8');
+      if (offset === undefined && limit === undefined) {
+        return { status: 'completed', output: truncateText(content) };
+      }
+      const lines = content.split(/\r?\n/);
+      const start = offset ?? 0;
+      const end = limit === undefined ? undefined : start + limit;
+      return { status: 'completed', output: truncateText(lines.slice(start, end).join('\n')) };
+    }
+    if (name === 'write_file') {
+      const targetPath = resolveSandboxPath(workFolder, requireStringArg(args, 'path', name));
+      const content = requireStringArg(args, 'content', name);
+      mkdirSync(dirname(targetPath), { recursive: true });
+      writeFileSync(targetPath, content, 'utf-8');
+      return { status: 'completed', output: `Wrote ${content.length} chars to ${sandboxRelativePath(workFolder, targetPath)}.` };
+    }
+    if (name === 'grep') {
+      const pattern = requireStringArg(args, 'pattern', name);
+      const searchPath = sandboxRelativePath(workFolder, requireStringArg(args, 'path', name));
+      const glob = args.glob === undefined ? undefined : requireStringArg(args, 'glob', name);
+      const globPart = glob ? ` --glob ${shellQuote(glob)}` : '';
+      const command = `rg --line-number --color never${globPart} -- ${shellQuote(pattern)} ${shellQuote(searchPath)}`;
+      const output = execRg(command, workFolder, true);
+      return { status: 'completed', output: truncateText(output) };
+    }
+    if (name === 'glob') {
+      const pattern = requireStringArg(args, 'pattern', name);
+      const searchPath = sandboxRelativePath(workFolder, typeof args.path === 'string' ? args.path : '.');
+      const command = `rg --files --glob ${shellQuote(pattern)} ${shellQuote(searchPath)}`;
+      const output = execRg(command, workFolder, true);
+      return { status: 'completed', output: truncateText(output) };
+    }
+    if (name === 'bash') {
+      const command = requireStringArg(args, 'command', name);
+      try {
+        const output = execSync(command, {
+          cwd: pathResolve(workFolder),
+          encoding: 'utf-8',
+          timeout: BASH_TIMEOUT_MS,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        return { status: 'completed', output: truncateText(output) };
+      } catch (error) {
+        return { status: 'failed', output: truncateText(formatExecError(error)) };
+      }
+    }
+    if (name === 'list_dir') {
+      const targetPath = resolveSandboxPath(workFolder, requireStringArg(args, 'path', name));
+      const entries = readdirSync(targetPath, { withFileTypes: true })
+        .map((entry) => `${entry.name}${entry.isDirectory() ? '/' : ''}`)
+        .sort((a, b) => a.localeCompare(b));
+      return { status: 'completed', output: truncateText(entries.join('\n')) };
+    }
+    return { status: 'failed', output: `Unknown tool: ${name}` };
+  } catch (error) {
+    return {
+      status: 'failed',
+      output: truncateText(error instanceof Error ? error.message : String(error)),
+    };
+  }
 }
 
 function resolveSessionId(sessionId: string | undefined): string {
@@ -496,14 +810,125 @@ function redactApiKey(text: string, apiKey: string): string {
   return text.includes(apiKey) ? text.split(apiKey).join('[redacted]') : text;
 }
 
-function handleCompletionChunk(parsed: any, state: StreamState, io: DirectRunIO): void {
+function createEmptyTurn(): CompletionTurn {
+  return {
+    assistantText: '',
+    reasoningText: '',
+    toolCallAccumulators: [],
+    toolCalls: [],
+  };
+}
+
+function mergeCompletionUsage(
+  current: CompletionUsage | undefined,
+  next: CompletionUsage
+): CompletionUsage {
+  const merged: CompletionUsage = { ...(current || {}) };
+  const numericKeys = [
+    'prompt_tokens',
+    'completion_tokens',
+    'total_tokens',
+    'input_tokens',
+    'output_tokens',
+    'reasoning_tokens',
+  ] as const;
+  for (const key of numericKeys) {
+    const value = next[key];
+    if (typeof value === 'number') {
+      const existing = typeof merged[key] === 'number' ? merged[key] as number : 0;
+      merged[key] = existing + value;
+    }
+  }
+  const cached = next.prompt_tokens_details?.cached_tokens;
+  if (typeof cached === 'number') {
+    const existing = merged.prompt_tokens_details?.cached_tokens || 0;
+    merged.prompt_tokens_details = {
+      ...(merged.prompt_tokens_details || {}),
+      cached_tokens: existing + cached,
+    };
+  }
+  const reasoning = next.completion_tokens_details?.reasoning_tokens;
+  if (typeof reasoning === 'number') {
+    const existing = merged.completion_tokens_details?.reasoning_tokens || 0;
+    merged.completion_tokens_details = {
+      ...(merged.completion_tokens_details || {}),
+      reasoning_tokens: existing + reasoning,
+    };
+  }
+  return merged;
+}
+
+function mergeCost(current: unknown, next: unknown): unknown {
+  if (next === undefined) return current;
+  if (typeof current === 'number' && typeof next === 'number') return current + next;
+  return next;
+}
+
+function captureUsageAndCost(parsed: any, state: StreamState): void {
   if (parsed?.usage) {
-    state.usage = parsed.usage as CompletionUsage;
-    state.cost = normalizeCost(parsed.usage);
+    state.usage = mergeCompletionUsage(state.usage, parsed.usage as CompletionUsage);
+    state.cost = mergeCost(state.cost, normalizeCost(parsed.usage));
   }
-  if (normalizeCost(parsed) !== undefined) {
-    state.cost = normalizeCost(parsed);
+  state.cost = mergeCost(state.cost, normalizeCost(parsed));
+}
+
+function appendToolCallDeltas(delta: Record<string, unknown>, turn: CompletionTurn): void {
+  if (!Array.isArray(delta.tool_calls)) return;
+  for (const rawCall of delta.tool_calls) {
+    const call = asRecord(rawCall);
+    if (!call) continue;
+    const index = typeof call.index === 'number' ? call.index : turn.toolCallAccumulators.length;
+    const accumulator = turn.toolCallAccumulators[index] || {};
+    if (typeof call.id === 'string') accumulator.id = call.id;
+    if (typeof call.type === 'string') accumulator.type = call.type;
+    const fn = asRecord(call.function);
+    if (fn) {
+      accumulator.function = accumulator.function || {};
+      if (typeof fn.name === 'string') accumulator.function.name = fn.name;
+      if (typeof fn.arguments === 'string') {
+        accumulator.function.arguments = `${accumulator.function.arguments || ''}${fn.arguments}`;
+      }
+    }
+    turn.toolCallAccumulators[index] = accumulator;
   }
+}
+
+function normalizeToolCalls(value: unknown): ChatToolCall[] {
+  if (!Array.isArray(value)) return [];
+  const calls: ChatToolCall[] = [];
+  for (const rawCall of value) {
+    const call = asRecord(rawCall);
+    const fn = asRecord(call?.function);
+    const name = typeof fn?.name === 'string' ? fn.name : '';
+    if (!call || !name) continue;
+    calls.push({
+      id: typeof call.id === 'string' ? call.id : `call_${calls.length}`,
+      type: 'function',
+      function: {
+        name,
+        arguments: typeof fn?.arguments === 'string' ? fn.arguments : '',
+      },
+    });
+  }
+  return calls;
+}
+
+function finalizeStreamToolCalls(turn: CompletionTurn): void {
+  if (turn.toolCalls.length > 0) return;
+  turn.toolCalls = normalizeToolCalls(
+    turn.toolCallAccumulators.map((call, index) => ({
+      id: call.id || `call_${index}`,
+      type: call.type || 'function',
+      function: {
+        name: call.function?.name || '',
+        arguments: call.function?.arguments || '',
+      },
+    }))
+  );
+}
+
+function handleCompletionChunk(parsed: any, state: StreamState, turn: CompletionTurn, io: DirectRunIO): void {
+  captureUsageAndCost(parsed, state);
   if (!Array.isArray(parsed?.choices)) return;
   for (const choice of parsed.choices) {
     const delta = asRecord(choice?.delta);
@@ -511,6 +936,7 @@ function handleCompletionChunk(parsed: any, state: StreamState, io: DirectRunIO)
       const textDelta = extractText(delta.content);
       if (textDelta) {
         state.assistantText += textDelta;
+        turn.assistantText += textDelta;
         emitJsonLine(io.stdout, {
           type: 'assistant',
           session_id: state.sessionId,
@@ -520,27 +946,24 @@ function handleCompletionChunk(parsed: any, state: StreamState, io: DirectRunIO)
       const reasoningDelta = extractReasoning(delta);
       if (reasoningDelta) {
         state.reasoningText += reasoningDelta;
+        turn.reasoningText += reasoningDelta;
         emitJsonLine(io.stdout, {
           type: 'reasoning',
           session_id: state.sessionId,
           delta: reasoningDelta,
         });
       }
+      appendToolCallDeltas(delta, turn);
     }
     if (typeof choice?.finish_reason === 'string') {
       state.finishReason = choice.finish_reason;
+      turn.finishReason = choice.finish_reason;
     }
   }
 }
 
-function handleCompletionObject(parsed: any, state: StreamState, io: DirectRunIO): void {
-  if (parsed?.usage) {
-    state.usage = parsed.usage as CompletionUsage;
-    state.cost = normalizeCost(parsed.usage);
-  }
-  if (normalizeCost(parsed) !== undefined) {
-    state.cost = normalizeCost(parsed);
-  }
+function handleCompletionObject(parsed: any, state: StreamState, turn: CompletionTurn, io: DirectRunIO): void {
+  captureUsageAndCost(parsed, state);
   if (!Array.isArray(parsed?.choices)) return;
   const textParts: string[] = [];
   for (const choice of parsed.choices) {
@@ -549,15 +972,21 @@ function handleCompletionObject(parsed: any, state: StreamState, io: DirectRunIO
       const text = extractText(message.content);
       if (text) textParts.push(text);
       const reasoning = extractReasoning(message);
-      if (reasoning) state.reasoningText += reasoning;
+      if (reasoning) {
+        state.reasoningText += reasoning;
+        turn.reasoningText += reasoning;
+      }
+      turn.toolCalls.push(...normalizeToolCalls(message.tool_calls));
     }
     if (typeof choice?.finish_reason === 'string') {
       state.finishReason = choice.finish_reason;
+      turn.finishReason = choice.finish_reason;
     }
   }
   const text = textParts.join('');
   if (text) {
     state.assistantText += text;
+    turn.assistantText += text;
     emitJsonLine(io.stdout, {
       type: 'assistant',
       session_id: state.sessionId,
@@ -566,12 +995,14 @@ function handleCompletionObject(parsed: any, state: StreamState, io: DirectRunIO
   }
 }
 
-async function consumeResponse(response: Response, state: StreamState, io: DirectRunIO): Promise<void> {
+async function consumeResponse(response: Response, state: StreamState, io: DirectRunIO): Promise<CompletionTurn> {
+  const turn = createEmptyTurn();
   const reader = response.body?.getReader();
   if (!reader) {
     const parsed = await response.json();
-    handleCompletionObject(parsed, state, io);
-    return;
+    handleCompletionObject(parsed, state, turn, io);
+    finalizeStreamToolCalls(turn);
+    return turn;
   }
   const decoder = new TextDecoder();
   let buffer = '';
@@ -585,7 +1016,7 @@ async function consumeResponse(response: Response, state: StreamState, io: Direc
     if (!data || data === '[DONE]') return;
     sawSseData = true;
     try {
-      handleCompletionChunk(JSON.parse(data), state, io);
+      handleCompletionChunk(JSON.parse(data), state, turn, io);
     } catch (error) {
       debugLog(`[Debug] Skipping invalid direct-api stream chunk: ${(error as Error).message}`);
     }
@@ -614,8 +1045,72 @@ async function consumeResponse(response: Response, state: StreamState, io: Direc
     }
   }
   if (!sawSseData && rawBody.trim()) {
-    handleCompletionObject(JSON.parse(rawBody), state, io);
+    handleCompletionObject(JSON.parse(rawBody), state, turn, io);
   }
+  finalizeStreamToolCalls(turn);
+  return turn;
+}
+
+function buildAssistantMessage(turn: CompletionTurn): ChatMessage {
+  const message: ChatMessage = {
+    role: 'assistant',
+    content: turn.assistantText || (turn.toolCalls.length > 0 ? null : ''),
+  };
+  if (turn.toolCalls.length > 0) {
+    message.tool_calls = turn.toolCalls;
+  }
+  return message;
+}
+
+function parseToolArguments(toolCall: ChatToolCall): { ok: true; value: unknown } | { ok: false; message: string } {
+  const raw = toolCall.function.arguments.trim();
+  if (!raw) return { ok: true, value: {} };
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Invalid JSON arguments for ${toolCall.function.name}: ${(error as Error).message}`,
+    };
+  }
+}
+
+async function requestCompletion(params: {
+  url: string;
+  apiKey: string;
+  modelName: string;
+  messages: ChatMessage[];
+  toolsEnabled: boolean;
+  state: StreamState;
+  io: DirectRunIO;
+}): Promise<CompletionTurn> {
+  const requestBody: Record<string, unknown> = {
+    model: params.modelName,
+    messages: params.messages,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (params.toolsEnabled) {
+    requestBody.tools = TOOL_DEFINITIONS;
+  }
+
+  const response = await fetch(params.url, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${params.apiKey}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+    signal: params.io.signal,
+  });
+
+  if (!response.ok) {
+    const errorText = redactApiKey(await response.text(), params.apiKey);
+    params.io.stderr(`[direct-api] HTTP ${response.status}: ${errorText}\n`);
+    throw new Error(`direct-api request failed with HTTP ${response.status}`);
+  }
+
+  return consumeResponse(response, params.state, params.io);
 }
 
 async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
@@ -627,7 +1122,9 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
   const sessionId = resolveSessionId(cmd.sessionId);
   const sessionPath = resolveSessionPath(cmd.cwd, sessionId);
   const existing = readSession(sessionPath);
-  const userMessage = await buildUserMessage(cmd.prompt, cmd.cwd);
+  const toolsEnabled = !NO_TOOLS_MARKER.test(cmd.prompt);
+  const prompt = toolsEnabled ? cmd.prompt : cmd.prompt.replace(NO_TOOLS_MARKER, '');
+  const userMessage = await buildUserMessage(prompt, cmd.cwd);
   const messages = [...(existing?.messages || []), userMessage];
   const state: StreamState = {
     sessionId,
@@ -642,45 +1139,63 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
     session_id: sessionId,
     provider: config.providerName,
     model: config.modelName,
+    tools_enabled: toolsEnabled,
   });
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${config.apiKey}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.modelName,
+  let reachedLimit = true;
+  let apiCalls = 0;
+  for (let iteration = 0; iteration < MAX_TOOL_LOOP_ITERATIONS && apiCalls < MAX_API_CALLS; iteration++) {
+    apiCalls += 1;
+    const turn = await requestCompletion({
+      url,
+      apiKey: config.apiKey,
+      modelName: config.modelName,
       messages,
-      stream: true,
-      stream_options: { include_usage: true },
-    }),
-    signal: io.signal,
-  });
-
-  if (!response.ok) {
-    const errorText = redactApiKey(await response.text(), config.apiKey);
-    io.stderr(`[direct-api] HTTP ${response.status}: ${errorText}\n`);
-    throw new Error(`direct-api request failed with HTTP ${response.status}`);
+      toolsEnabled,
+      state,
+      io,
+    });
+    messages.push(buildAssistantMessage(turn));
+    if (!toolsEnabled || turn.toolCalls.length === 0) {
+      reachedLimit = false;
+      break;
+    }
+    for (const toolCall of turn.toolCalls) {
+      const parsedArgs = parseToolArguments(toolCall);
+      const result = parsedArgs.ok
+        ? executeTool(toolCall.function.name, parsedArgs.value, cmd.cwd)
+        : { status: 'failed' as const, output: truncateText(parsedArgs.message) };
+      emitJsonLine(io.stdout, {
+        type: 'tool_use',
+        session_id: sessionId,
+        id: toolCall.id,
+        tool: toolCall.function.name,
+        input: parsedArgs.ok ? parsedArgs.value : { arguments: toolCall.function.arguments },
+        status: result.status,
+        output_preview: toolOutputPreview(result.output),
+      });
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: result.output,
+      });
+    }
   }
 
-  await consumeResponse(response, state, io);
+  if (reachedLimit) {
+    state.finishReason = 'tool_loop_limit';
+    io.stderr(`[direct-api] Reached maximum tool/API calls (${MAX_TOOL_LOOP_ITERATIONS}).\n`);
+  }
 
   const tokens = normalizeTokens(state.usage);
-  const assistantMessage: ChatMessage = {
-    role: 'assistant',
-    content: state.assistantText,
-  };
-  const finalMessages = [...messages, assistantMessage];
   saveSession({
     sessionPath,
     existing,
     sessionId,
     providerName: config.providerName,
     modelName: config.modelName,
-    messages: finalMessages,
+    messages,
     tokens,
     cost: state.cost,
   });
