@@ -37,9 +37,9 @@ Options:
   --cwd <path>                 Working directory
   --prompt <text>              Prompt text
   --prompt-file <path>         Path to a prompt file
-  --model <model>              Model name or alias (e.g. sonnet, claude-ultra, gpt-5.3-codex, codex-ultra, agy, kiro, forge, opencode, oc-openai/gpt-5.4)
-  --session-id <id>            Resume a previous session, including OpenCode in-place resumes
-  --reasoning-effort <level>   Reasoning level for Claude/Codex only; unsupported for Antigravity, Kiro, Forge, and OpenCode
+  --model <model>              Model name or alias (e.g. sonnet, claude-ultra, gpt-5.3-codex, codex-ultra, agy, kiro, forge, or-qwen/qwen3.7-plus)
+  --session-id <id>            Resume a previous session where supported, including direct-api sessions
+  --reasoning-effort <level>   Reasoning level for Claude/Codex only; unsupported for Antigravity, Kiro, Forge, and direct-api
   --help, -h                   Show this help message
 
 Compatibility aliases:
@@ -72,7 +72,7 @@ Options:
 export const PEEK_HELP_TEXT = `Usage: ai-cli peek <pid...> [options]
 
 Observe new natural-language agent messages, and optionally tool calls, for a short one-shot window.
-In v1, message extraction is supported for Codex, Claude, OpenCode, Antigravity, Kiro, and best-effort Forge Summary/Completed successfully lines. Forge tool calls are low-precision Execute/Finished markers and never include command output.
+In v1, message extraction is supported for Codex, Claude, direct-api, Antigravity, Kiro, and best-effort Forge Summary/Completed successfully lines. Forge tool calls are low-precision Execute/Finished markers and never include command output.
 This is not a history API, gapless streaming, or stdout/stderr tailing. No --follow mode is available in v1.
 
 Options:
@@ -115,7 +115,7 @@ Options:
 
 export const DOCTOR_HELP_TEXT = `Usage: ai-cli doctor
 
-Check whether supported AI CLI binaries are available, including OpenCode.
+Check whether supported AI CLI binaries are available. direct-api provider config is checked when a direct-api model is used.
 This checks binary availability and path resolution only; it does not verify login state or terms acceptance.
 
 Options:

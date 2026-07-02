@@ -8,6 +8,8 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import type { AgentId } from '../agents/types.js';
 import { getAgent } from '../agents/registry.js';
 import { buildCliCommand, type BuildCliCommandOptions } from './command-builder.js';
@@ -26,14 +28,7 @@ import {
 import { spawnPty, type PtyChild } from './pty-runner.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 
-export interface CliPaths {
-  claude: string;
-  codex: string;
-  antigravity: string;
-  kiro: string;
-  forge: string;
-  opencode: string;
-}
+export type CliPaths = Record<Exclude<AgentId, 'direct-api'>, string>;
 
 export interface StartProcessOptions {
   prompt?: string;
@@ -44,7 +39,37 @@ export interface StartProcessOptions {
   reasoning_effort?: string;
 }
 
-type ManagedProcess = ChildProcess | PtyChild;
+class DirectManagedProcess extends EventEmitter {
+  stdout = new PassThrough();
+  stderr = new PassThrough();
+  stdin = null;
+  private controller = new AbortController();
+  private closed = false;
+
+  constructor(public pid: number) {
+    super();
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  kill(_signal?: NodeJS.Signals | string): boolean {
+    if (this.closed) return false;
+    this.controller.abort();
+    return true;
+  }
+
+  close(exitCode: number | undefined): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.stdout.end();
+    this.stderr.end();
+    this.emit('close', exitCode);
+  }
+}
+
+type ManagedProcess = ChildProcess | PtyChild | DirectManagedProcess;
 
 interface ProcessEntry {
   pid: number;
@@ -64,6 +89,7 @@ export class ProcessService {
   private processManager = new Map<number, ProcessEntry>();
   private cliPaths: CliPaths;
   private breaker: CircuitBreaker;
+  private directPidSequence = 0;
 
   constructor(options: { cliPaths: CliPaths; breaker?: CircuitBreaker }) {
     this.cliPaths = options.cliPaths;
@@ -78,7 +104,7 @@ export class ProcessService {
   } {
     const cmd = buildCliCommand({
       ...options,
-      cliPaths: this.cliPaths as Record<AgentId, string>,
+      cliPaths: this.cliPaths,
     } as BuildCliCommandOptions);
 
     // 熔斷器：偵測框架迴圈造成的爆量/重複啟動，啟動前先攔截。
@@ -87,6 +113,10 @@ export class ProcessService {
     const agent = getAgent(cmd.agent);
     const isWin = process.platform === 'win32';
     const spawnMode = isWin && agent.win32SpawnMode ? agent.win32SpawnMode : agent.spawnMode || 'pipe';
+
+    if (spawnMode === 'direct') {
+      return this.startDirectProcess(cmd, options.model);
+    }
 
     if (spawnMode === 'pty') {
       return this.startPtyProcess(cmd, options.model);
@@ -173,6 +203,86 @@ export class ProcessService {
     return { pid, status: 'started', agent: cmd.agent, message: `${cmd.agent} process started successfully` };
   }
 
+  private allocateDirectPid(): number {
+    let pid: number;
+    do {
+      pid = process.pid * 100000 + ++this.directPidSequence;
+    } while (this.processManager.has(pid));
+    return pid;
+  }
+
+  private startDirectProcess(
+    cmd: ReturnType<typeof buildCliCommand>,
+    model?: string
+  ): { pid: number; status: string; agent: AgentId; message: string } {
+    const agent = getAgent(cmd.agent);
+    if (!agent.runDirect) {
+      throw new Error(`${cmd.agent} does not implement direct execution`);
+    }
+    const pid = this.allocateDirectPid();
+    const directProcess = new DirectManagedProcess(pid);
+    const entry: ProcessEntry = {
+      pid,
+      process: directProcess,
+      prompt: cmd.prompt,
+      workFolder: cmd.cwd,
+      model,
+      toolType: cmd.agent,
+      startTime: new Date().toISOString(),
+      stdout: '',
+      stderr: '',
+      status: 'running',
+    };
+    this.processManager.set(pid, entry);
+
+    const writeStdout = (chunk: string): void => {
+      const e = this.processManager.get(pid);
+      if (e) e.stdout += chunk;
+      directProcess.stdout.write(chunk);
+    };
+    const writeStderr = (chunk: string): void => {
+      const e = this.processManager.get(pid);
+      if (e) e.stderr += chunk;
+      directProcess.stderr.write(chunk);
+    };
+
+    agent.runDirect(cmd, {
+      stdout: writeStdout,
+      stderr: writeStderr,
+      signal: directProcess.signal,
+    }).then(
+      () => {
+        const e = this.processManager.get(pid);
+        if (e) {
+          e.status = directProcess.signal.aborted ? 'failed' : 'completed';
+          e.exitCode = directProcess.signal.aborted ? 143 : 0;
+        }
+        directProcess.close(directProcess.signal.aborted ? 143 : 0);
+      },
+      (error: unknown) => {
+        const e = this.processManager.get(pid);
+        const aborted = directProcess.signal.aborted;
+        if (e) {
+          e.status = 'failed';
+          e.exitCode = aborted ? 143 : 1;
+          if (!aborted) {
+            const message = error instanceof Error ? error.message : String(error);
+            e.stderr += `\nDirect API error: ${message}`;
+            directProcess.stderr.write(`\nDirect API error: ${message}`);
+          }
+        }
+        directProcess.close(aborted ? 143 : 1);
+      }
+    );
+
+    return {
+      pid,
+      status: 'started',
+      agent: cmd.agent,
+      message: `${cmd.agent} request started successfully`,
+    };
+  }
+
   private startPtyProcess(
     cmd: ReturnType<typeof buildCliCommand>,
     model?: string
@@ -230,7 +340,10 @@ export class ProcessService {
       throw new Error(`Process with PID ${pid} not found`);
     }
     const agent = getAgent(proc.toolType);
-    const agentOutput = agent.parseOutput(proc.stdout, proc.stderr, proc.exitCode);
+    const agentOutput = agent.parseOutput(proc.stdout, proc.stderr, proc.exitCode, {
+      workFolder: proc.workFolder,
+      status: proc.status,
+    });
     return buildProcessResult(
       {
         pid,

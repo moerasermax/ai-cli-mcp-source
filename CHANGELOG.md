@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+### 新增
+- **direct-api agent**：移除 OpenCode CLI agent，新增不啟動子程序的 OpenAI-compatible API agent。
+  支援 `or-<model>`（OpenRouter）、`ds-<model>`（DashScope）與 providers.json 中的
+  `<provider>-<model>`，設定檔位於 `~/.local/share/ai-cli/providers.json`；首次使用時可從
+  OpenCode `auth.json` 一次性遷移 API key。direct-api 會輸出 NDJSON streaming events、
+  支援 `[image:path]` vision content，並把對話保存到 `workFolder/.tmp/api_sessions/`。（@codex）
+
 ### 修正
 - **Codex 額度查詢完全失準修復**：`query_usage` 的 codex 一直回傳垃圾值（`percentUsed:100`、`numbers:[1,2,1,2]`）。
   根因有二：(1) 原本沿用通用 `PtyUsageProvider`，固定 1500ms 送 `/status`、6500ms 就 kill；但 codex 啟動會

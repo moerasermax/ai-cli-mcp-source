@@ -213,7 +213,7 @@ function extractPeekEventsFromParsedEvent(
     }
     return [];
   }
-  if (agent === 'claude') {
+  if (agent === 'claude' || agent === 'direct-api') {
     if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
       const events: PeekEvent[] = [];
       for (const content of parsed.message.content) {
@@ -233,7 +233,7 @@ function extractPeekEventsFromParsedEvent(
       }
       return events;
     }
-    if (includeToolCalls && parsed.type === 'user' && Array.isArray(parsed.message?.content)) {
+    if (agent === 'claude' && includeToolCalls && parsed.type === 'user' && Array.isArray(parsed.message?.content)) {
       const events: PeekEvent[] = [];
       for (const content of parsed.message.content) {
         if (content?.type === 'tool_result') {
@@ -252,32 +252,6 @@ function extractPeekEventsFromParsedEvent(
       return events;
     }
     return [];
-  }
-  if (
-    agent === 'opencode' &&
-    parsed.type === 'text' &&
-    parsed.part?.type === 'text' &&
-    typeof parsed.part.text === 'string' &&
-    parsed.part.text.trim()
-  ) {
-    return [{ kind: 'message', ts: observedAt, text: parsed.part.text }];
-  }
-  if (agent === 'opencode' && includeToolCalls && parsed.type === 'tool_use' && parsed.part?.type === 'tool') {
-    const state = parsed.part.state || {};
-    const start = state.time?.start;
-    const end = state.time?.end;
-    const event = createToolCallEvent({
-      ts: observedAt,
-      phase: state.status === 'running' || state.status === 'pending' ? 'started' : 'completed',
-      id: parsed.part.callID,
-      tool: parsed.part.tool || 'tool_use',
-      command: state.input?.command,
-      status: state.status,
-      defaultStatus: state.status === 'completed' ? 'success' : 'unknown',
-      duration_ms: typeof start === 'number' && typeof end === 'number' ? end - start : undefined,
-    });
-    rememberToolCall(event, memory);
-    return [event];
   }
   return [];
 }

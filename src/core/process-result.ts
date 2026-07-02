@@ -26,6 +26,10 @@ function compactAgentOutput(agentOutput: any): any {
   return Object.keys(compact).length > 0 ? compact : null;
 }
 
+function shapeAgentOutput(agent: AgentId, agentOutput: any, verbose: boolean): any {
+  return verbose ? agentOutput : compactAgentOutput(agentOutput);
+}
+
 function hasMeaningfulParsedOutput(agentOutput: any): boolean {
   if (!agentOutput || typeof agentOutput !== 'object') {
     return false;
@@ -44,9 +48,8 @@ function hasMeaningfulParsedOutput(agentOutput: any): boolean {
   });
 }
 
-/** opencode 失敗時保留 raw 輸出（preserveRawOnFailure 的具現）。 */
 function shouldPreserveRawFailureOutput(context: ProcessResultContext): boolean {
-  return context.agent === 'opencode' && context.status === 'failed';
+  return context.status === 'failed' && false;
 }
 
 export function buildProcessResult(
@@ -69,7 +72,7 @@ export function buildProcessResult(
   if (agentOutput?.session_id) {
     response.session_id = agentOutput.session_id;
   }
-  const shapedAgentOutput = verbose ? agentOutput : compactAgentOutput(agentOutput);
+  const shapedAgentOutput = shapeAgentOutput(context.agent, agentOutput, verbose);
   const preserveRawFailureOutput = shouldPreserveRawFailureOutput(context);
   if (hasMeaningfulParsedOutput(shapedAgentOutput) && (verbose || !preserveRawFailureOutput)) {
     response.agentOutput = shapedAgentOutput;

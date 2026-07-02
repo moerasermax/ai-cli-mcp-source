@@ -14,18 +14,21 @@ import type { CliPaths } from './process-service.js';
 
 /** doctor：所有 agent 的二進位可用性。 */
 export function getCliDoctorStatus(): CliDoctorStatus {
-  return buildDoctorStatus(listAgents().map((a) => ({ id: a.id, config: a.binary })));
+  return buildDoctorStatus(
+    listAgents()
+      .filter((a) => a.binary)
+      .map((a) => ({ id: a.id, config: a.binary! }))
+  );
 }
 
 /** 解析每個 agent 的 CLI 路徑，組成 ProcessService 需要的 CliPaths。 */
 export function resolveAllCliPaths(): CliPaths {
-  const path = (id: AgentId) => resolveAgentCli(getAgent(id).binary);
+  const path = (id: Exclude<AgentId, 'direct-api'>) => resolveAgentCli(getAgent(id).binary!);
   return {
     claude: path('claude'),
     codex: path('codex'),
     antigravity: path('antigravity'),
     kiro: path('kiro'),
     forge: path('forge'),
-    opencode: path('opencode'),
   };
 }

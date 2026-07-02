@@ -1,7 +1,7 @@
 {
   "name": "ai-cli-mcp",
   "version": "3.1.0",
-  "description": "Run Claude, Codex, Antigravity (agy), Kiro, Forge, and OpenCode CLIs through MCP with background jobs. Self-maintained, registry-based architecture.",
+  "description": "Run Claude, Codex, Antigravity (agy), Kiro, Forge, and direct OpenAI-compatible API agents through MCP with background jobs. Self-maintained, registry-based architecture.",
   "private": true,
   "type": "module",
   "main": "dist/server.js",
@@ -16,7 +16,7 @@
     "mcp": "node dist/bin/ai-cli-mcp.js",
     "cli": "node dist/bin/ai-cli.js",
     "typecheck": "tsc --noEmit",
-    "test": "node verify-breaker.mjs && node verify-rate.mjs"
+    "test": "node verify-breaker.mjs && node verify-rate.mjs && node verify-direct-api.mjs"
   },
   "dependencies": {
     "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",

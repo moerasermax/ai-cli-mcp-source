@@ -12,12 +12,13 @@ export type AgentId =
   | 'antigravity'
   | 'kiro'
   | 'forge'
-  | 'opencode';
+  | 'direct-api';
 
 /** spawn 策略：決定 process-service 怎麼啟動這個 agent 的子程序。 */
 export type SpawnMode =
   | 'pipe' // 一般 child_process.spawn + pipe（大多數 agent）
-  | 'pty'; // Windows ConPTY（agy 之類在非 TTY 下不輸出的 CLI）
+  | 'pty' // Windows ConPTY（agy 之類在非 TTY 下不輸出的 CLI）
+  | 'direct'; // 不啟動子程序，直接在目前 Node.js 行程執行
 
 /** 由 agent.buildCommand() 產出，交給 process-service 執行。 */
 export interface BuiltCommand {
@@ -27,8 +28,11 @@ export interface BuiltCommand {
   agent: AgentId;
   prompt: string;
   resolvedModel: string;
+  sessionId?: string;
   /** 若為字串，prompt 透過 stdin（positional `-`）送入，而非當作 arg。 */
   stdinPrompt?: string;
+  /** direct-api 專用：OpenAI-compatible API 連線資訊。 */
+  directApi?: DirectApiCommandConfig;
 }
 
 /** buildCommand 的輸入。 */
@@ -40,8 +44,33 @@ export interface BuildCommandInput {
   rawModel: string;
   reasoningEffort: string;
   sessionId?: string;
-  /** opencode 專用：oc-<provider/model> 解出的 provider/model。 */
-  openCodeModel?: string | null;
+  /** direct-api 專用：provider key（providers.json 中的 key）。 */
+  providerName?: string;
+  /** direct-api 專用：實際送到 provider 的 model 名稱。 */
+  providerModel?: string;
+  /** direct-api 專用：OpenAI-compatible API base URL。 */
+  providerBaseUrl?: string;
+  /** direct-api 專用：API key。 */
+  providerApiKey?: string;
+}
+
+export interface DirectApiCommandConfig {
+  providerName: string;
+  modelName: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
+export interface DirectRunIO {
+  stdout: (chunk: string) => void;
+  stderr: (chunk: string) => void;
+  signal?: AbortSignal;
+}
+
+/** parser 可選上下文；主要供需要工作目錄/狀態的 agent 使用。 */
+export interface ParseOutputContext {
+  workFolder?: string;
+  status?: string;
 }
 
 /** CLI 二進位解析設定，交給共用的 binary-resolver 使用。 */
@@ -83,8 +112,8 @@ export interface AgentDefinition {
    */
   matchesModel(resolvedModel: string): boolean;
 
-  /** CLI 二進位解析設定。 */
-  binary: BinaryConfig;
+  /** CLI 二進位解析設定。direct-api 不需要本機 CLI。 */
+  binary?: BinaryConfig;
 
   /** reasoning_effort 支援度。 */
   reasoning: ReasoningSupport;
@@ -93,10 +122,13 @@ export interface AgentDefinition {
   buildCommand(input: BuildCommandInput): BuiltCommand;
 
   /** 解析此 agent 的原始 stdout/stderr 成結構化結果。 */
-  parseOutput(stdout: string, stderr: string, exitCode?: number): unknown;
+  parseOutput(stdout: string, stderr: string, exitCode?: number, context?: ParseOutputContext): unknown;
 
   /** 子程序啟動方式。預設 'pipe'。 */
   spawnMode?: SpawnMode;
+
+  /** spawnMode === 'direct' 時由 process-service 呼叫。 */
+  runDirect?(cmd: BuiltCommand, io: DirectRunIO): Promise<void>;
 
   /**
    * Windows 上是否強制走某種 spawn。回傳的 mode 會覆寫 spawnMode。
@@ -104,7 +136,7 @@ export interface AgentDefinition {
    */
   win32SpawnMode?: SpawnMode;
 
-  /** opencode 失敗時保留 raw stdout/stderr（不靠 parser）。 */
+  /** 失敗時保留 raw stdout/stderr（不靠 parser）。 */
   preserveRawOnFailure?: boolean;
 
   /**

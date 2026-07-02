@@ -45,7 +45,7 @@ export class AiCliMcpServer {
     console.error(`[Setup] Antigravity CLI (agy): ${cliPaths.antigravity}`);
     console.error(`[Setup] Kiro CLI: ${cliPaths.kiro}`);
     console.error(`[Setup] Forge CLI: ${cliPaths.forge}`);
-    console.error(`[Setup] OpenCode CLI: ${cliPaths.opencode}`);
+    console.error('[Setup] Direct API: ~/.local/share/ai-cli/providers.json');
 
     this.processService = new ProcessService({ cliPaths });
     this.usageService = new UsageService(cliPaths);
@@ -66,7 +66,7 @@ export class AiCliMcpServer {
 
   private getCliConfigurationError(): string | null {
     const doctorStatus = getCliDoctorStatus();
-    for (const name of ['claude', 'codex', 'forge', 'opencode'] as const) {
+    for (const name of ['claude', 'codex', 'forge'] as const) {
       const status = doctorStatus[name] as { error?: string };
       if (status?.error) {
         return status.error;
@@ -80,7 +80,7 @@ export class AiCliMcpServer {
       tools: [
         {
           name: 'run',
-          description: `AI Agent Runner: Starts a Claude, Codex, Antigravity, Kiro, Forge, or OpenCode CLI process in the background and returns a PID immediately. Use list_processes and get_result to monitor progress.
+          description: `AI Agent Runner: Starts a Claude, Codex, Antigravity, Kiro, Forge, or direct API agent job in the background and returns a PID immediately. Use list_processes and get_result to monitor progress.
 
 • File ops: Create, read, (fuzzy) edit, move, copy, delete, list files, analyze/ocr images, file content analysis
 • Code: Generate / analyse / refactor / fix
@@ -123,12 +123,12 @@ ${getSupportedModelsDescription()}
               reasoning_effort: {
                 type: 'string',
                 description:
-                  'Reasoning control for Claude and Codex. Claude uses --effort with "low", "medium", "high", "xhigh", "max". Codex uses model_reasoning_effort with "low", "medium", "high", "xhigh". Antigravity, Kiro, Forge, and OpenCode do not support reasoning_effort in this integration.',
+                  'Reasoning control for Claude and Codex. Claude uses --effort with "low", "medium", "high", "xhigh", "max". Codex uses model_reasoning_effort with "low", "medium", "high", "xhigh". Antigravity, Kiro, Forge, and direct-api do not support reasoning_effort in this integration.',
               },
               session_id: {
                 type: 'string',
                 description:
-                  'Optional session ID to resume a previous session. Supported for Claude, Codex, Antigravity, Forge, and OpenCode. OpenCode resumes in-place via --session and may also be combined with explicit oc-<provider/model> selection.',
+                  'Optional session ID to resume a previous session. Supported for Claude, Codex, Antigravity, Forge, and direct-api. direct-api stores sessions under workFolder/.tmp/api_sessions.',
               },
             },
             required: ['workFolder'],
@@ -185,7 +185,7 @@ ${getSupportedModelsDescription()}
         {
           name: 'peek',
           description:
-            'One-shot short observation window for running child agents. Returns only natural-language message events, and optionally normalized tool_call events, observed during this call; not a history API, not gapless streaming, and not stdout/stderr tailing. In v1, message extraction is supported for Codex, Claude, OpenCode, Antigravity, Kiro, and best-effort Forge Summary/Completed successfully lines. Forge tool calls are low-precision Execute/Finished markers and never include command output. Tool calls exclude raw tool output.',
+            'One-shot short observation window for running child agents. Returns only natural-language message events, and optionally normalized tool_call events, observed during this call; not a history API, not gapless streaming, and not stdout/stderr tailing. In v1, message extraction is supported for Codex, Claude, direct-api, Antigravity, Kiro, and best-effort Forge Summary/Completed successfully lines. Forge tool calls are low-precision Execute/Finished markers and never include command output. Tool calls exclude raw tool output.',
           inputSchema: {
             type: 'object',
             properties: {

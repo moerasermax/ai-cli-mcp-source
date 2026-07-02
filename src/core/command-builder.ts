@@ -5,17 +5,16 @@
  *   驗證輸入 → 取得 prompt → 解析 model alias → 選 agent → reasoning 預設值與驗證
  *   → 呼叫該 agent.buildCommand()
  *
- * opencode 的 oc-<provider/model> 在這裡專門解析（先於一般 routing）。
+ * direct-api 的 <provider>-<model> 在這裡專門解析（先於一般 routing）。
  */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve as pathResolve, isAbsolute } from 'node:path';
 import type { AgentDefinition, AgentId, BuiltCommand } from '../agents/types.js';
 import { selectAgentForModel, getAgent } from '../agents/registry.js';
+import { resolveDirectApiModel } from '../agents/direct-api.js';
 import { resolveModelAlias } from '../models/catalog.js';
 import { resolveReasoningEffort } from './reasoning.js';
-
-const OPENCODE_MODEL_ERROR = 'Invalid OpenCode model. Expected exact syntax oc-<provider/model>.';
 
 export interface BuildCliCommandOptions {
   prompt?: string;
@@ -24,55 +23,41 @@ export interface BuildCliCommandOptions {
   model?: string;
   session_id?: string;
   reasoning_effort?: string;
-  cliPaths: Record<AgentId, string>;
+  cliPaths: Partial<Record<AgentId, string>>;
 }
 
 interface ModelSelection {
   agent: AgentDefinition;
   resolvedModel: string;
-  openCodeModel: string | null;
-}
-
-function isPotentialOpenCodeExplicitModel(rawModel: string): boolean {
-  return rawModel.startsWith('oc-') || rawModel.trim().startsWith('oc-');
-}
-
-function extractOpenCodeModel(rawModel: string): string {
-  if (rawModel !== rawModel.trim()) {
-    throw new Error(OPENCODE_MODEL_ERROR);
-  }
-  if (!rawModel.startsWith('oc-')) {
-    throw new Error(OPENCODE_MODEL_ERROR);
-  }
-  const remainder = rawModel.slice(3);
-  const slashIndex = remainder.indexOf('/');
-  if (slashIndex === -1) {
-    throw new Error(OPENCODE_MODEL_ERROR);
-  }
-  const provider = remainder.slice(0, slashIndex);
-  const model = remainder.slice(slashIndex + 1);
-  if (!provider || !model) {
-    throw new Error(OPENCODE_MODEL_ERROR);
-  }
-  return remainder;
+  providerName?: string;
+  providerModel?: string;
 }
 
 function resolveModelSelection(rawModel: string): ModelSelection {
-  if (rawModel === 'opencode') {
-    return { agent: getAgent('opencode'), resolvedModel: rawModel, openCodeModel: null };
+  if (rawModel) {
+    const directApiModel = resolveDirectApiModel(rawModel);
+    if (directApiModel) {
+      return {
+        agent: getAgent('direct-api'),
+        resolvedModel: directApiModel.modelName,
+        providerName: directApiModel.providerName,
+        providerModel: directApiModel.modelName,
+      };
+    }
   }
-  if (isPotentialOpenCodeExplicitModel(rawModel)) {
+  const aliasedModel = resolveModelAlias(rawModel);
+  const directApiAliasModel = aliasedModel !== rawModel ? resolveDirectApiModel(aliasedModel) : null;
+  if (directApiAliasModel) {
     return {
-      agent: getAgent('opencode'),
-      resolvedModel: rawModel,
-      openCodeModel: extractOpenCodeModel(rawModel),
+      agent: getAgent('direct-api'),
+      resolvedModel: directApiAliasModel.modelName,
+      providerName: directApiAliasModel.providerName,
+      providerModel: directApiAliasModel.modelName,
     };
   }
-  const resolvedModel = resolveModelAlias(rawModel);
   return {
-    agent: selectAgentForModel(resolvedModel),
-    resolvedModel,
-    openCodeModel: null,
+    agent: selectAgentForModel(aliasedModel),
+    resolvedModel: aliasedModel,
   };
 }
 
@@ -116,7 +101,7 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
   }
 
   const rawModel = options.model || '';
-  const { agent, resolvedModel, openCodeModel } = resolveModelSelection(rawModel);
+  const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(rawModel);
 
   // reasoning 預設值：ultra alias 自動帶入（1:1 dist）
   let reasoningEffortArg = options.reasoning_effort;
@@ -128,19 +113,10 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
     }
   }
 
-  // opencode（含 oc-）直接拒絕 reasoning_effort
-  if (agent.id === 'opencode') {
-    if (reasoningEffortArg && reasoningEffortArg.trim()) {
-      throw new Error('reasoning_effort is not supported for opencode.');
-    }
-  }
-  const reasoningEffort =
-    agent.id === 'opencode'
-      ? ''
-      : resolveReasoningEffort(agent.reasoning, reasoningEffortArg);
+  const reasoningEffort = resolveReasoningEffort(agent.reasoning, reasoningEffortArg);
 
   return agent.buildCommand({
-    cliPath: options.cliPaths[agent.id],
+    cliPath: options.cliPaths[agent.id] || '',
     cwd,
     prompt,
     resolvedModel,
@@ -150,6 +126,7 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
       options.session_id && typeof options.session_id === 'string'
         ? options.session_id
         : undefined,
-    openCodeModel,
+    providerName,
+    providerModel,
   });
 }

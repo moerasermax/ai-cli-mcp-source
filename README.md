@@ -1,7 +1,7 @@
 # ai-cli-mcp（自有可控版）
 
-把 Claude / Codex / Antigravity(agy) / Kiro / Forge / OpenCode 等本機 AI CLI
-包成 MCP 工具，支援背景 job。這是**從原始碼自行維護**的版本，採用 registry-based
+把 Claude / Codex / Antigravity(agy) / Kiro / Forge 等本機 AI CLI
+以及 direct OpenAI-compatible API agent 包成 MCP 工具，支援背景 job。這是**從原始碼自行維護**的版本，採用 registry-based
 架構，新增 AI agent 只需新增一個檔案。
 
 ## 架構
@@ -12,7 +12,7 @@ src/
 ├─ agents/                # ★ 每個 AI 一個檔，新增 AI 就加一個檔
 │   ├─ types.ts               # AgentDefinition 介面（可擴充的核心契約）
 │   ├─ registry.ts            # 中央註冊表（新增 agent 在此 import + 列入陣列）
-│   ├─ claude.ts / codex.ts / antigravity.ts / kiro.ts / forge.ts / opencode.ts
+│   ├─ claude.ts / codex.ts / antigravity.ts / kiro.ts / forge.ts / direct-api.ts
 ├─ core/                  # 框架本體，新增 agent 時「不用動」
 │   ├─ command-builder.ts     # model routing + 指令組裝協調
 │   ├─ process-service.ts     # 記憶體版 job 管理（MCP 用）
@@ -49,8 +49,8 @@ npm run typecheck  # 只型別檢查
    - 需要真實 TTY → 設 `win32SpawnMode: 'pty'`（參考 `antigravity.ts`）
    - 是真實 .exe（非 npm shim）→ 設 `win32DirectExec: true`（參考 `kiro.ts`）
 2. 在 `src/agents/registry.ts` import 並加進 `AGENTS` 陣列（claude 永遠最後，它是 fallback）。
-3. 在 `src/agents/types.ts` 的 `AgentId` 加上新 id；在 `core/process-service.ts` 與
-   `core/doctor.ts` 的 `CliPaths` 加上對應欄位。
+3. 在 `src/agents/types.ts` 的 `AgentId` 加上新 id；若 agent 需要 CLI binary，更新
+   `core/doctor.ts` 的 `CliPaths` 回傳欄位。
 4. `npm run build`。
 
 ## 環境變數
@@ -60,7 +60,8 @@ npm run typecheck  # 只型別檢查
 | `MCP_CLAUDE_DEBUG=true` | 開啟 debug 日誌到 stderr |
 | `AI_CLI_STATE_DIR` | CLI detached job 的狀態目錄（預設 `~/.local/state/ai-cli`） |
 | `AI_CLI_USAGE_PLUGIN_BIN` | `ai-cli usage` 外掛的 .mjs 絕對路徑 |
-| `CLAUDE_CLI_NAME` / `CODEX_CLI_NAME` / `AGY_CLI_NAME` / `KIRO_CLI_NAME` / `FORGE_CLI_NAME` / `OPENCODE_CLI_NAME` | 覆寫各 CLI 的指令名稱或絕對路徑 |
+| `CLAUDE_CLI_NAME` / `CODEX_CLI_NAME` / `AGY_CLI_NAME` / `KIRO_CLI_NAME` / `FORGE_CLI_NAME` | 覆寫各 CLI 的指令名稱或絕對路徑 |
+| `AI_CLI_PROVIDERS_PATH` | direct-api providers.json 路徑（預設 `~/.local/share/ai-cli/providers.json`） |
 | `AI_CLI_BREAKER_DISABLED=true` | 停用 AI 啟動熔斷器（預設啟用） |
 | `AI_CLI_BREAKER_MODE` | `block`（預設，觸發即擋下並回報）或 `warn`（只警告不擋） |
 | `AI_CLI_BREAKER_WINDOW_SEC` | 熔斷器滑動視窗秒數（預設 `60`） |

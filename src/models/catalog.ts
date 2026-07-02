@@ -34,11 +34,14 @@ export const MODEL_ALIAS_DETAILS: ModelAliasDetail[] = [
   { name: 'kiro-ultra', resolvesTo: 'kiro-default', agent: 'kiro' },
 ];
 
-/** OpenCode 動態 model 後端提示。 */
-export const OPENCODE_DYNAMIC_BACKEND = {
-  explicitPrefix: 'oc-',
-  explicitPattern: 'oc-<provider/model>',
-  discoveryCommand: 'opencode models',
+/** direct-api 動態 model 後端提示。 */
+export const DIRECT_API_DYNAMIC_BACKEND = {
+  explicitPrefixes: {
+    or: 'openrouter',
+    ds: 'dashscope',
+  },
+  explicitPattern: '<provider>-<model>',
+  providersConfig: '~/.local/share/ai-cli/providers.json',
   modelsAreDynamic: true,
 } as const;
 
@@ -64,9 +67,8 @@ export function getSupportedModelsDescription(): string {
     ...byAgent.codex.map((m) => `"${m}"`),
     ...byAgent.antigravity.map((m) => `"${m}"`),
     ...byAgent.forge.map((m) => `"${m}"`),
-    ...byAgent.opencode.map((m) => `"${m}"`),
+    ...byAgent['direct-api'].map((m) => `"${m}"`),
     ...byAgent.kiro.map((m) => `"${m}"`),
-    '"oc-<provider/model>"',
   ].join(', ');
 }
 
@@ -79,13 +81,13 @@ export function getModelParameterDescription(): string {
     ...byAgent.antigravity,
     ...byAgent.kiro,
     ...byAgent.forge,
-    ...byAgent.opencode,
+    ...byAgent['direct-api'],
   ];
   return `The model to use. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto xhigh reasoning), "agy-ultra" (Antigravity CLI), "kiro-ultra" (Kiro CLI default). Standard: ${all
     .map((m) => `"${m}"`)
     .join(
       ', '
-    )}. OpenCode also accepts explicit dynamic models using "oc-<provider/model>". "forge" is a provider key, not a Forge model family selector. Antigravity (agy) uses whichever model is configured by the agy CLI (Google AI tier default). Kiro uses its CLI default for "kiro" and "kiro-default"; model names starting with "kiro-" are passed through with --model unless they resolve to the default.`;
+    )}. direct-api accepts provider-prefixed models using "or-<model>" for OpenRouter, "ds-<model>" for DashScope, or "<provider>-<model>" for provider keys configured in ~/.local/share/ai-cli/providers.json. "forge" is a provider key, not a Forge model family selector. Antigravity (agy) uses whichever model is configured by the agy CLI (Google AI tier default). Kiro uses its CLI default for "kiro" and "kiro-default"; model names starting with "kiro-" are passed through with --model unless they resolve to the default.`;
 }
 
 /** models 工具的完整 payload。1:1 還原 dist。 */
@@ -98,9 +100,9 @@ export function getModelsPayload() {
     antigravity: byAgent.antigravity,
     kiro: byAgent.kiro,
     forge: byAgent.forge,
-    opencode: byAgent.opencode,
+    'direct-api': byAgent['direct-api'],
     dynamicModelBackends: {
-      opencode: OPENCODE_DYNAMIC_BACKEND,
+      'direct-api': DIRECT_API_DYNAMIC_BACKEND,
     },
   };
 }

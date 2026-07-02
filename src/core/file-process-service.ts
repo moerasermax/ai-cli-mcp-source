@@ -107,12 +107,13 @@ export interface FileStartOptions {
 
 export class FileProcessService {
   private stateDir: string;
-  private cliPaths: Record<AgentId, string>;
+  private cliPaths: Partial<Record<AgentId, string>>;
   private ptyManagedPids = new Set<number>();
   private breaker: CircuitBreaker;
+  private directPidSequence = 0;
 
   constructor(
-    options: { stateDir?: string; cliPaths?: Record<AgentId, string>; breaker?: CircuitBreaker } = {}
+    options: { stateDir?: string; cliPaths?: Partial<Record<AgentId, string>>; breaker?: CircuitBreaker } = {}
   ) {
     this.stateDir = options.stateDir || resolveDefaultStateDir();
     this.cliPaths = options.cliPaths || resolveAllCliPaths();
@@ -139,6 +140,9 @@ export class FileProcessService {
     const agent = getAgent(cmd.agent);
     const isWin = process.platform === 'win32';
     const spawnMode = isWin && agent.win32SpawnMode ? agent.win32SpawnMode : agent.spawnMode || 'pipe';
+    if (spawnMode === 'direct') {
+      return this.startDirectTracked(cmd, model);
+    }
     if (spawnMode === 'pty') {
       return this.startPtyTracked(cmd, model);
     }
@@ -178,6 +182,64 @@ export class FileProcessService {
     };
     this.writeProcess(stored);
     return { pid, status: 'started', agent: cmd.agent, message: `${cmd.agent} process started successfully` };
+  }
+
+  private allocateDirectPid(): number {
+    return Date.now() * 1000 + ++this.directPidSequence;
+  }
+
+  private async startDirectTracked(
+    cmd: ReturnType<typeof buildCliCommand>,
+    model?: string
+  ): Promise<{ pid: number; status: string; agent: AgentId; message: string }> {
+    const agent = getAgent(cmd.agent);
+    if (!agent.runDirect) {
+      throw new Error(`${cmd.agent} does not implement direct execution`);
+    }
+    const cwdKey = this.resolveCwdKey(cmd.cwd);
+    const pid = this.allocateDirectPid();
+    const processDir = this.resolveProcessDir(cmd.cwd, pid);
+    mkdirSync(processDir, { recursive: true });
+    const stdoutPath = this.resolveStdoutPath(processDir);
+    const stderrPath = this.resolveStderrPath(processDir);
+    this.touchFile(stdoutPath);
+    this.touchFile(stderrPath);
+    const stored: StoredProcess = {
+      pid,
+      prompt: cmd.prompt,
+      workFolder: cmd.cwd,
+      cwdKey,
+      model,
+      toolType: cmd.agent,
+      startTime: new Date().toISOString(),
+      stdoutPath,
+      stderrPath,
+      status: 'running',
+    };
+    this.writeProcess(stored);
+
+    try {
+      await agent.runDirect(cmd, {
+        stdout: (chunk) => this.appendTextFileSafe(stdoutPath, chunk),
+        stderr: (chunk) => this.appendTextFileSafe(stderrPath, chunk),
+      });
+      stored.status = 'completed';
+      stored.exitCode = 0;
+      this.writeExitStatus(stored, { status: 'completed', exitCode: 0 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.appendTextFileSafe(stderrPath, `\nDirect API error: ${message}`);
+      stored.status = 'failed';
+      stored.exitCode = 1;
+      this.writeExitStatus(stored, { status: 'failed', exitCode: 1 });
+    }
+    this.writeProcess(stored);
+    return {
+      pid,
+      status: stored.status,
+      agent: cmd.agent,
+      message: `${cmd.agent} request ${stored.status}`,
+    };
   }
 
   /**
@@ -311,7 +373,10 @@ export class FileProcessService {
     const stdout = this.readTextFileSafe(refreshed.stdoutPath);
     const stderr = this.readTextFileSafe(refreshed.stderrPath);
     const agent = getAgent(refreshed.toolType);
-    const agentOutput = agent.parseOutput(stdout, stderr, refreshed.exitCode);
+    const agentOutput = agent.parseOutput(stdout, stderr, refreshed.exitCode, {
+      workFolder: refreshed.workFolder,
+      status: refreshed.status,
+    });
     return buildProcessResult(
       {
         pid,

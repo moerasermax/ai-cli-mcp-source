@@ -15,7 +15,6 @@ export const ALLOWED_REASONING_EFFORTS: ReadonlySet<string> = new Set([
  * 回傳正規化後的小寫值，或空字串（未提供）。不合法則丟錯。
  *
  * 行為 1:1 還原 dist/cli-builder.js 的 getReasoningEffort：
- * - opencode 在 command-builder 層先擋掉（這裡不會收到 opencode）
  * - 未提供 → ''
  * - 不在通用集合 → 通用錯誤
  * - agent 不支援 → agent 專屬錯誤
