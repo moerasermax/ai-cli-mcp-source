@@ -8,6 +8,36 @@
 
 ## [Unreleased]
 
+### 修正
+- **`set_config` 在設定檔讀不到／壞掉時會把它整份覆寫掉（資料遺失）**：`readRawConfig()` 原本
+  對任何讀取或解析錯誤都回 `{}`，於是鎖檔的瞬間或使用者手改壞 JSON 之後，`set_config` 會拿
+  **空基底**套上 patch 再寫回去 —— 原有設定與所有未知欄位就沒了。改為只有「檔案不存在」
+  才用空基底，其餘一律丟出明確錯誤（寧可讓 `set_config` 失敗，也不能靜默覆寫）。（Claude；@codex 稽核指出）
+- **讀檔失敗會靜默退回內建值**：`loadUserConfig()` 改成每次讀檔後，Windows 上撞到別的 process
+  做 tmp+rename 或防毒鎖檔的機會變大；原本任何讀取錯誤都回 `{}`，等於那一次 run **悄悄換成
+  另一個 model / reasoning**。現在區分 `ENOENT`／`ENOTDIR`（檔案真的不存在 → 用內建值）與
+  其他錯誤（暫時性 → 沿用上一次成功的設定 last-good）。（Claude）
+- **UTF-8 BOM 讓整份設定靜默失效**：Windows 記事本與 PowerShell 5.1 的 `Set-Content` 會寫出
+  帶 BOM 的檔案，`JSON.parse` 遇到開頭的 U+FEFF 直接丟 `SyntaxError` → 設定全部不生效。
+  讀檔後剝除 BOM。（Claude；@gemini-3.1-pro 稽核指出）
+- **解析失敗後舊設定會「復活」**：JSON 壞掉時回 `{}` 但沒清快取，接著一次讀檔失敗就會把這份
+  已作廢的舊設定當成 last-good 端出來。改為解析失敗即清快取。（Claude；@gemini-3.1-pro 稽核指出）
+- **`aliasModel` / `aliasReasoningEffort` 是陣列時會產生垃圾 alias**：`typeof [] === 'object'`，
+  `Object.entries` 會解出 `"0"` / `"1"` 這種 key。三處都補上 `Array.isArray` 檢查。（Claude；@gemini-3.1-pro 稽核指出）
+- **同一次操作可能混用兩個版本的設定**：`buildCliCommand()` 原本讀 2 次設定檔（一次解析 alias、
+  一次取 reasoning）、`getModelsPayload()` 讀 8 次，中間只要檔案被改動就會組出「A 版 alias +
+  B 版 reasoning」這種兩邊都不對的結果。改為在操作入口載入一份 snapshot 往下傳，
+  **兩者都降為 1 次讀取**，並加上讀取次數的回歸斷言。（Claude；@codex 稽核指出）
+- **`updateUserConfig()` 寫入後重讀的空窗**：原本「清快取 → 重讀」，中間讀檔失敗時 last-good
+  是空的，會回報一份跟磁碟上不一樣的設定。改為直接用剛寫出去的文字建立快取，也省掉一次讀檔。（Claude；@codex 稽核指出）
+
+### 新增
+- **`models` 的 `userConfig` 新增 `status` 欄位**：`fresh` / `missing` / `stale`（正在沿用
+  last-good，附 `errorCode`）/ `error`。`exists` 也改由同一次載入推導，不再另外 `existsSync`
+  ——否則會出現「`exists: true` 但回報的其實是 last-good 舊值」這種互相矛盾的診斷。（Claude）
+- **設定物件會被 `Object.freeze`**：回傳的是共用參照，凍結後將來若有人誤改會當場丟錯而不是
+  靜默污染所有後續讀取（目前所有呼叫端都已確認是唯讀）。（Claude；@gemini-3.1-pro 稽核指出）
+
 ## [4.0.0] - 2026-07-29
 
 > **破壞性變更**：移除 OpenCode agent 與 `oc-*` model routing。依 CONTRIBUTING §4，

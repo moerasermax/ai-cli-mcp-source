@@ -11,8 +11,10 @@ import { resolveDirectApiModel } from '../agents/direct-api.js';
 import type { AgentId } from '../agents/types.js';
 import {
   describeUserConfig,
+  loadUserConfigSnapshot,
   resolveConfiguredAliasModel,
   resolveConfiguredReasoningEffort,
+  type UserConfig,
 } from '../core/user-config.js';
 
 export interface ModelAliasDetail {
@@ -69,8 +71,8 @@ export function isBuiltinAlias(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(MODEL_ALIASES, name);
 }
 
-export function resolveModelAlias(model: string): string {
-  const configured = resolveConfiguredAliasModel(model);
+export function resolveModelAlias(model: string, config?: UserConfig): string {
+  const configured = resolveConfiguredAliasModel(model, config ?? loadUserConfigSnapshot());
   if (configured) return configured;
   // 必須用 hasOwnProperty：'constructor' / 'toString' 這類 prototype 上的 key
   // 用 MODEL_ALIASES[model] 取會拿到函式而不是 undefined，resolvedModel 就不是字串了。
@@ -97,9 +99,11 @@ export function resolveAgentIdForModel(resolvedModel: string): AgentId {
  * 不能沿用 MODEL_ALIAS_DETAILS 裡寫死的 agent，否則 codex-ultra 被改指到 opus 時
  * 會用錯的 agent 去判斷 reasoning 能力。
  */
-export function getEffectiveAliasDetails(): EffectiveModelAliasDetail[] {
+export function getEffectiveAliasDetails(
+  config: UserConfig = loadUserConfigSnapshot()
+): EffectiveModelAliasDetail[] {
   return MODEL_ALIAS_DETAILS.map((builtin) => {
-    const override = resolveConfiguredAliasModel(builtin.name);
+    const override = resolveConfiguredAliasModel(builtin.name, config);
     const resolvesTo = override ?? builtin.resolvesTo;
     const detail: EffectiveModelAliasDetail = {
       ...builtin,
@@ -198,8 +202,11 @@ export function isKnownModelTarget(model: string): boolean {
 /** models 工具的完整 payload。1:1 還原 dist。 */
 export function getModelsPayload() {
   const byAgent = modelsByAgent();
+  // 整個 payload 共用同一份 snapshot：否則每個 alias 各讀一次設定檔，
+  // 中途被改動就會回報出「不同 alias 來自不同版本設定」的畫面。
+  const config = loadUserConfigSnapshot();
   return {
-    aliases: getEffectiveAliasDetails().map((alias) => {
+    aliases: getEffectiveAliasDetails(config).map((alias) => {
       // 只有支援 reasoning 的 agent 才回報 effective 值，避免 agy/kiro 顯示出
       // 實際上不會被送進 CLI 的 effort。alias 被重新指向到不支援 reasoning 的
       // agent 時，內建那筆 defaultReasoningEffort 也要一併拿掉，否則會回報一個
@@ -210,7 +217,7 @@ export function getModelsPayload() {
       }
       return {
         ...alias,
-        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name),
+        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name, config),
       };
     }),
     claude: byAgent.claude,
@@ -223,7 +230,7 @@ export function getModelsPayload() {
       'direct-api': DIRECT_API_DYNAMIC_BACKEND,
     },
     userConfig: {
-      ...describeUserConfig(),
+      ...describeUserConfig(config),
       builtinAliasModel: MODEL_ALIASES,
     },
   };
