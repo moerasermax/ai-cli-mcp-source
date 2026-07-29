@@ -4,3 +4,11 @@ dist/
 .DS_Store
 .env
 .env.local
+
+# 舊 dist 手動備份
+dist.bak-*/
+# codex 派工完成旗標
+.codexdone_*
+# 一次性測試輸出與臨時腳本
+mcp-test-out.txt
+run_usage.js

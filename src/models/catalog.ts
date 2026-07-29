@@ -8,6 +8,7 @@
 
 import { listAgents, getAgent } from '../agents/registry.js';
 import type { AgentId } from '../agents/types.js';
+import { describeUserConfig, resolveConfiguredReasoningEffort } from '../core/user-config.js';
 
 export interface ModelAliasDetail {
   name: string;
@@ -94,7 +95,15 @@ export function getModelParameterDescription(): string {
 export function getModelsPayload() {
   const byAgent = modelsByAgent();
   return {
-    aliases: MODEL_ALIAS_DETAILS,
+    aliases: MODEL_ALIAS_DETAILS.map((alias) => {
+      // 只有支援 reasoning 的 agent 才回報 effective 值，避免 agy/kiro 顯示出
+      // 實際上不會被送進 CLI 的 effort。
+      if (!getAgent(alias.agent).reasoning.supported) return alias;
+      return {
+        ...alias,
+        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name),
+      };
+    }),
     claude: byAgent.claude,
     codex: byAgent.codex,
     antigravity: byAgent.antigravity,
@@ -104,5 +113,6 @@ export function getModelsPayload() {
     dynamicModelBackends: {
       'direct-api': DIRECT_API_DYNAMIC_BACKEND,
     },
+    userConfig: describeUserConfig(),
   };
 }

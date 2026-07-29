@@ -15,6 +15,8 @@ import { selectAgentForModel, getAgent } from '../agents/registry.js';
 import { resolveDirectApiModel } from '../agents/direct-api.js';
 import { resolveModelAlias } from '../models/catalog.js';
 import { resolveReasoningEffort } from './reasoning.js';
+import { resolveConfiguredReasoningEffort } from './user-config.js';
+import { debugLog } from './debug.js';
 
 export interface BuildCliCommandOptions {
   prompt?: string;
@@ -61,6 +63,26 @@ function resolveModelSelection(rawModel: string): ModelSelection {
   };
 }
 
+/**
+ * 呼叫端未指定 reasoning_effort 時，套用設定檔／內建預設。
+ * 與明確指定不同：這裡任何「該 agent 不支援」的情況都靜默略過，不丟錯。
+ */
+function resolveDefaultReasoningEffort(agent: AgentDefinition, rawModel: string): string {
+  const configured = resolveConfiguredReasoningEffort(rawModel);
+  if (!configured) return '';
+  if (!agent.reasoning.supported) {
+    debugLog(`[Config] Skipping default reasoning "${configured}": ${agent.id} does not support it`);
+    return '';
+  }
+  if (agent.reasoning.allowed && !agent.reasoning.allowed.has(configured)) {
+    debugLog(
+      `[Config] Skipping default reasoning "${configured}": not allowed for ${agent.id}; using its CLI default`
+    );
+    return '';
+  }
+  return configured;
+}
+
 export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
   if (!options.workFolder || typeof options.workFolder !== 'string') {
     throw new Error('Missing or invalid required parameter: workFolder');
@@ -103,17 +125,17 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
   const rawModel = options.model || '';
   const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(rawModel);
 
-  // reasoning 預設值：ultra alias 自動帶入（1:1 dist）
-  let reasoningEffortArg = options.reasoning_effort;
-  if (!reasoningEffortArg) {
-    if (rawModel === 'codex-ultra') {
-      reasoningEffortArg = 'xhigh';
-    } else if (rawModel === 'claude-ultra') {
-      reasoningEffortArg = 'max';
-    }
+  // reasoning：呼叫端明確指定 → 照舊驗證（不合法就丟錯）。
+  // 未指定 → 由持久化設定 / 內建 ultra 預設補上，但只在該 agent 真的吃得下時才套用；
+  // 設定檔是「全域偏好」而非該次呼叫的明確意圖，不該讓 kiro/agy 這種不支援 reasoning
+  // 的 agent 因此整個 run 失敗。
+  const explicitEffort = options.reasoning_effort;
+  let reasoningEffort: string;
+  if (typeof explicitEffort === 'string' && explicitEffort.trim() !== '') {
+    reasoningEffort = resolveReasoningEffort(agent.reasoning, explicitEffort);
+  } else {
+    reasoningEffort = resolveDefaultReasoningEffort(agent, rawModel);
   }
-
-  const reasoningEffort = resolveReasoningEffort(agent.reasoning, reasoningEffortArg);
 
   return agent.buildCommand({
     cliPath: options.cliPaths[agent.id] || '',

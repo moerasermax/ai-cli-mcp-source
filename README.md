@@ -68,6 +68,46 @@ npm run typecheck  # 只型別檢查
 | `AI_CLI_BREAKER_MAX_STARTS` | 視窗內最大啟動次數，超過視為爆量（預設 `30`） |
 | `AI_CLI_BREAKER_DUP_LIMIT` | 視窗內「同一 agent + 同一 prompt」最大次數，超過視為迴圈（預設 `6`） |
 | `AI_CLI_BREAKER_COOLDOWN_SEC` | 觸發後的開路冷卻秒數（預設 `120`） |
+| `AI_CLI_DEFAULT_REASONING_EFFORT` | 覆寫 `config.json` 的 reasoning 預設值（見下節） |
+
+## 使用者設定檔（config.json）
+
+路徑：`~/.local/share/ai-cli/config.json`（與 `providers.json` 同一層）。
+檔案不存在或內容壞掉時一律靜默退回內建預設，不會讓 `run` 失敗。
+以 mtime 快取，改完檔不必重啟 MCP server。
+
+```json
+{
+  "defaultReasoningEffort": "medium",
+  "aliasReasoningEffort": {
+    "claude-ultra": "medium",
+    "codex-ultra": "medium"
+  }
+}
+```
+
+| 欄位 | 用途 |
+|------|------|
+| `defaultReasoningEffort` | 呼叫端沒帶 `reasoning_effort` 時，所有支援 reasoning 的 agent 套用的預設 |
+| `aliasReasoningEffort` | 針對特定 model/alias 的覆蓋，優先於 `defaultReasoningEffort` |
+
+reasoning 預設值的優先序（高 → 低）：
+
+1. 呼叫端明確傳入的 `reasoning_effort`
+2. `AI_CLI_DEFAULT_REASONING_EFFORT` 環境變數
+3. `config.json` 的 `aliasReasoningEffort[model]`
+4. `config.json` 的 `defaultReasoningEffort`
+5. 內建 ultra alias 預設（`claude-ultra` = `max`、`codex-ultra` = `xhigh`）
+
+兩者行為不同，這點是刻意的：
+
+- **明確傳入**的值不合法會**丟錯**（維持原本行為）。
+- **設定檔／環境變數**推導出的預設，若該 agent 不支援 reasoning（antigravity / kiro /
+  forge / direct-api）或該值不在其允許集合（例如 codex 不吃 `max`），會**靜默略過**、
+  改用該 CLI 自身預設。全域偏好不該讓個別 run 整個失敗。
+
+目前生效的設定可從 `models` 工具回傳的 `userConfig` 欄位查看；`aliases[].defaultReasoningEffort`
+也會反映套用設定後的實際值，`userConfig.builtinAliasReasoningEffort` 則保留內建值供對照。
 
 ## AI 啟動熔斷器（circuit breaker）
 
