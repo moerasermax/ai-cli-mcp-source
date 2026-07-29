@@ -19,14 +19,17 @@ src/
 │   ├─ file-process-service.ts# 檔案版 job 管理（ai-cli CLI 的 detached 用）
 │   ├─ pty-runner.ts          # ConPTY（agy 等需要真實 TTY 的 CLI）
 │   ├─ binary-resolver.ts     # CLI 二進位解析
+│   ├─ user-config.ts        # ~/.local/share/ai-cli/config.json 讀寫（依內容快取）
+│   ├─ circuit-breaker.ts    # AI 啟動熔斷器
 │   ├─ peek.ts / peek-extractor.ts / process-result.ts / reasoning.ts / ansi.ts / debug.ts
 │   └─ doctor.ts              # doctor + 解析所有 CLI 路徑
 ├─ models/
 │   └─ catalog.ts         # model 清單 / alias / models payload
 ├─ plugins/
-│   └─ usage.ts           # 查額度外掛橋接（路徑由環境變數設定）
+│   ├─ usage.ts           # 查額度外掛橋接（路徑由環境變數設定）
+│   └─ usage-service.ts   # query_usage 工具的實作與快取
 ├─ app/
-│   ├─ mcp.ts             # MCP server（9 個工具）
+│   ├─ mcp.ts             # MCP server（11 個工具）
 │   └─ cli.ts             # ai-cli 指令列
 └─ bin/
     ├─ ai-cli-mcp.ts      # MCP server 入口
@@ -74,7 +77,7 @@ npm run typecheck  # 只型別檢查
 
 路徑：`~/.local/share/ai-cli/config.json`（與 `providers.json` 同一層）。
 檔案不存在或內容壞掉時一律靜默退回內建預設，不會讓 `run` 失敗。
-以 mtime 快取，改完檔不必重啟 MCP server。
+每次都重新讀檔、以檔案內容當快取鍵（省下的只有 JSON 解析），改完檔不必重啟 MCP server。
 
 ```json
 {
@@ -82,6 +85,9 @@ npm run typecheck  # 只型別檢查
   "aliasReasoningEffort": {
     "claude-ultra": "medium",
     "codex-ultra": "medium"
+  },
+  "aliasModel": {
+    "codex-ultra": "gpt-5.6-terra"
   }
 }
 ```
@@ -90,6 +96,9 @@ npm run typecheck  # 只型別檢查
 |------|------|
 | `defaultReasoningEffort` | 呼叫端沒帶 `reasoning_effort` 時，所有支援 reasoning 的 agent 套用的預設 |
 | `aliasReasoningEffort` | 針對特定 model/alias 的覆蓋，優先於 `defaultReasoningEffort` |
+| `aliasModel` | 把 alias 重新指向另一個 model，優先於 `catalog.ts` 寫死的 `MODEL_ALIASES`（見下節） |
+
+檔案中它不認識的欄位會原封保留，`set_config` 寫入時也不會被吃掉。
 
 reasoning 預設值的優先序（高 → 低）：
 
@@ -108,6 +117,59 @@ reasoning 預設值的優先序（高 → 低）：
 
 目前生效的設定可從 `models` 工具回傳的 `userConfig` 欄位查看；`aliases[].defaultReasoningEffort`
 也會反映套用設定後的實際值，`userConfig.builtinAliasReasoningEffort` 則保留內建值供對照。
+
+## alias 重新指向（免 rebuild、免重啟）
+
+內建 alias 寫在 `src/models/catalog.ts` 的 `MODEL_ALIASES`：
+
+| alias | 內建指向 |
+|-------|----------|
+| `claude-ultra` | `opus` |
+| `codex-ultra` | `gpt-5.6-sol` |
+| `agy-ultra` / `antigravity-ultra` | `Gemini 3.1 Pro (High)` |
+| `kiro-ultra` | `kiro-default` |
+
+`config.json` 的 `aliasModel` 可以覆寫它。解析優先序（高 → 低）：
+
+1. `config.json` 的 `aliasModel[alias]`
+2. 內建 `MODEL_ALIASES[alias]`
+3. 原樣（不是 alias 就當成 model 名稱直接送出）
+
+**為什麼改完立刻生效**：`resolveModelAlias()` 是每次組指令時才呼叫（不是啟動時算好的常數），
+而設定檔每次都會重讀，所以下一次 `run` 就會改用新的模型與路由，不必 `npm run build`、不必重連 MCP。
+（實際怎麼傳給 CLI 依 agent 而定：claude / codex / kiro 走 `--model`，direct-api 走 API 請求，
+agy 則完全不吃模型選擇 —— 見下方已知限制。）
+
+### 用 `set_config` 工具寫入
+
+| 參數 | 用途 |
+|------|------|
+| `alias_model` | `{"codex-ultra": "gpt-5.6-terra"}` — 重新指向 |
+| `alias_reasoning_effort` | `{"codex-ultra": "high"}` — 該 alias 的預設 reasoning |
+| `default_reasoning_effort` | 全域 reasoning 預設 |
+| `unset` | `["codex-ultra"]` 會**同時**清掉該 alias 的 model 與 reasoning 兩種覆寫；`["defaultReasoningEffort"]` 清全域預設 |
+
+回傳與 `models` 相同的 payload，可以立刻看到生效狀態。`models` 的每筆 alias 附帶
+`source`（`builtin` / `config`），**被 config 重指的那幾筆**額外附 `builtinResolvesTo`
+（沒被重指就沒有這個欄位），且 `agent` 欄位是**依實際生效的 model 動態推算**
+——alias 被跨 agent 重指（例如 `codex-ultra` → `opus`）時才不會回報錯的 agent。
+
+### 驗證是刻意從嚴的
+
+claude agent 的 `matchesModel` 是 registry 最後一位的 catch-all（永遠回 `true`），
+不擋的話**打錯字的 model 會被靜默送去 claude**。因此 `set_config` 只接受：
+被某個非 fallback agent 認得的 model，或 direct-api 真的解析得出來的 provider-prefixed 名稱
+（`or-` / `ds-` 這種空 model 會被拒絕）。另外 alias 只解析一層，所以**不接受把 alias 當 target**
+（`codex-ultra` → `kiro-ultra` 會被 kiro 剝成 `--model ultra`）。
+
+### 已知限制
+
+- **antigravity（agy）不吃 `--model`**：其 CLI 沒有這個旗標，實際模型由登入帳號的 Google AI tier 決定。
+  重指 `agy-ultra` / `antigravity-ultra` 只改變回報內容，不改變實際執行的模型。
+- 模型的**自報名稱不可信**（問 `gpt-5.6-terra`「你是哪個模型」它會說 GPT-5）。要驗證 `--model`
+  真的送出去，把 alias 指到一個不存在但能過驗證的名稱（如 `gpt-5.6-doesnotexist`）再 `run`，
+  看 CLI 是否回報該模型不支援。
+- 回歸測試：`node verify-alias-config.mjs`（33 項，已納入 `npm test`）。
 
 ## AI 啟動熔斷器（circuit breaker）
 
@@ -138,4 +200,6 @@ reasoning 預設值的優先序（高 → 低）：
 - 移除了已壞掉的 gemini 殘留（舊 dist 的 cli-parse / app-cli 還 import 不存在的
   `parseGeminiOutput` / `findGeminiCli`，本版一併修正）。
 - usage 外掛路徑由寫死改為 `AI_CLI_USAGE_PLUGIN_BIN` 環境變數。
-- ConPTY 與各 agent 行為以 registry 重構，但對外 MCP 行為與舊 dist 等價。
+- ConPTY 與各 agent 行為以 registry 重構。3.0.0 當時對外 MCP 行為與舊 dist 等價，
+  **但之後已經分歧**：4.0.0 移除了 OpenCode agent 與 `oc-*` model routing（改用 direct-api），
+  並新增 `set_config` 與 `query_usage` 兩個工具（目前共 11 個）。詳見 `CHANGELOG.md`。

@@ -1,7 +1,7 @@
 /**
  * MCP server。對應 dist/app/mcp.js。
- * 工具：run, list_processes, get_result, wait, peek, kill_process,
- *       cleanup_processes, doctor, models, set_config。
+ * 工具（11 個）：run, list_processes, get_result, wait, peek, kill_process,
+ *       cleanup_processes, doctor, models, set_config, query_usage。
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -348,12 +348,20 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
     if (typeof raw !== 'object' || Array.isArray(raw)) {
       throw new McpError(ErrorCode.InvalidParams, `${key} must be an object.`);
     }
-    const out: Record<string, string> = {};
+    // 必須用 null prototype：普通 {} 的 out['__proto__'] = '...' 會打到 Object.prototype
+    // 的 setter（字串會被無聲丟棄），結果 __proto__ 這個 key 根本不會變成 own property
+    // ——後面的 alias 驗證迴圈就掃不到它，呼叫端會拿到「成功」但什麼都沒設定。
+    const out: Record<string, string> = Object.create(null);
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       if (typeof v !== 'string' || v.trim() === '') {
         throw new McpError(ErrorCode.InvalidParams, `${key}.${k} must be a non-empty string.`);
       }
       out[k] = v.trim();
+    }
+    // 空物件不能當成「有指定」：它會通過下面的 Nothing-to-change 檢查，
+    // 然後一路走到寫檔卻什麼也沒改，呼叫端只會看到一個假的成功。
+    if (Object.keys(out).length === 0) {
+      throw new McpError(ErrorCode.InvalidParams, `${key} must not be empty.`);
     }
     return out;
   }

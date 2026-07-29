@@ -63,7 +63,7 @@ export const DIRECT_API_DYNAMIC_BACKEND = {
  * alias → 實際 model。優先序：config.json 的 aliasModel → 內建 MODEL_ALIASES → 原樣回傳。
  *
  * 這個函式是在每次 run 組指令時才呼叫（見 core/command-builder.ts），
- * 而 loadUserConfig() 以 mtime 快取，所以改設定檔後不必重啟 MCP server。
+ * 而 loadUserConfig() 每次都重讀設定檔，所以改設定檔後不必重啟 MCP server。
  */
 export function isBuiltinAlias(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(MODEL_ALIASES, name);
