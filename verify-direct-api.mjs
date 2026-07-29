@@ -7,6 +7,15 @@ import { join } from 'node:path';
 import { ProcessService } from './dist/core/process-service.js';
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'aicli-direct-api-'));
+// 清理掛在 exit 上，不能只放在最後一行 —— assertion 中途拋錯時那行根本跑不到，
+// 每次失敗都會在 %TEMP% 留一個目錄。
+process.on('exit', () => {
+  try {
+    rmSync(tempRoot, { recursive: true, force: true });
+  } catch {
+    /* 清不掉就算了，不要蓋掉原本的失敗原因 */
+  }
+});
 const providersPath = join(tempRoot, 'providers.json');
 writeFileSync(
   providersPath,
@@ -250,8 +259,5 @@ assert.deepStrictEqual(capturedBodies[4].messages[1], {
 assert.strictEqual(capturedBodies[4].messages[2].role, 'tool');
 assert.strictEqual(capturedBodies[4].messages[2].tool_call_id, 'xml_call_0');
 assert.ok(capturedBodies[4].messages[2].content.includes(`Wrote ${xmlReportContent.length} chars`));
-
-// 清掉 mkdtempSync 建的暫存目錄，否則每跑一次就在 %TEMP% 留一份。
-rmSync(tempRoot, { recursive: true, force: true });
 
 console.log('PASS: direct-api mock fetch route/output/session verified');

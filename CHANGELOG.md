@@ -8,6 +8,42 @@
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-07-30
+
+全部來自 v4.1.0 的**發版後驗收稽核**（@codex xhigh，唯讀＋實跑）。
+逐條處置見 [`docs/audits/2026-07-30-v4.1.1.md`](./docs/audits/2026-07-30-v4.1.1.md)。
+
+### 修正
+- **回歸：`set_config` 又會拿空基底覆寫設定檔（資料遺失）**。4.1.0 把讀取端的
+  「結構性錯誤」集合從 `{ENOENT, ENOTDIR}` 擴大到含 `EISDIR` / `ELOOP` / `ENAMETOOLONG`，
+  但 `readRawConfig()`（寫入端的基底）共用同一個判斷 —— 於是「路徑上有東西、只是讀不到」
+  被當成「檔案不存在」，正好推翻 4.1.0 自己承諾的「只有檔案不存在才用空基底」。
+  寫入端改回只認 `ENOENT`。**兩端的判準必須分開**：讀取端問「這次該用什麼值」，
+  寫入端問「覆蓋下去會不會弄丟還在的東西」。（Claude；@codex 稽核指出）
+- **突變測試工具自己的假綠燈**：收尾的 `run('git', ['status','--short'])` 因為 `run()`
+  只吃一個參數陣列而**根本沒執行 git**，卻把空字串印成「worktree 乾淨」；
+  同時還原時寫回的是 LF 正規化後的內容，實際上每輪都把 worktree 弄髒。
+  改為分出 `exec(cmd,args)`、還原寫回原始 bytes、與開跑時的 `git status` 比對，
+  不一致就以非零碼收場。（Claude；@codex 稽核指出）
+- **`verify-e2e.mjs` 只看輸出長度**：「CLI 失敗但吐了一段錯誤訊息」會被判成成功。
+  改為同時檢查 `status` / `exitCode` / 是否真的回 `PONG`。（Claude；@codex 稽核指出）
+- **`verify-direct-api.mjs` 的暫存目錄清理只在成功路徑**：assertion 中途拋錯仍會留垃圾。
+  改掛 `process.on('exit')`。（Claude；@codex 稽核指出）
+
+### 變更
+- **突變 14 → 19 個**：補上寫入端錯誤分類、根節點陣列、`aliasReasoningEffort` 陣列、
+  `ELOOP`、`getModelsPayload(snapshot)` 不重讀。補的過程中突變測試又抓出兩條原本
+  **不夠力的斷言**（根節點陣列擋不擋都回內建值，分辨不出來；三個結構性 code 寫成迴圈時，
+  第一個會清掉快取讓後面的失去鑑別力），一併改強。（Claude）
+- **測試 49 → 60 項**。（Claude）
+
+### 更正（先前敘述不實）
+- v4.1.0 的稽核紀錄稱「把**每個**修補逐一改壞」—— 實際只涵蓋產品端，
+  測試基礎設施的修補沒有突變覆蓋。已改寫。（@codex 稽核指出）
+- v4.1.0 的「API 變更**皆**向後相容」不成立：`updateUserConfig()` 回傳型別由
+  `UserConfig` 改為 `ConfigSnapshot`，舊呼叫端若直接取 `.aliasModel` 會壞。
+  見下方 4.1.0 的更正標註。（@codex 稽核指出）
+
 ## [4.1.0] - 2026-07-29
 
 本版的重點是**設定檔讀寫的韌性**，全部屬於「不報錯、只安靜做錯事」那一類。
@@ -41,9 +77,10 @@
 - **`verify-direct-api.mjs` 每跑一次就在 `%TEMP%` 留一個目錄**。（Claude；@gemini-3.1-pro 稽核指出）
 
 ### 新增
-- **突變測試工具 `tools/mutation-test.mjs` + `tools/mutations.json`**：把每個修補逐一改壞，
-  斷言「對應的測試必須 FAIL」。用來抓假綠燈 —— 這個專案已經吃過三次虧。
-  在獨立 git worktree 上跑，不碰主工作目錄。目前 14 個突變**全部 KILLED**。
+- **突變測試工具 `tools/mutation-test.mjs` + `tools/mutations.json`**：把**產品端**的修補
+  逐一改壞，斷言「對應的測試必須 FAIL」。用來抓假綠燈 —— 這個專案已經吃過三次虧。
+  在獨立 git worktree 上跑，不碰主工作目錄。本版 14 個突變全部 KILLED
+  （測試基礎設施本身的修補沒有突變覆蓋；v4.1.1 補到 19 個）。
   新增修補時請順手加一個對應突變。（Claude）
 - **`models` 的 `userConfig` 新增 `status` 欄位**：`fresh` / `missing` / `stale`（正在沿用
   last-good，附 `errorCode`）/ `error`。`exists` 也改由同一次載入推導，不再另外 `existsSync`
@@ -52,9 +89,12 @@
   靜默污染所有後續讀取（目前所有呼叫端都已確認是唯讀）。（Claude；@gemini-3.1-pro 稽核指出）
 - **稽核紀錄 `docs/audits/`**：逐條記錄稽核發現、判定（採納／駁回）與處置。（Claude）
 
-### API 變更（皆向後相容）
-- 新增 exported `loadUserConfigSnapshot()`、`ConfigSnapshot`、`ConfigStatus`。
-- `updateUserConfig()` 回傳型別由 `UserConfig` 改為 `ConfigSnapshot`。
+### API 變更
+- 新增 exported `loadUserConfigSnapshot()`、`ConfigSnapshot`、`ConfigStatus`。（向後相容）
+- **不相容**：`updateUserConfig()` 回傳型別由 `UserConfig` 改為 `ConfigSnapshot`
+  —— 直接取用回傳值欄位（如 `.aliasModel`）的呼叫端要改成 `.config.aliasModel`。
+  本 repo 內唯一呼叫端是 `set_config`，已一併更新。
+  （原本誤記為「皆向後相容」，由 v4.1.1 的驗收稽核更正。）
 - `resolveConfiguredAliasModel` / `resolveConfiguredReasoningEffort` / `resolveModelAlias` /
   `getEffectiveAliasDetails` / `getModelsPayload` / `describeUserConfig` 新增**可選**的
   config/snapshot 參數；不傳時行為與原本相同。
@@ -248,7 +288,8 @@
 - Windows 上優先解析 `.cmd`/`.exe` 而非 extensionless shim。
 - 移除已壞掉的 gemini 殘留；usage 外掛路徑改由 `AI_CLI_USAGE_PLUGIN_BIN` 環境變數設定。
 
-[Unreleased]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v3.1.0...v4.0.0
 [3.1.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v3.0.0...v3.1.0

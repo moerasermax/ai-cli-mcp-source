@@ -39,22 +39,29 @@ const MUTATIONS = JSON.parse(readFileSync(new URL('./mutations.json', import.met
  * 那會讓每個突變都因為「指令根本沒跑起來」而回非零 → 全部被誤判成 KILLED。
  * （第一版 harness 就是這樣，12 個突變全是假 KILLED。）
  */
-function run(args) {
+function exec(cmd, args) {
   try {
     return {
       code: 0,
-      out: execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf-8', stdio: 'pipe' }),
+      out: execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf-8', stdio: 'pipe' }),
     };
   } catch (error) {
     return { code: error.status ?? 1, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
   }
 }
 
+/** 跑 node 腳本。 */
+const run = (args) => exec(process.execPath, args);
+
 const TSC = join('node_modules', 'typescript', 'bin', 'tsc');
 const results = [];
 
 copyFileSync(CONFIG, CONFIG_BAK);
 console.log(`使用者 config 已備份到 ${CONFIG_BAK}\n`);
+
+// worktree 一開始可能就有未提交的改動（例如刻意把待驗證的檔案複製進去），
+// 所以收尾比對的是「跟開跑時一不一樣」，而不是「是不是空的」。
+const baselineStatus = exec('git', ['status', '--short']).out.trim();
 
 // 先確認基準是綠的：基準就紅的話，後面每個突變都會「被殺」而毫無意義。
 {
@@ -69,20 +76,23 @@ console.log(`使用者 config 已備份到 ${CONFIG_BAK}\n`);
 
 for (const [i, mutation] of MUTATIONS.entries()) {
   const path = join(ROOT, mutation.file);
-  // worktree 的檔案是 CRLF（git autocrlf），比對前先正規化成 LF，
-  // 否則多行片段永遠對不上（會被誤判成 ERROR 而不是真的跑了突變）。
-  const original = readFileSync(path, 'utf-8').replace(/\r\n/g, '\n');
-  if (!original.includes(mutation.from)) {
+  // 原始 bytes 要原封保留，收尾才寫得回去。worktree 的檔案是 CRLF（git autocrlf），
+  // 但比對片段是用 LF 寫的 —— 所以只在「比對與替換」時正規化，**還原時寫回原始 bytes**。
+  // （寫回正規化後的內容會讓整個 worktree 因為 EOL 變更而變髒，
+  // 而最後那句「worktree 應為空」原本又沒真的執行 git，兩個錯湊成一個假綠燈。）
+  const originalBytes = readFileSync(path);
+  const normalized = originalBytes.toString('utf-8').replace(/\r\n/g, '\n');
+  if (!normalized.includes(mutation.from)) {
     results.push({ ...mutation, verdict: 'ERROR', detail: '找不到要替換的原始碼片段' });
     console.log(`[${i + 1}/${MUTATIONS.length}] ERROR   ${mutation.name} — 片段不存在`);
     continue;
   }
 
-  writeFileSync(path, original.replace(mutation.from, mutation.to));
+  writeFileSync(path, normalized.replace(mutation.from, mutation.to));
   const build = run([TSC]);
   const { code, out } =
     build.code !== 0 ? { code: -1, out: `BUILD FAILED\n${build.out}` } : run(['verify-alias-config.mjs']);
-  writeFileSync(path, original);
+  writeFileSync(path, originalBytes);
 
   // 期待：這個突變讓測試失敗，而且失敗的是我們指定的那條斷言。
   const failedLines = out
@@ -106,7 +116,10 @@ for (const [i, mutation] of MUTATIONS.entries()) {
 }
 
 // 每輪都還原了原始碼，最後再確認 worktree 是乾淨的。
-const status = run('git', ['status', '--short']);
+// 一定要用 exec() 而不是 run()：run() 只吃一個參數陣列，
+// `run('git', [...])` 會把第二個參數整個丟掉、命令根本沒跑，
+// 然後印出空字串當成「worktree 乾淨」—— 這正是這支工具在抓的那種假綠燈。
+const status = exec('git', ['status', '--short']);
 copyFileSync(CONFIG_BAK, CONFIG);
 
 console.log('\n================ 突變測試結果 ================');
@@ -118,5 +131,16 @@ console.log(`總計 ${results.length}：KILLED ${results.length - survived.lengt
 for (const r of survived) console.log(`  SURVIVED（假綠燈！）: ${r.name} — 期待 "${r.expect}" 失敗但測試全過`);
 for (const r of errored) console.log(`  ERROR: ${r.name} — ${r.detail}`);
 for (const r of killedByOther) console.log(`  KILLED(其他斷言): ${r.name} — 期待 "${r.expect}"，實際 ${r.detail}`);
-console.log(`\nworktree git status（應為空）: ${JSON.stringify(status.out.trim())}`);
-process.exitCode = survived.length > 0 || errored.length > 0 ? 1 : 0;
+// worktree 沒還原乾淨 = 這一輪的結果不可信（後面的突變是疊在殘留改動上跑的），
+// 所以它必須跟 SURVIVED 一樣讓整支腳本以非零碼收場。
+const dirty = status.code !== 0 || status.out.trim() !== baselineStatus;
+console.log(
+  `\nworktree git status（應與開跑時相同）: ${
+    status.code !== 0 ? `<git 執行失敗 code=${status.code}>` : JSON.stringify(status.out.trim())
+  }`
+);
+if (dirty) {
+  console.log(`  ↳ 與開跑時不同（開跑時：${JSON.stringify(baselineStatus)}）`);
+  console.log('  ↳ worktree 沒有還原乾淨，本輪結果不可信');
+}
+process.exitCode = survived.length > 0 || errored.length > 0 || dirty ? 1 : 0;
