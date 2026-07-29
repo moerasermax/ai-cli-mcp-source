@@ -15,7 +15,11 @@ import { selectAgentForModel, getAgent } from '../agents/registry.js';
 import { resolveDirectApiModel } from '../agents/direct-api.js';
 import { resolveModelAlias } from '../models/catalog.js';
 import { resolveReasoningEffort } from './reasoning.js';
-import { resolveConfiguredReasoningEffort } from './user-config.js';
+import {
+  loadUserConfigSnapshot,
+  resolveConfiguredReasoningEffort,
+  type UserConfig,
+} from './user-config.js';
 import { debugLog } from './debug.js';
 
 export interface BuildCliCommandOptions {
@@ -35,7 +39,7 @@ interface ModelSelection {
   providerModel?: string;
 }
 
-function resolveModelSelection(rawModel: string): ModelSelection {
+function resolveModelSelection(rawModel: string, config: UserConfig): ModelSelection {
   if (rawModel) {
     const directApiModel = resolveDirectApiModel(rawModel);
     if (directApiModel) {
@@ -47,7 +51,7 @@ function resolveModelSelection(rawModel: string): ModelSelection {
       };
     }
   }
-  const aliasedModel = resolveModelAlias(rawModel);
+  const aliasedModel = resolveModelAlias(rawModel, config);
   const directApiAliasModel = aliasedModel !== rawModel ? resolveDirectApiModel(aliasedModel) : null;
   if (directApiAliasModel) {
     return {
@@ -67,8 +71,12 @@ function resolveModelSelection(rawModel: string): ModelSelection {
  * 呼叫端未指定 reasoning_effort 時，套用設定檔／內建預設。
  * 與明確指定不同：這裡任何「該 agent 不支援」的情況都靜默略過，不丟錯。
  */
-function resolveDefaultReasoningEffort(agent: AgentDefinition, rawModel: string): string {
-  const configured = resolveConfiguredReasoningEffort(rawModel);
+function resolveDefaultReasoningEffort(
+  agent: AgentDefinition,
+  rawModel: string,
+  config: UserConfig
+): string {
+  const configured = resolveConfiguredReasoningEffort(rawModel, config);
   if (!configured) return '';
   if (!agent.reasoning.supported) {
     debugLog(`[Config] Skipping default reasoning "${configured}": ${agent.id} does not support it`);
@@ -123,7 +131,13 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
   }
 
   const rawModel = options.model || '';
-  const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(rawModel);
+  // 這一次組指令從頭到尾只讀一次設定檔：alias 與 reasoning 必須來自同一份設定，
+  // 否則中途被改動就會組出「A 版 alias + B 版 reasoning」這種兩邊都不對的指令。
+  const userConfig = loadUserConfigSnapshot();
+  const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(
+    rawModel,
+    userConfig
+  );
 
   // reasoning：呼叫端明確指定 → 照舊驗證（不合法就丟錯）。
   // 未指定 → 由持久化設定 / 內建 ultra 預設補上，但只在該 agent 真的吃得下時才套用；
@@ -134,7 +148,7 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
   if (typeof explicitEffort === 'string' && explicitEffort.trim() !== '') {
     reasoningEffort = resolveReasoningEffort(agent.reasoning, explicitEffort);
   } else {
-    reasoningEffort = resolveDefaultReasoningEffort(agent, rawModel);
+    reasoningEffort = resolveDefaultReasoningEffort(agent, rawModel, userConfig);
   }
 
   return agent.buildCommand({

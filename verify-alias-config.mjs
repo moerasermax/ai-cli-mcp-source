@@ -12,21 +12,31 @@
  */
 
 import { spawn } from 'node:child_process';
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const CONFIG = join(homedir(), '.local', 'share', 'ai-cli', 'config.json');
+
+/**
+ * fs 刻意走 createRequire 而**不是** `import ... from 'node:fs'`。
+ *
+ * 靜態 import 會讓 node:fs 的 ESM facade 在這一刻實體化並把 `readFileSync` 綁死；
+ * 之後再換掉 `fs.readFileSync`，dist 裡的模組拿到的仍是原函式，計數器就永遠是 0。
+ * （這個 0 會讓下面「只讀一次」的斷言直接 FAIL 而不是假通過 —— 是刻意的：
+ * 計數器壞掉時要看得出來。）
+ */
+const fs = createRequire(import.meta.url)('node:fs');
+const { copyFileSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } = fs;
+/** 原始實作：測試自己的讀取不該被計進去。 */
+const readFileSync = fs.readFileSync;
+const configReadCount = { n: 0 };
+fs.readFileSync = function (path, ...rest) {
+  if (String(path) === CONFIG) configReadCount.n += 1;
+  return readFileSync.call(this, path, ...rest);
+};
 const BACKUP = `${CONFIG}.verify-alias-backup`;
 
 let passed = 0;
@@ -103,6 +113,68 @@ async function main(baseConfig) {
 
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
 
+  // 讀檔失敗（不是「檔案不存在」）必須沿用上一次成功的設定，不能靜默退回內建值 ——
+  // 否則 Windows 上撞到別人 rename / 防毒鎖檔的那一瞬間，這次 run 就會悄悄換成別的 model。
+  // 這裡把 config.json 換成一個「同名目錄」來製造穩定的非 ENOENT 讀取錯誤（EISDIR）。
+  check('先確認覆寫已生效', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-terra');
+  rmSync(CONFIG);
+  mkdirSync(CONFIG);
+  try {
+    check(
+      '讀檔失敗時維持 last-good 設定',
+      catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-terra',
+      `got ${catalog.resolveModelAlias('codex-ultra')}`
+    );
+  } finally {
+    rmSync(CONFIG, { recursive: true });
+  }
+
+  // 相對地，「檔案真的不存在」是使用者的意思，必須退回內建值而不是沿用 last-good。
+  check(
+    '檔案不存在時退回內建值',
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol',
+    `got ${catalog.resolveModelAlias('codex-ultra')}`
+  );
+
+  // UTF-8 BOM：Windows 記事本與 PowerShell 5.1 的 Set-Content 都會寫出帶 BOM 的檔案，
+  // JSON.parse 看到開頭的 U+FEFF 會直接丟 SyntaxError → 整份設定靜默失效。
+  writeFileSync(
+    CONFIG,
+    `﻿${JSON.stringify({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.4' } }, null, 2)}\n`
+  );
+  check(
+    '帶 UTF-8 BOM 的設定檔仍然生效',
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.4',
+    `got ${catalog.resolveModelAlias('codex-ultra')}`
+  );
+
+  // 解析失敗之後，cache 必須被清掉：否則接下來一次讀檔失敗會把這份「使用者已經改壞、
+  // 語意上作廢」的舊設定當成 last-good 復活。
+  writeFileSync(CONFIG, '{ this is not json');
+  check('壞掉的 JSON 退回內建值', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol');
+  rmSync(CONFIG);
+  mkdirSync(CONFIG);
+  try {
+    check(
+      '壞掉的 JSON 之後讀檔失敗，不會復活舊設定',
+      catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol',
+      `got ${catalog.resolveModelAlias('codex-ultra')}`
+    );
+  } finally {
+    rmSync(CONFIG, { recursive: true });
+  }
+
+  // 陣列的 typeof 也是 'object'：不擋的話 Object.entries 會解出 "0"/"1" 這種垃圾 alias。
+  writeConfig({ ...baseConfig, aliasModel: ['gpt-5.4', 'opus'] });
+  check(
+    'aliasModel 是陣列時整個忽略',
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol' &&
+      catalog.resolveModelAlias('0') === '0',
+    `got ${catalog.resolveModelAlias('0')}`
+  );
+
+  writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
+
   // ---- 3. 熱切換真的影響組出來的指令 ----
   console.log('\n[3] 同一個 process 內熱切換');
   const build = () =>
@@ -115,6 +187,18 @@ async function main(baseConfig) {
 
   let cmd = build();
   check('切換後帶新 --model', cmd.args.includes('gpt-5.6-terra'), JSON.stringify(cmd.args));
+
+  // 一次高階操作只准讀一次設定檔。讀兩次的話，中間被改動就會組出
+  // 「A 版 alias + B 版 reasoning」這種兩邊都不對的指令 —— 讀取次數就是這件事的代理指標。
+  const countConfigReads = (fn) => {
+    const before = configReadCount.n;
+    fn();
+    return configReadCount.n - before;
+  };
+  const buildReads = countConfigReads(build);
+  check('一次 buildCliCommand 只讀一次設定檔', buildReads === 1, `read ${buildReads} times`);
+  const payloadReads = countConfigReads(() => catalog.getModelsPayload());
+  check('一次 getModelsPayload 只讀一次設定檔', payloadReads === 1, `read ${payloadReads} times`);
 
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'opus' } });
   cmd = build();
@@ -214,6 +298,19 @@ async function mcpChecks() {
     check('拒絕空的變更', !!res.error);
     res = await call('set_config', { alias_reasoning_effort: { 'codex-ultra': 'nonsense' } });
     check('拒絕不合法的 reasoning effort', !!res.error);
+
+    // 設定檔已經壞掉時，set_config 絕對不能拿空基底套上 patch 寫回去 ——
+    // 那會把使用者原本的內容整份吃掉。必須明確失敗、原檔一個 byte 都不許動。
+    const corrupted = '{ "aliasModel": { "codex-ultra": "gpt-5.4" }, oops';
+    writeFileSync(CONFIG, corrupted);
+    res = await call('set_config', { alias_model: { 'claude-ultra': 'haiku' } });
+    check('設定檔壞掉時 set_config 明確失敗', !!res.error);
+    check(
+      '設定檔壞掉時不覆寫原檔',
+      readFileSync(CONFIG, 'utf-8') === corrupted,
+      `file changed to: ${readFileSync(CONFIG, 'utf-8').slice(0, 60)}`
+    );
+    writeConfig({ myCustomThing: { keep: 'me' } });
 
     // alias 指到不支援 reasoning 的 agent 時，不該回報一個不會生效的 effort
     res = await call('set_config', { alias_model: { 'codex-ultra': 'kiro-default' } });

@@ -76,8 +76,26 @@ npm run typecheck  # 只型別檢查
 ## 使用者設定檔（config.json）
 
 路徑：`~/.local/share/ai-cli/config.json`（與 `providers.json` 同一層）。
-檔案不存在或內容壞掉時一律靜默退回內建預設，不會讓 `run` 失敗。
 每次都重新讀檔、以檔案內容當快取鍵（省下的只有 JSON 解析），改完檔不必重啟 MCP server。
+每個高階操作（一次 `run` 的指令組裝、一次 `models`）只載入一份 snapshot，
+所以同一次操作內看到的一定是同一份設定。
+
+讀不到或讀壞了的處理方式分三種，刻意不一樣：
+
+| 情況 | 行為 |
+|------|------|
+| 檔案不存在（`ENOENT` / `ENOTDIR`） | 退回內建預設，不會讓 `run` 失敗 |
+| 內容不是合法 JSON 物件 | 退回內建預設，並清掉快取（避免壞掉的舊值之後被當成 last-good 復活） |
+| 其他讀取錯誤（鎖檔、權限…） | **沿用上一次成功讀到的設定**，不退回內建值 |
+
+最後一種是刻意的：那種錯誤是暫時性的，退回內建值等於讓這一次 run 悄悄換成另一個 model
+而沒有人會察覺。目前生效的狀態可從 `models` 的 `userConfig.status` 查看
+（`fresh` / `missing` / `stale` / `error`）。
+
+反過來，**寫入**時的原則相反 —— `set_config` 若讀不到或讀到壞掉的設定檔會**明確失敗**，
+不會拿空基底套上變更寫回去（那會把原有設定與未知欄位整份吃掉）。
+
+檔案帶 UTF-8 BOM（Windows 記事本、PowerShell 5.1 的 `Set-Content` 都會產生）也能正常讀取。
 
 ```json
 {
@@ -169,7 +187,7 @@ claude agent 的 `matchesModel` 是 registry 最後一位的 catch-all（永遠�
 - 模型的**自報名稱不可信**（問 `gpt-5.6-terra`「你是哪個模型」它會說 GPT-5）。要驗證 `--model`
   真的送出去，把 alias 指到一個不存在但能過驗證的名稱（如 `gpt-5.6-doesnotexist`）再 `run`，
   看 CLI 是否回報該模型不支援。
-- 回歸測試：`node verify-alias-config.mjs`（33 項，已納入 `npm test`）。
+- 回歸測試：`node verify-alias-config.mjs`（44 項，已納入 `npm test`）。
 
 ## AI 啟動熔斷器（circuit breaker）
 
