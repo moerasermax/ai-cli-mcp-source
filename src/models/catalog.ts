@@ -14,6 +14,7 @@ import {
   loadUserConfigSnapshot,
   resolveConfiguredAliasModel,
   resolveConfiguredReasoningEffort,
+  type ConfigSnapshot,
   type UserConfig,
 } from '../core/user-config.js';
 
@@ -72,7 +73,7 @@ export function isBuiltinAlias(name: string): boolean {
 }
 
 export function resolveModelAlias(model: string, config?: UserConfig): string {
-  const configured = resolveConfiguredAliasModel(model, config ?? loadUserConfigSnapshot());
+  const configured = resolveConfiguredAliasModel(model, config ?? loadUserConfigSnapshot().config);
   if (configured) return configured;
   // 必須用 hasOwnProperty：'constructor' / 'toString' 這類 prototype 上的 key
   // 用 MODEL_ALIASES[model] 取會拿到函式而不是 undefined，resolvedModel 就不是字串了。
@@ -100,7 +101,7 @@ export function resolveAgentIdForModel(resolvedModel: string): AgentId {
  * 會用錯的 agent 去判斷 reasoning 能力。
  */
 export function getEffectiveAliasDetails(
-  config: UserConfig = loadUserConfigSnapshot()
+  config: UserConfig = loadUserConfigSnapshot().config
 ): EffectiveModelAliasDetail[] {
   return MODEL_ALIAS_DETAILS.map((builtin) => {
     const override = resolveConfiguredAliasModel(builtin.name, config);
@@ -200,11 +201,12 @@ export function isKnownModelTarget(model: string): boolean {
 }
 
 /** models 工具的完整 payload。1:1 還原 dist。 */
-export function getModelsPayload() {
+export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapshot()) {
   const byAgent = modelsByAgent();
   // 整個 payload 共用同一份 snapshot：否則每個 alias 各讀一次設定檔，
   // 中途被改動就會回報出「不同 alias 來自不同版本設定」的畫面。
-  const config = loadUserConfigSnapshot();
+  // set_config 會把「剛寫入的那一份」直接傳進來，連寫完再讀一次都省掉。
+  const { config } = snapshot;
   return {
     aliases: getEffectiveAliasDetails(config).map((alias) => {
       // 只有支援 reasoning 的 agent 才回報 effective 值，避免 agy/kiro 顯示出
@@ -230,7 +232,7 @@ export function getModelsPayload() {
       'direct-api': DIRECT_API_DYNAMIC_BACKEND,
     },
     userConfig: {
-      ...describeUserConfig(config),
+      ...describeUserConfig(snapshot),
       builtinAliasModel: MODEL_ALIASES,
     },
   };

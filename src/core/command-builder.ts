@@ -133,7 +133,7 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
   const rawModel = options.model || '';
   // 這一次組指令從頭到尾只讀一次設定檔：alias 與 reasoning 必須來自同一份設定，
   // 否則中途被改動就會組出「A 版 alias + B 版 reasoning」這種兩邊都不對的指令。
-  const userConfig = loadUserConfigSnapshot();
+  const userConfig = loadUserConfigSnapshot().config;
   const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(
     rawModel,
     userConfig

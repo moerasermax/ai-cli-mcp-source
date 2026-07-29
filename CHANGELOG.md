@@ -8,7 +8,65 @@
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-07-29
+
+本版的重點是**設定檔讀寫的韌性**，全部屬於「不報錯、只安靜做錯事」那一類。
+驗證方式與兩份獨立稽核的逐條處置見 [`docs/audits/2026-07-29-v4.1.0.md`](./docs/audits/2026-07-29-v4.1.0.md)。
+
 ### 修正
+- **讀取錯誤的分類**：`ENOENT` / `ENOTDIR` / `EISDIR` / `ELOOP` / `ENAMETOOLONG` 屬**結構性**
+  （不會自己好）→ 退回內建預設；`EBUSY` / `EPERM` / `EACCES` 等屬**暫時性** → 沿用 last-good。
+  分界點是「再試一次有沒有可能成功」，不是「錯誤嚴不嚴重」。原本只有前兩個算結構性，
+  於是「設定檔路徑被同名目錄佔住」這種永遠好不了的情況會讓一份讀不到的設定無限期存活。
+  （Claude；@codex 稽核指出）
+- **陣列型 `aliasModel` 會經由 `set_config` 復活成垃圾 alias**：parser 會忽略陣列，
+  但 `set_config` 直接 spread 它 —— `{ ...['a','b'] }` 產生 `{"0":"a","1":"b"}` 寫回磁碟，
+  那些數字 key 就從「被忽略」升級成「parser 認可的 alias」。非普通物件一律不 spread。
+  （Claude；@codex 稽核指出）
+- **`describeUserConfig()` 可能回報「A 版設定配 B 版狀態」**：它吃外部傳入的 config，
+  卻搭配模組層級的 `lastStatus`。改為引入 `ConfigSnapshot { config, status }` 把兩者綁成一包傳遞。
+  （Claude；@codex 稽核指出）
+- **`set_config` 仍讀兩次設定檔**：`updateUserConfig()` 讀一次，回傳值被丟掉後
+  `getModelsPayload()` 又讀一次 —— 中間有別的 writer 介入時，回傳的 payload 描述的
+  就不是本次寫入的結果。改為直接把剛寫入的 snapshot 傳給 `getModelsPayload()`。
+  （Claude；@codex 稽核指出）
+- **`verify-e2e.mjs` 無論結果都 `process.exit(0)`**：三家 CLI 全都沒回應也會被讀成通過。
+  （Claude；@gemini-3.1-pro 稽核指出）
+- **`npm test` 沒有跑 `verify-mcp.mjs`**：MCP handshake 與工具清單完全在測試範圍外。串進 chain。
+  （Claude；@gemini-3.1-pro 稽核指出）
+- **`verify-alias-config.mjs` 的還原可能毀掉使用者設定**：測試中途會把 `config.json` 換成
+  同名目錄，若殘留，還原時的 `copyFileSync` 會拿到 `EISDIR` 而拋錯 —— 使用者的設定就只剩備份檔。
+  改為還原前強制清掉殘留目錄，並註冊 SIGINT/SIGTERM/SIGHUP/SIGBREAK。
+  （Claude；@gemini-3.1-pro 稽核指出）
+- **`verify-direct-api.mjs` 每跑一次就在 `%TEMP%` 留一個目錄**。（Claude；@gemini-3.1-pro 稽核指出）
+
+### 新增
+- **突變測試工具 `tools/mutation-test.mjs` + `tools/mutations.json`**：把每個修補逐一改壞，
+  斷言「對應的測試必須 FAIL」。用來抓假綠燈 —— 這個專案已經吃過三次虧。
+  在獨立 git worktree 上跑，不碰主工作目錄。目前 14 個突變**全部 KILLED**。
+  新增修補時請順手加一個對應突變。（Claude）
+- **`models` 的 `userConfig` 新增 `status` 欄位**：`fresh` / `missing` / `stale`（正在沿用
+  last-good，附 `errorCode`）/ `error`。`exists` 也改由同一次載入推導，不再另外 `existsSync`
+  ——否則會出現「`exists: true` 但回報的其實是 last-good 舊值」這種互相矛盾的診斷。（Claude）
+- **設定物件會被 `Object.freeze`**：回傳的是共用參照，凍結後將來若有人誤改會當場丟錯而不是
+  靜默污染所有後續讀取（目前所有呼叫端都已確認是唯讀）。（Claude；@gemini-3.1-pro 稽核指出）
+- **稽核紀錄 `docs/audits/`**：逐條記錄稽核發現、判定（採納／駁回）與處置。（Claude）
+
+### API 變更（皆向後相容）
+- 新增 exported `loadUserConfigSnapshot()`、`ConfigSnapshot`、`ConfigStatus`。
+- `updateUserConfig()` 回傳型別由 `UserConfig` 改為 `ConfigSnapshot`。
+- `resolveConfiguredAliasModel` / `resolveConfiguredReasoningEffort` / `resolveModelAlias` /
+  `getEffectiveAliasDetails` / `getModelsPayload` / `describeUserConfig` 新增**可選**的
+  config/snapshot 參數；不傳時行為與原本相同。
+- `set_config` 在設定檔讀不到或內容壞掉時，由「靜默成功並覆寫」改為**丟出明確錯誤**。
+
+### 已知限制（本版明確記錄，未修）
+- **手動編輯的 `aliasModel` 不會被驗證**：`set_config` 會擋掉不存在的 model，直接編輯設定檔則不會
+  ——打錯字會被 catch-all 的 claude agent 靜默接走。`user-config` 不能 import `catalog`
+  （會循環依賴），所以驗證只能放在消費端。可用 `models` 的 `agent` 欄位自檢。
+- **多 process 並發寫入會遺失更新**：`set_config` 是無鎖的 read-modify-rename。
+
+### 同版稍早的修正（commit `a5d5fa9`）
 - **`set_config` 在設定檔讀不到／壞掉時會把它整份覆寫掉（資料遺失）**：`readRawConfig()` 原本
   對任何讀取或解析錯誤都回 `{}`，於是鎖檔的瞬間或使用者手改壞 JSON 之後，`set_config` 會拿
   **空基底**套上 patch 再寫回去 —— 原有設定與所有未知欄位就沒了。改為只有「檔案不存在」
@@ -30,13 +88,6 @@
   **兩者都降為 1 次讀取**，並加上讀取次數的回歸斷言。（Claude；@codex 稽核指出）
 - **`updateUserConfig()` 寫入後重讀的空窗**：原本「清快取 → 重讀」，中間讀檔失敗時 last-good
   是空的，會回報一份跟磁碟上不一樣的設定。改為直接用剛寫出去的文字建立快取，也省掉一次讀檔。（Claude；@codex 稽核指出）
-
-### 新增
-- **`models` 的 `userConfig` 新增 `status` 欄位**：`fresh` / `missing` / `stale`（正在沿用
-  last-good，附 `errorCode`）/ `error`。`exists` 也改由同一次載入推導，不再另外 `existsSync`
-  ——否則會出現「`exists: true` 但回報的其實是 last-good 舊值」這種互相矛盾的診斷。（Claude）
-- **設定物件會被 `Object.freeze`**：回傳的是共用參照，凍結後將來若有人誤改會當場丟錯而不是
-  靜默污染所有後續讀取（目前所有呼叫端都已確認是唯讀）。（Claude；@gemini-3.1-pro 稽核指出）
 
 ## [4.0.0] - 2026-07-29
 
@@ -197,7 +248,8 @@
 - Windows 上優先解析 `.cmd`/`.exe` 而非 extensionless shim。
 - 移除已壞掉的 gemini 殘留；usage 外掛路徑改由 `AI_CLI_USAGE_PLUGIN_BIN` 環境變數設定。
 
-[Unreleased]: https://example.invalid/compare/v4.0.0...HEAD
-[4.0.0]: https://example.invalid/compare/v3.1.0...v4.0.0
-[3.1.0]: https://example.invalid/compare/v3.0.0...v3.1.0
-[3.0.0]: https://example.invalid/releases/tag/v3.0.0
+[Unreleased]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.0.0...v4.1.0
+[4.0.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v3.1.0...v4.0.0
+[3.1.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/moerasermax/ai-cli-mcp-source/releases/tag/v3.0.0

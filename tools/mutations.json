@@ -1,0 +1,100 @@
+[
+  {
+    "name": "readRawConfig 暫時性讀失敗回 {}（資料遺失）",
+    "file": "src/core/user-config.ts",
+    "from": "    if (isMissingError(error)) return {};\n    throw new Error(",
+    "to": "    if (isMissingError(error)) return {};\n    if (error) return {};\n    throw new Error(",
+    "expect": "暫時性讀取失敗時 updateUserConfig 拒絕寫入"
+  },
+  {
+    "name": "readRawConfig parse 失敗回 {}（資料遺失）",
+    "file": "src/core/user-config.ts",
+    "from": "  } catch (error) {\n    throw new Error(\n      `Refusing to update ${CONFIG_PATH}: the existing file is not valid JSON. `",
+    "to": "  } catch (error) {\n    if (error) return {};\n    throw new Error(\n      `Refusing to update ${CONFIG_PATH}: the existing file is not valid JSON. `",
+    "expect": "設定檔壞掉時不覆寫原檔"
+  },
+  {
+    "name": "暫時性讀檔失敗不保留 last-good",
+    "file": "src/core/user-config.ts",
+    "from": "      lastStatus = { state: 'stale', errorCode: code };\n      return cache.config;",
+    "to": "      lastStatus = { state: 'stale', errorCode: code };\n      return {};",
+    "expect": "暫時性讀檔失敗（EBUSY）維持 last-good 設定"
+  },
+  {
+    "name": "所有讀取錯誤都當成結構性（暫時性也退回內建）",
+    "file": "src/core/user-config.ts",
+    "from": "  return code !== undefined && STRUCTURAL_ERROR_CODES.has(code);",
+    "to": "  return true;",
+    "expect": "暫時性讀檔失敗（EBUSY）維持 last-good 設定"
+  },
+  {
+    "name": "EISDIR 被當成暫時性（結構性錯誤無限期沿用舊設定）",
+    "file": "src/core/user-config.ts",
+    "from": "  'EISDIR',\n",
+    "to": "",
+    "expect": "結構性讀檔失敗（EISDIR）退回內建值"
+  },
+  {
+    "name": "不剝除 UTF-8 BOM",
+    "file": "src/core/user-config.ts",
+    "from": "  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;",
+    "to": "  return text;",
+    "expect": "帶 UTF-8 BOM 的設定檔仍然生效"
+  },
+  {
+    "name": "parse 失敗後不清快取（舊設定復活）",
+    "file": "src/core/user-config.ts",
+    "from": "    // 必須清掉 cache：留著的話，之後一次暫時性讀檔失敗會把這份「已經被使用者改壞、\n    // 語意上已作廢」的舊設定當成 last-good 復活。\n    cache = null;",
+    "to": "    // (mutated)",
+    "expect": "壞掉的 JSON 之後遇到暫時性讀檔失敗，不會復活舊設定"
+  },
+  {
+    "name": "aliasModel 是陣列時不擋",
+    "file": "src/core/user-config.ts",
+    "from": "  if (raw.aliasModel && typeof raw.aliasModel === 'object' && !Array.isArray(raw.aliasModel)) {",
+    "to": "  if (raw.aliasModel && typeof raw.aliasModel === 'object') {",
+    "expect": "aliasModel 是陣列時整個忽略"
+  },
+  {
+    "name": "內容快取鍵退化成長度比較",
+    "file": "src/core/user-config.ts",
+    "from": "  if (cache && cache.raw === rawText) {",
+    "to": "  if (cache && cache.raw.length === rawText.length) {",
+    "expect": "mtime 與長度都相同，仍要讀到新內容"
+  },
+  {
+    "name": "buildCliCommand 退回每次自己讀（snapshot 沒傳下去）",
+    "file": "src/core/command-builder.ts",
+    "from": "  const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(\n    rawModel,\n    userConfig\n  );",
+    "to": "  const { agent, resolvedModel, providerName, providerModel } = resolveModelSelection(\n    rawModel,\n    loadUserConfigSnapshot().config\n  );",
+    "expect": "一次 buildCliCommand 只讀一次設定檔"
+  },
+  {
+    "name": "getModelsPayload 退回每個 alias 各讀一次",
+    "file": "src/models/catalog.ts",
+    "from": "        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name, config),",
+    "to": "        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name),",
+    "expect": "一次 getModelsPayload 只讀一次設定檔"
+  },
+  {
+    "name": "set_config 的 __proto__ 防禦拿掉（回到普通 {}）",
+    "file": "src/app/mcp.ts",
+    "from": "    const out: Record<string, string> = Object.create(null);",
+    "to": "    const out: Record<string, string> = {};",
+    "expect": "拒絕 __proto__ 當 alias"
+  },
+  {
+    "name": "set_config 不拒絕空 map",
+    "file": "src/app/mcp.ts",
+    "from": "    if (Object.keys(out).length === 0) {\n      throw new McpError(ErrorCode.InvalidParams, `${key} must not be empty.`);\n    }",
+    "to": "    // (mutated)",
+    "expect": "拒絕空的 alias_model"
+  },
+  {
+    "name": "set_config 直接 spread 陣列（垃圾 alias 復活）",
+    "file": "src/app/mcp.ts",
+    "from": "        raw.aliasModel = { ...spreadable(raw.aliasModel), ...aliasModel };",
+    "to": "        raw.aliasModel = { ...((raw.aliasModel ?? {}) as Record<string, unknown>), ...aliasModel };",
+    "expect": "set_config 不會把陣列 aliasModel 轉成數字 alias"
+  }
+]
