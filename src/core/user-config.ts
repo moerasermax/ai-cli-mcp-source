@@ -11,7 +11,7 @@
  *
  * 設計原則：
  * - 設定檔不存在／壞掉 → 靜默退回內建預設，永遠不讓 run 因為設定檔而失敗。
- * - 以 mtime 快取，改檔後不必重啟 MCP server。
+ * - 每次讀檔、以「檔案內容」當快取鍵，改檔後不必重啟 MCP server（見 cache 的註解）。
  * - 環境變數 AI_CLI_DEFAULT_REASONING_EFFORT 優先於設定檔（方便臨時覆蓋／測試）。
  */
 
@@ -20,7 +20,6 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -47,7 +46,18 @@ export const BUILTIN_ALIAS_REASONING: Record<string, string> = {
   'codex-ultra': 'xhigh',
 };
 
-let cache: { mtimeMs: number; config: UserConfig } | null = null;
+/**
+ * 快取鍵是「檔案原始內容」而不是 mtime。
+ *
+ * 原本用 mtime 當鍵，但 mtime 的解析度不足以區分同一毫秒內的兩次寫入：
+ * 先讀一次（快取住 mtime M）→ 同一毫秒內別的 process（或使用者）改寫檔案，
+ * 新檔的 mtime 仍是 M → 我們會一路回傳過期設定，直到下次有人再動這個檔。
+ * 這在 `verify-alias-config.mjs` 被實際重現過（同一 process 內連續兩次寫入 + 讀取）。
+ *
+ * 設定檔只有幾百 bytes，每次讀進來比較字串的成本遠低於「靜默用錯設定」的代價，
+ * 快取存在的意義只剩省下 JSON.parse 與正規化。
+ */
+let cache: { raw: string; config: UserConfig } | null = null;
 
 function normalizeEffort(value: unknown, source: string): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -86,25 +96,25 @@ function ownValue(map: Record<string, string> | undefined, key: string): string 
 
 /** 讀取（並快取）設定檔。任何錯誤都退回空設定。 */
 export function loadUserConfig(): UserConfig {
-  let mtimeMs: number;
+  let rawText: string;
   try {
     if (!existsSync(CONFIG_PATH)) {
       cache = null;
       return {};
     }
-    mtimeMs = statSync(CONFIG_PATH).mtimeMs;
+    rawText = readFileSync(CONFIG_PATH, 'utf-8');
   } catch (error) {
-    debugLog(`[Config] Failed to stat ${CONFIG_PATH}: ${(error as Error).message}`);
+    debugLog(`[Config] Failed to read ${CONFIG_PATH}: ${(error as Error).message}`);
     return {};
   }
 
-  if (cache && cache.mtimeMs === mtimeMs) {
+  if (cache && cache.raw === rawText) {
     return cache.config;
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
+    parsed = JSON.parse(rawText);
   } catch (error) {
     debugLog(`[Config] Failed to parse ${CONFIG_PATH}: ${(error as Error).message}`);
     return {};
@@ -148,7 +158,7 @@ export function loadUserConfig(): UserConfig {
     }
   }
 
-  cache = { mtimeMs, config };
+  cache = { raw: rawText, config };
   return config;
 }
 
@@ -192,7 +202,8 @@ export function updateUserConfig(patch: (raw: Record<string, unknown>) => void):
     throw error;
   }
 
-  // mtime 解析度可能不足以區分同一毫秒內的兩次寫入 → 直接作廢快取。
+  // 快取雖然已改成比對內容（不會漏掉同一毫秒的第二次寫入），這裡仍主動作廢，
+  // 讓「寫入後立刻回報生效狀態」不必依賴任何快取假設。
   cache = null;
   return loadUserConfig();
 }

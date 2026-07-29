@@ -20,10 +20,10 @@ const tools = await client.listTools();
 const names = tools.tools.map((t) => t.name);
 log(`list_tools (${names.length}): ${names.join(', ')}`);
 
-const expected = ['run', 'list_processes', 'get_result', 'wait', 'peek', 'kill_process', 'cleanup_processes', 'doctor', 'models'];
+const expected = ['run', 'list_processes', 'get_result', 'wait', 'peek', 'kill_process', 'cleanup_processes', 'doctor', 'models', 'set_config', 'query_usage'];
 const missing = expected.filter((e) => !names.includes(e));
 if (missing.length) { log('MISSING TOOLS:', missing); process.exit(1); }
-log('all 9 expected tools present');
+log(`all ${expected.length} expected tools present`);
 
 const models = await client.callTool({ name: 'models', arguments: {} });
 const modelsPayload = JSON.parse(models.content[0].text);

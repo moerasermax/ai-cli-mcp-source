@@ -12,7 +12,15 @@
  */
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,12 +43,25 @@ function check(name, condition, detail = '') {
 }
 
 const load = (rel) => import(pathToFileURL(join(ROOT, rel)).href);
-const writeConfig = (obj) => writeFileSync(CONFIG, `${JSON.stringify(obj, null, 2)}\n`);
+const writeConfig = (obj) => {
+  mkdirSync(dirname(CONFIG), { recursive: true });
+  writeFileSync(CONFIG, `${JSON.stringify(obj, null, 2)}\n`);
+};
 
-async function main() {
-  if (existsSync(CONFIG)) copyFileSync(CONFIG, BACKUP);
-  const baseConfig = existsSync(CONFIG) ? JSON.parse(readFileSync(CONFIG, 'utf-8')) : {};
+/** 這支測試會改寫使用者真實的 config.json，還原必須無條件發生（含拋例外的路徑）。 */
+function restoreConfig(hadConfig) {
+  if (hadConfig) {
+    if (existsSync(BACKUP)) {
+      copyFileSync(BACKUP, CONFIG);
+      rmSync(BACKUP);
+    }
+  } else if (existsSync(CONFIG)) {
+    // 原本沒有這個檔，就不能把測試寫出來的那份留在使用者機器上。
+    rmSync(CONFIG);
+  }
+}
 
+async function main(baseConfig) {
   const catalog = await load('dist/models/catalog.js');
   const { buildCliCommand } = await load('dist/core/command-builder.js');
 
@@ -67,6 +88,21 @@ async function main() {
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
   check('config 覆寫優先於內建表', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-terra');
 
+  // 快取不可以用 mtime 當鍵：同一毫秒內的兩次寫入 mtime 會相同，讀到的就是過期設定。
+  // 這裡把兩次寫入的 mtime 直接鎖成同一個值，讓「同毫秒」這個競態變成必然而非碰運氣。
+  const PINNED_MTIME = 1_700_000_000;
+  utimesSync(CONFIG, PINNED_MTIME, PINNED_MTIME);
+  catalog.resolveModelAlias('codex-ultra'); // 讓這個 mtime 進快取
+  writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.5' } });
+  utimesSync(CONFIG, PINNED_MTIME, PINNED_MTIME);
+  check(
+    'mtime 相同也要讀到新內容',
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.5',
+    `got ${catalog.resolveModelAlias('codex-ultra')}`
+  );
+
+  writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
+
   // ---- 3. 熱切換真的影響組出來的指令 ----
   console.log('\n[3] 同一個 process 內熱切換');
   const build = () =>
@@ -90,14 +126,10 @@ async function main() {
 
   // ---- 4. 端到端 set_config ----
   console.log('\n[4] set_config 端到端（真的起一個 MCP server）');
-  writeConfig({ ...baseConfig, myCustomThing: { keep: 'me' } });
+  // 這一段刻意不沿用使用者的 baseConfig：斷言會比對「退回內建值」，
+  // 沿用的話結果會被使用者自己的 defaultReasoningEffort 影響而變得不可預期。
+  writeConfig({ myCustomThing: { keep: 'me' } });
   await mcpChecks();
-
-  // ---- 收尾 ----
-  if (existsSync(BACKUP)) {
-    copyFileSync(BACKUP, CONFIG);
-    rmSync(BACKUP);
-  }
 
   console.log(`\n${failures.length === 0 ? 'PASS' : 'FAIL'}: ${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {
@@ -172,6 +204,12 @@ async function mcpChecks() {
     check('拒絕未知 alias', !!res.error);
     res = await call('set_config', { alias_model: { constructor: 'opus' } });
     check('拒絕 prototype key 當 alias', !!res.error);
+    // __proto__ 與 constructor 不同：普通 {} 的 out['__proto__'] = 字串會被 Object.prototype
+    // 的 setter 無聲吃掉，key 根本不會出現在 own properties，驗證迴圈掃不到 → 假成功。
+    res = await call('set_config', { alias_model: { __proto__: 'opus' } });
+    check('拒絕 __proto__ 當 alias', !!res.error, JSON.stringify(res.error ?? res.result)?.slice(0, 120));
+    res = await call('set_config', { alias_model: {} });
+    check('拒絕空的 alias_model（假成功）', !!res.error);
     res = await call('set_config', {});
     check('拒絕空的變更', !!res.error);
     res = await call('set_config', { alias_reasoning_effort: { 'codex-ultra': 'nonsense' } });
@@ -187,12 +225,39 @@ async function mcpChecks() {
       `got ${kiroRow.defaultReasoningEffort}`
     );
 
+    // unset 一個 alias 必須同時清掉 model 與 reasoning 兩種覆寫（README 這樣寫）：
+    // 先把兩種都設起來，再 unset，然後檢查兩者都回到內建值。
+    res = await call('set_config', {
+      alias_model: { 'codex-ultra': 'gpt-5.4' },
+      alias_reasoning_effort: { 'codex-ultra': 'low' },
+    });
+    check(
+      'unset 前兩種覆寫都生效',
+      aliasOf(res, 'codex-ultra').resolvesTo === 'gpt-5.4' &&
+        aliasOf(res, 'codex-ultra').defaultReasoningEffort === 'low',
+      JSON.stringify(aliasOf(res, 'codex-ultra'))
+    );
+
     res = await call('set_config', { unset: ['codex-ultra'] });
     const back = aliasOf(res, 'codex-ultra');
     check('unset 退回內建', back.resolvesTo === 'gpt-5.6-sol' && back.source === 'builtin');
+    check(
+      'unset 同時清掉 reasoning 覆寫',
+      back.defaultReasoningEffort === 'xhigh',
+      `got ${back.defaultReasoningEffort}`
+    );
   } finally {
     child.kill();
   }
 }
 
-await main();
+// 備份與還原包在 try/finally 外層：任何一步拋例外（import 失敗、spawn 失敗、
+// JSON parse 失敗）都不能把使用者的 config.json 留在測試中途的狀態。
+const hadConfig = existsSync(CONFIG);
+if (hadConfig) copyFileSync(CONFIG, BACKUP);
+const baseConfig = hadConfig ? JSON.parse(readFileSync(CONFIG, 'utf-8')) : {};
+try {
+  await main(baseConfig);
+} finally {
+  restoreConfig(hadConfig);
+}
