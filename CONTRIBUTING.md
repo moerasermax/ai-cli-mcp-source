@@ -20,7 +20,9 @@
 - 維持既有風格：繁體中文註解、檔頭用區塊註解說明該檔職責、對外行為改動要標註。
 - 改完一定要能編譯：`npm run build`（或 `npm run typecheck`）必須零錯誤。
 - 有對應的驗證腳本（`verify-*.mjs`）時，跑過確認通過；新功能盡量補一支。
-- `npm test` 串起四支純驗證腳本（breaker / rate / direct-api / alias-config），都不會打真實 AI 供應商。
+- `npm test` 串起五支驗證腳本（breaker / rate / direct-api / alias-config / mcp），都不會打真實 AI 供應商。
+- **修完 bug 請順手加一個突變**到 `tools/mutations.json`：把修補改壞、確認對應斷言真的會 FAIL。
+  這個專案已經吃過三次假綠燈的虧（測試看起來在測、其實測不到）。用法見 `tools/mutation-test.mjs` 檔頭。
   **但 `verify-alias-config.mjs` 會暫時改寫你真實的 `~/.local/share/ai-cli/config.json`**
   （腳本自帶備份與還原）。在別人的機器或 CI 上跑之前先知道這件事；跑完可以 `git diff` 不到，
   但值得自己確認設定檔內容有還原。

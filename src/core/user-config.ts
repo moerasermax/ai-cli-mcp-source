@@ -73,14 +73,29 @@ export type ConfigStatus =
 let lastStatus: ConfigStatus = { state: 'missing' };
 
 /**
- * 這些 error code 代表「這個路徑上不可能有設定檔」，不是暫時性故障：
+ * 這些 error code 代表「這個路徑上結構性地拿不到設定檔」，不是暫時性故障：
  * - ENOENT：檔案或中間目錄不存在（Windows 幾乎所有路徑類錯誤都被 libuv 折成這個）
  * - ENOTDIR：POSIX 上中間層是普通檔案 —— 結構上就放不了這個檔
- * 其餘（EBUSY / EPERM / EACCES / EISDIR / 網路類…）一律視為暫時性。
+ * - EISDIR：這個路徑被同名目錄佔住了
+ * - ELOOP / ENAMETOOLONG：symlink 迴圈、路徑過長
+ *
+ * 這些都不會自己好，沿用 last-good 只會讓一份早就讀不到的設定無限期存活；
+ * 退回內建預設才是誠實的。
+ *
+ * 其餘（EBUSY / EPERM / EACCES / EMFILE / 網路類…）視為暫時性 → 沿用 last-good。
+ * 分界點是「再試一次有沒有可能成功」，不是「錯誤嚴不嚴重」。
  */
+const STRUCTURAL_ERROR_CODES = new Set([
+  'ENOENT',
+  'ENOTDIR',
+  'EISDIR',
+  'ELOOP',
+  'ENAMETOOLONG',
+]);
+
 function isMissingError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
-  return code === 'ENOENT' || code === 'ENOTDIR';
+  return code !== undefined && STRUCTURAL_ERROR_CODES.has(code);
 }
 
 /**
@@ -295,7 +310,9 @@ function readRawConfig(): Record<string, unknown> {
  * patch 收到的是原始 JSON 物件（不是正規化後的 UserConfig），所以使用者手寫的
  * 未知欄位會原封不動保留下來。
  */
-export function updateUserConfig(patch: (raw: Record<string, unknown>) => void): UserConfig {
+export function updateUserConfig(
+  patch: (raw: Record<string, unknown>) => void
+): ConfigSnapshot {
   const raw = readRawConfig();
   patch(raw);
 
@@ -323,7 +340,7 @@ export function updateUserConfig(patch: (raw: Record<string, unknown>) => void):
   cache = null;
   const config = parseAndCache(written);
   lastStatus = { state: 'fresh' };
-  return config;
+  return { config, status: lastStatus };
 }
 
 /**
@@ -336,8 +353,17 @@ export function updateUserConfig(patch: (raw: Record<string, unknown>) => void):
  *
  * 下面幾個 resolver 的 config 參數都有預設值，所以既有呼叫端（含驗證腳本）不需要改。
  */
-export function loadUserConfigSnapshot(): UserConfig {
-  return loadUserConfig();
+export interface ConfigSnapshot {
+  config: UserConfig;
+  status: ConfigStatus;
+}
+
+export function loadUserConfigSnapshot(): ConfigSnapshot {
+  const config = loadUserConfig();
+  // status 必須跟 config 一起帶走。之前 describeUserConfig() 讀模組層級的 lastStatus，
+  // 但它可以吃外部傳進來的 config —— 只要中間有人再 load 一次，就會回報出
+  // 「A 版的設定值配上 B 版的狀態」。綁成一包就沒有這個縫。
+  return { config, status: lastStatus };
 }
 
 /**
@@ -386,8 +412,8 @@ export function resolveConfiguredAliasModel(
  * 否則會出現「exists: true 但回報的其實是 last-good 舊值」這種互相矛盾的診斷，
  * 而那正是外部工具最需要分辨的情況。
  */
-export function describeUserConfig(config: UserConfig = loadUserConfig()) {
-  const status = lastStatus;
+export function describeUserConfig(snapshot: ConfigSnapshot = loadUserConfigSnapshot()) {
+  const { config, status } = snapshot;
   return {
     path: CONFIG_PATH,
     exists: status.state !== 'missing',

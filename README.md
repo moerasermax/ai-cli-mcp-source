@@ -84,13 +84,15 @@ npm run typecheck  # 只型別檢查
 
 | 情況 | 行為 |
 |------|------|
-| 檔案不存在（`ENOENT` / `ENOTDIR`） | 退回內建預設，不會讓 `run` 失敗 |
+| **結構性**讀不到（`ENOENT` / `ENOTDIR` / `EISDIR` / `ELOOP` / `ENAMETOOLONG`） | 退回內建預設，不會讓 `run` 失敗 |
 | 內容不是合法 JSON 物件 | 退回內建預設，並清掉快取（避免壞掉的舊值之後被當成 last-good 復活） |
-| 其他讀取錯誤（鎖檔、權限…） | **沿用上一次成功讀到的設定**，不退回內建值 |
+| **暫時性**讀取錯誤（`EBUSY` / `EPERM` / `EACCES`…） | **沿用上一次成功讀到的設定**，不退回內建值 |
 
-最後一種是刻意的：那種錯誤是暫時性的，退回內建值等於讓這一次 run 悄悄換成另一個 model
-而沒有人會察覺。目前生效的狀態可從 `models` 的 `userConfig.status` 查看
-（`fresh` / `missing` / `stale` / `error`）。
+分界點是「再試一次有沒有可能成功」，不是「錯誤嚴不嚴重」：
+結構性錯誤不會自己好，沿用舊設定只會讓一份永遠讀不到的設定無限期存活；
+暫時性錯誤（別的 process 正在 rename、防毒掃描鎖檔）退回內建值則等於讓這一次 run
+悄悄換成另一個 model 而沒有人會察覺。目前生效的狀態可從 `models` 的 `userConfig.status` 查看
+（`fresh` / `missing` / `stale`+`errorCode` / `error`）。
 
 反過來，**寫入**時的原則相反 —— `set_config` 若讀不到或讀到壞掉的設定檔會**明確失敗**，
 不會拿空基底套上變更寫回去（那會把原有設定與未知欄位整份吃掉）。
@@ -135,6 +137,16 @@ reasoning 預設值的優先序（高 → 低）：
 
 目前生效的設定可從 `models` 工具回傳的 `userConfig` 欄位查看；`aliases[].defaultReasoningEffort`
 也會反映套用設定後的實際值，`userConfig.builtinAliasReasoningEffort` 則保留內建值供對照。
+
+### 設定檔的已知限制
+
+- **手動編輯的 `aliasModel` 不會被驗證**：`set_config` 會擋掉不存在的 model（否則打錯字會被
+  catch-all 的 claude agent 靜默接走），但直接編輯 `config.json` 沒有這道關卡。
+  改完可以用 `models` 檢查 —— 每筆 alias 都會顯示實際 `resolvesTo` 與推算出的 `agent`，
+  被靜默接走的打錯字會顯示成 `agent: claude`。
+- **多個 process 同時寫入會遺失更新**：`set_config` 是無鎖的 read-modify-rename，
+  兩個 MCP server 同時改不同欄位時，後 rename 的會覆蓋掉前一個的修改
+  （tmp 檔名帶 pid 只避免 tmp 互撞，不解決這件事）。實務上 `set_config` 極少並發。
 
 ## alias 重新指向（免 rebuild、免重啟）
 
@@ -187,7 +199,7 @@ claude agent 的 `matchesModel` 是 registry 最後一位的 catch-all（永遠�
 - 模型的**自報名稱不可信**（問 `gpt-5.6-terra`「你是哪個模型」它會說 GPT-5）。要驗證 `--model`
   真的送出去，把 alias 指到一個不存在但能過驗證的名稱（如 `gpt-5.6-doesnotexist`）再 `run`，
   看 CLI 是否回報該模型不支援。
-- 回歸測試：`node verify-alias-config.mjs`（44 項，已納入 `npm test`）。
+- 回歸測試：`node verify-alias-config.mjs`（49 項，已納入 `npm test`）。
 
 ## AI 啟動熔斷器（circuit breaker）
 

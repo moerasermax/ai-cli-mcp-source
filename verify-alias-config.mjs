@@ -33,8 +33,23 @@ const { copyFileSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync }
 /** 原始實作：測試自己的讀取不該被計進去。 */
 const readFileSync = fs.readFileSync;
 const configReadCount = { n: 0 };
+/**
+ * 要注入的讀取錯誤 code（null = 不注入）。
+ *
+ * 注入必須做在**這個包裝函式裡面**：dist 模組在載入時就把 fs.readFileSync 綁成
+ * 目前這個包裝，事後再換掉 fs.readFileSync 它們是看不到的
+ * ——那樣寫出來的「注入測試」會變成什麼都沒注入的假綠燈（實際踩過）。
+ */
+const injected = { code: null };
 fs.readFileSync = function (path, ...rest) {
-  if (String(path) === CONFIG) configReadCount.n += 1;
+  if (String(path) === CONFIG) {
+    configReadCount.n += 1;
+    if (injected.code) {
+      throw Object.assign(new Error(`${injected.code}: injected read failure`), {
+        code: injected.code,
+      });
+    }
+  }
   return readFileSync.call(this, path, ...rest);
 };
 const BACKUP = `${CONFIG}.verify-alias-backup`;
@@ -52,6 +67,9 @@ function check(name, condition, detail = '') {
   }
 }
 
+/** 走目前（已被包裝的）實作讀檔 —— 用來自我檢查注入機制是不是真的生效。 */
+const readFileSyncViaPatched = (path) => fs.readFileSync(path, 'utf-8');
+
 const load = (rel) => import(pathToFileURL(join(ROOT, rel)).href);
 const writeConfig = (obj) => {
   mkdirSync(dirname(CONFIG), { recursive: true });
@@ -60,6 +78,16 @@ const writeConfig = (obj) => {
 
 /** 這支測試會改寫使用者真實的 config.json，還原必須無條件發生（含拋例外的路徑）。 */
 function restoreConfig(hadConfig) {
+  // 測試中途會把 config.json 換成「同名目錄」來製造讀取錯誤。如果那段沒清乾淨就跳出來，
+  // 這裡的 copyFileSync 會拿到 EISDIR 而拋錯 —— 還原失敗，使用者的設定就只剩備份檔了。
+  // 所以還原前一律先強制清掉殘留的目錄。
+  try {
+    if (existsSync(CONFIG) && fs.statSync(CONFIG).isDirectory()) {
+      rmSync(CONFIG, { recursive: true, force: true });
+    }
+  } catch {
+    /* 清不掉就讓下面的還原自己去報錯，不要在這裡吞掉原始問題 */
+  }
   if (hadConfig) {
     if (existsSync(BACKUP)) {
       copyFileSync(BACKUP, CONFIG);
@@ -100,29 +128,61 @@ async function main(baseConfig) {
 
   // 快取不可以用 mtime 當鍵：同一毫秒內的兩次寫入 mtime 會相同，讀到的就是過期設定。
   // 這裡把兩次寫入的 mtime 直接鎖成同一個值，讓「同毫秒」這個競態變成必然而非碰運氣。
+  // 兩份設定刻意**等長**：長度不同的話，「用檔案長度當快取鍵」這種同樣有問題的實作
+  // 也能矇混過關（突變測試證實過）。等長 + 同 mtime，就只剩「真的比對內容」能通過。
   const PINNED_MTIME = 1_700_000_000;
   utimesSync(CONFIG, PINNED_MTIME, PINNED_MTIME);
   catalog.resolveModelAlias('codex-ultra'); // 讓這個 mtime 進快取
-  writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.5' } });
+  writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.3-codex' } });
   utimesSync(CONFIG, PINNED_MTIME, PINNED_MTIME);
   check(
-    'mtime 相同也要讀到新內容',
-    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.5',
+    'mtime 與長度都相同，仍要讀到新內容',
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.3-codex',
     `got ${catalog.resolveModelAlias('codex-ultra')}`
   );
 
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
 
-  // 讀檔失敗（不是「檔案不存在」）必須沿用上一次成功的設定，不能靜默退回內建值 ——
-  // 否則 Windows 上撞到別人 rename / 防毒鎖檔的那一瞬間，這次 run 就會悄悄換成別的 model。
-  // 這裡把 config.json 換成一個「同名目錄」來製造穩定的非 ENOENT 讀取錯誤（EISDIR）。
+  // **暫時性**讀檔失敗（鎖檔、防毒掃描）必須沿用上一次成功的設定，不能靜默退回內建值 ——
+  // 否則撞上那一瞬間，這次 run 就會悄悄換成別的 model。
+  //
+  // 這裡用注入的 EBUSY 而不是「把 config.json 換成目錄」：目錄會得到 EISDIR，
+  // 而 EISDIR 是結構性錯誤（見下一條），分類不同。注入也讓這條斷言不依賴平台行為。
   check('先確認覆寫已生效', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-terra');
+  const withReadError = (code, fn) => {
+    injected.code = code;
+    try {
+      return fn();
+    } finally {
+      injected.code = null;
+    }
+  };
+  // 先確認注入真的有效，否則下面每一條「注入」斷言都可能是什麼都沒發生的假綠燈。
+  check(
+    '讀取錯誤注入機制本身有效',
+    withReadError('EBUSY', () => {
+      try {
+        readFileSyncViaPatched(CONFIG);
+        return false;
+      } catch (error) {
+        return error.code === 'EBUSY';
+      }
+    })
+  );
+  check(
+    '暫時性讀檔失敗（EBUSY）維持 last-good 設定',
+    withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-5.6-terra',
+    `got ${withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra'))}`
+  );
+
+  // 結構性錯誤（路徑被同名目錄佔住 / symlink 迴圈 / 路徑過長）不會自己好，
+  // 沿用 last-good 只會讓一份永遠讀不到的設定無限期存活 —— 要退回內建值。
   rmSync(CONFIG);
   mkdirSync(CONFIG);
   try {
     check(
-      '讀檔失敗時維持 last-good 設定',
-      catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-terra',
+      '結構性讀檔失敗（EISDIR）退回內建值',
+      catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol',
       `got ${catalog.resolveModelAlias('codex-ultra')}`
     );
   } finally {
@@ -152,16 +212,30 @@ async function main(baseConfig) {
   // 語意上作廢」的舊設定當成 last-good 復活。
   writeFileSync(CONFIG, '{ this is not json');
   check('壞掉的 JSON 退回內建值', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol');
-  rmSync(CONFIG);
-  mkdirSync(CONFIG);
-  try {
+  check(
+    '壞掉的 JSON 之後遇到暫時性讀檔失敗，不會復活舊設定',
+    withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-5.6-sol',
+    `got ${withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra'))}`
+  );
+
+  // 寫入端：**暫時性**讀取失敗時絕不能拿空基底覆寫下去（那會吃掉整份設定與未知欄位）。
+  // 這條走 in-process 而不是 MCP，因為 MCP server 是另一個 process，注入不到它的 fs。
+  {
+    const userConfig = await load('dist/core/user-config.js');
+    writeConfig({ ...baseConfig, keepThis: 'important' });
+    const before = readFileSync(CONFIG, 'utf-8');
+    let thrown = null;
+    try {
+      withReadError('EBUSY', () => userConfig.updateUserConfig((raw) => (raw.touched = true)));
+    } catch (error) {
+      thrown = error;
+    }
     check(
-      '壞掉的 JSON 之後讀檔失敗，不會復活舊設定',
-      catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol',
-      `got ${catalog.resolveModelAlias('codex-ultra')}`
+      '暫時性讀取失敗時 updateUserConfig 拒絕寫入',
+      thrown !== null && /Refusing to update/.test(String(thrown?.message)),
+      `thrown=${thrown?.message?.slice(0, 100)}`
     );
-  } finally {
-    rmSync(CONFIG, { recursive: true });
+    check('拒絕寫入後原檔一個 byte 都沒動', readFileSync(CONFIG, 'utf-8') === before);
   }
 
   // 陣列的 typeof 也是 'object'：不擋的話 Object.entries 會解出 "0"/"1" 這種垃圾 alias。
@@ -290,8 +364,15 @@ async function mcpChecks() {
     check('拒絕 prototype key 當 alias', !!res.error);
     // __proto__ 與 constructor 不同：普通 {} 的 out['__proto__'] = 字串會被 Object.prototype
     // 的 setter 無聲吃掉，key 根本不會出現在 own properties，驗證迴圈掃不到 → 假成功。
-    res = await call('set_config', { alias_model: { __proto__: 'opus' } });
-    check('拒絕 __proto__ 當 alias', !!res.error, JSON.stringify(res.error ?? res.result)?.slice(0, 120));
+    // **一定要用 computed key**：物件字面值裡的 `{ __proto__: 'opus' }` 是在設定原型，
+    // 不會產生 own property，JSON.stringify 出來是 `{}` —— 那樣等於根本沒把 __proto__
+    // 送出去，測到的是「拒絕空 map」而不是 prototype 防禦（獨立稽核 @gemini-3.1-pro 抓到）。
+    res = await call('set_config', { alias_model: { ['__proto__']: 'opus' } });
+    check(
+      '拒絕 __proto__ 當 alias（且是以「未知 alias」為由）',
+      !!res.error && /Unknown alias/.test(JSON.stringify(res.error)),
+      JSON.stringify(res.error ?? res.result)?.slice(0, 200)
+    );
     res = await call('set_config', { alias_model: {} });
     check('拒絕空的 alias_model（假成功）', !!res.error);
     res = await call('set_config', {});
@@ -310,6 +391,21 @@ async function mcpChecks() {
       readFileSync(CONFIG, 'utf-8') === corrupted,
       `file changed to: ${readFileSync(CONFIG, 'utf-8').slice(0, 60)}`
     );
+
+    // parser 會忽略陣列型的 aliasModel，但 set_config 若直接 spread 它，
+    // `{ ...['a','b'] }` 會生出 "0"/"1" 兩個 key 寫回磁碟 ——
+    // 那些垃圾就從「被忽略」升級成「parser 認可的 alias」。
+    writeConfig({ aliasModel: ['gpt-5.4', 'opus'] });
+    res = await call('set_config', { alias_model: { 'claude-ultra': 'haiku' } });
+    const afterArray = JSON.parse(readFileSync(CONFIG, 'utf-8'));
+    check(
+      'set_config 不會把陣列 aliasModel 轉成數字 alias',
+      !!res.result &&
+        !Object.prototype.hasOwnProperty.call(afterArray.aliasModel ?? {}, '0') &&
+        afterArray.aliasModel?.['claude-ultra'] === 'haiku',
+      JSON.stringify(afterArray.aliasModel)
+    );
+
     writeConfig({ myCustomThing: { keep: 'me' } });
 
     // alias 指到不支援 reasoning 的 agent 時，不該回報一個不會生效的 effort
@@ -353,8 +449,24 @@ async function mcpChecks() {
 const hadConfig = existsSync(CONFIG);
 if (hadConfig) copyFileSync(CONFIG, BACKUP);
 const baseConfig = hadConfig ? JSON.parse(readFileSync(CONFIG, 'utf-8')) : {};
+
+// finally 對 Ctrl-C 沒有保護力。這支測試動的是使用者真實的設定檔，
+// 被中斷時至少要把它還原回去再走。
+let restored = false;
+const restoreOnce = () => {
+  if (restored) return;
+  restored = true;
+  restoreConfig(hadConfig);
+};
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.on(signal, () => {
+    restoreOnce();
+    process.exit(130);
+  });
+}
+
 try {
   await main(baseConfig);
 } finally {
-  restoreConfig(hadConfig);
+  restoreOnce();
 }

@@ -24,6 +24,7 @@ async function runAndWait(model, prompt, timeout) {
   return JSON.parse(waited.content[0].text)[0];
 }
 
+let failures = 0;
 for (const [model, to] of [['haiku', 90], ['gpt-5.4-mini', 120], ['agy', 150]]) {
   log(`--- ${model} ---`);
   try {
@@ -31,10 +32,17 @@ for (const [model, to] of [['haiku', 90], ['gpt-5.4-mini', 120], ['agy', 150]]) 
     const o = JSON.stringify(r.agentOutput || r.stdout || '');
     log(`  status=${r.status} exit=${r.exitCode} outLen=${o.length}`);
     log(`  output=${o.slice(0, 200)}`);
-    log(o.length > 5 && o !== '""' && o !== '{}' ? '  OK 有輸出' : '  FAIL 無輸出');
-  } catch (e) { log(`  ERROR: ${e.message}`); }
+    const ok = o.length > 5 && o !== '""' && o !== '{}';
+    if (!ok) failures += 1;
+    log(ok ? '  OK 有輸出' : '  FAIL 無輸出');
+  } catch (e) {
+    failures += 1;
+    log(`  ERROR: ${e.message}`);
+  }
 }
 
 await client.close();
-log('=== e2e done ===');
-process.exit(0);
+log(`=== e2e done: ${failures} failed ===`);
+// 一定要用 exit code 表態：原本無論結果都 process.exit(0)，
+// 任何自動化都會把「三家 CLI 全都沒回應」讀成通過。
+process.exit(failures > 0 ? 1 : 0);

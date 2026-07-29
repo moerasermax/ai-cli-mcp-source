@@ -351,6 +351,10 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
     // 必須用 null prototype：普通 {} 的 out['__proto__'] = '...' 會打到 Object.prototype
     // 的 setter（字串會被無聲丟棄），結果 __proto__ 這個 key 根本不會變成 own property
     // ——後面的 alias 驗證迴圈就掃不到它，呼叫端會拿到「成功」但什麼都沒設定。
+    //
+    // 實測（verify-alias-config 走真的 stdio JSON-RPC）：`{"__proto__":"opus"}` 會原樣送達
+    // 這裡並成為 own property，因此這一行就是實際擋下它的那道防線
+    // ——被拒理由是「Unknown alias "__proto__"」，測試也是這樣斷言的。
     const out: Record<string, string> = Object.create(null);
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       if (typeof v !== 'string' || v.trim() === '') {
@@ -441,14 +445,20 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
       }
     }
 
-    updateUserConfig((raw) => {
+    // 既有值如果不是普通物件（例如使用者手寫成陣列），不能拿來 spread：
+    // `{ ...['a','b'] }` 會變成 `{"0":"a","1":"b"}`，寫回去之後那些數字 key
+    // 就從「parser 會忽略的垃圾」升級成「parser 認可的 alias」。整個丟掉才對。
+    const spreadable = (value: unknown): Record<string, unknown> =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+
+    const written = updateUserConfig((raw) => {
       if (aliasModel) {
-        const current = (raw.aliasModel ?? {}) as Record<string, unknown>;
-        raw.aliasModel = { ...current, ...aliasModel };
+        raw.aliasModel = { ...spreadable(raw.aliasModel), ...aliasModel };
       }
       if (aliasReasoning) {
-        const current = (raw.aliasReasoningEffort ?? {}) as Record<string, unknown>;
-        raw.aliasReasoningEffort = { ...current, ...aliasReasoning };
+        raw.aliasReasoningEffort = { ...spreadable(raw.aliasReasoningEffort), ...aliasReasoning };
       }
       if (defaultEffort) {
         raw.defaultReasoningEffort = defaultEffort.toLowerCase();
@@ -471,7 +481,9 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
       }
     });
 
-    return this.jsonResult(getModelsPayload());
+    // 直接回報「剛剛寫進去的那一份」。重新讀一次的話，中間有別的 writer 介入時，
+    // 回傳的 payload 描述的就不是本次寫入的結果了（而且會多一次讀檔）。
+    return this.jsonResult(getModelsPayload(written));
   }
 
   private handleRun(toolArguments: Record<string, unknown>): ServerResult {

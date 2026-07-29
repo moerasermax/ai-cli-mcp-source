@@ -1,7 +1,7 @@
 // direct-api 基本驗證：mock fetch，不打真實 provider。
 // 執行前需先 npm run build。
 import assert from 'node:assert';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProcessService } from './dist/core/process-service.js';
@@ -250,5 +250,8 @@ assert.deepStrictEqual(capturedBodies[4].messages[1], {
 assert.strictEqual(capturedBodies[4].messages[2].role, 'tool');
 assert.strictEqual(capturedBodies[4].messages[2].tool_call_id, 'xml_call_0');
 assert.ok(capturedBodies[4].messages[2].content.includes(`Wrote ${xmlReportContent.length} chars`));
+
+// 清掉 mkdtempSync 建的暫存目錄，否則每跑一次就在 %TEMP% 留一份。
+rmSync(tempRoot, { recursive: true, force: true });
 
 console.log('PASS: direct-api mock fetch route/output/session verified');
