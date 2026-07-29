@@ -1,7 +1,7 @@
 /**
  * MCP server。對應 dist/app/mcp.js。
  * 工具：run, list_processes, get_result, wait, peek, kill_process,
- *       cleanup_processes, doctor, models。
+ *       cleanup_processes, doctor, models, set_config。
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -17,10 +17,16 @@ import { createRequire } from 'node:module';
 import { debugLog } from '../core/debug.js';
 import { getCliDoctorStatus, resolveAllCliPaths } from '../core/doctor.js';
 import {
+  MODEL_ALIASES,
   getModelParameterDescription,
   getModelsPayload,
   getSupportedModelsDescription,
+  isBuiltinAlias,
+  isKnownModelTarget,
+  listKnownModels,
 } from '../models/catalog.js';
+import { ALLOWED_REASONING_EFFORTS } from '../core/reasoning.js';
+import { updateUserConfig } from '../core/user-config.js';
 import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
 import { ProcessService } from '../core/process-service.js';
 import { CircuitBreakerError } from '../core/circuit-breaker.js';
@@ -233,6 +239,48 @@ ${getSupportedModelsDescription()}
           inputSchema: { type: 'object', properties: {} },
         },
         {
+          name: 'set_config',
+          description: `Update persisted user settings at the ai-cli config file. Changes take effect immediately for subsequent run calls; the MCP server does NOT need to be restarted.
+
+Use alias_model to repoint a model alias (for example {"codex-ultra": "gpt-5.6-terra"}). Valid alias names: ${Object.keys(
+            MODEL_ALIASES
+          )
+            .map((a) => `"${a}"`)
+            .join(', ')}.
+
+Use unset to drop overrides and fall back to the built-in defaults. Returns the same payload as the models tool so the effective state is visible right away.
+
+Note: antigravity (agy) ignores model selection entirely; its CLI takes no --model flag, so repointing agy-ultra only changes what is reported, not what runs.`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              alias_model: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description:
+                  'Map of alias name to the model it should resolve to. Unknown model names are rejected rather than silently routed to Claude.',
+              },
+              alias_reasoning_effort: {
+                type: 'object',
+                additionalProperties: { type: 'string' },
+                description:
+                  'Map of alias/model name to default reasoning effort applied when run does not specify one.',
+              },
+              default_reasoning_effort: {
+                type: 'string',
+                description:
+                  'Default reasoning effort for reasoning-capable agents when neither run nor an alias override specifies one.',
+              },
+              unset: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Keys to remove: an alias name clears both its model and reasoning overrides; "defaultReasoningEffort" clears the global default.',
+              },
+            },
+          },
+        },
+        {
           name: 'query_usage',
           description: 'Query remaining token/credit usage for AI CLI tools (Kiro, Claude, Codex, Antigravity/agy). Results are cached for 120 seconds. Use refresh=true to force a fresh query.',
           inputSchema: {
@@ -276,6 +324,8 @@ ${getSupportedModelsDescription()}
           return this.jsonResult(getCliDoctorStatus());
         case 'models':
           return this.jsonResult(getModelsPayload());
+        case 'set_config':
+          return this.handleSetConfig(toolArguments);
         case 'query_usage':
           return this.handleQueryUsage(toolArguments);
         default:
@@ -286,6 +336,134 @@ ${getSupportedModelsDescription()}
 
   private jsonResult(value: unknown): ServerResult {
     return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+  }
+
+  /** 讀出一個 optional 的 Record<string, string> 參數，型別不符就丟 InvalidParams。 */
+  private readStringMap(
+    toolArguments: Record<string, unknown>,
+    key: string
+  ): Record<string, string> | undefined {
+    const raw = toolArguments[key];
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new McpError(ErrorCode.InvalidParams, `${key} must be an object.`);
+    }
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v !== 'string' || v.trim() === '') {
+        throw new McpError(ErrorCode.InvalidParams, `${key}.${k} must be a non-empty string.`);
+      }
+      out[k] = v.trim();
+    }
+    return out;
+  }
+
+  private assertKnownAlias(alias: string): void {
+    // 用 hasOwnProperty 而非 in：'constructor' / 'toString' 會讓 in 回 true，
+    // 那就等於允許寫入不存在的 alias。
+    if (!isBuiltinAlias(alias)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Unknown alias "${alias}". Valid aliases: ${Object.keys(MODEL_ALIASES).join(', ')}.`
+      );
+    }
+  }
+
+  private assertValidEffort(label: string, effort: string): void {
+    if (!ALLOWED_REASONING_EFFORTS.has(effort.toLowerCase())) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Invalid reasoning effort "${effort}" for ${label}. Allowed: ${[
+          ...ALLOWED_REASONING_EFFORTS,
+        ].join(', ')}.`
+      );
+    }
+  }
+
+  private handleSetConfig(toolArguments: Record<string, unknown>): ServerResult {
+    const aliasModel = this.readStringMap(toolArguments, 'alias_model');
+    const aliasReasoning = this.readStringMap(toolArguments, 'alias_reasoning_effort');
+
+    const defaultEffortRaw = toolArguments.default_reasoning_effort;
+    if (defaultEffortRaw !== undefined && typeof defaultEffortRaw !== 'string') {
+      throw new McpError(ErrorCode.InvalidParams, 'default_reasoning_effort must be a string.');
+    }
+    const defaultEffort = (defaultEffortRaw as string | undefined)?.trim();
+
+    const unsetRaw = toolArguments.unset;
+    if (unsetRaw !== undefined && !Array.isArray(unsetRaw)) {
+      throw new McpError(ErrorCode.InvalidParams, 'unset must be an array of strings.');
+    }
+    const unset = ((unsetRaw as unknown[] | undefined) ?? []).map((entry) => {
+      if (typeof entry !== 'string' || entry.trim() === '') {
+        throw new McpError(ErrorCode.InvalidParams, 'unset entries must be non-empty strings.');
+      }
+      return entry.trim();
+    });
+
+    if (!aliasModel && !aliasReasoning && !defaultEffort && unset.length === 0) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'Nothing to change. Provide at least one of alias_model, alias_reasoning_effort, default_reasoning_effort, unset.'
+      );
+    }
+
+    // 驗證：alias 必須是既有的；model 必須真的被某個 agent 認得。
+    // claude 的 matchesModel 是 catch-all，不擋的話打錯字會靜默跑去 claude。
+    for (const [alias, target] of Object.entries(aliasModel ?? {})) {
+      this.assertKnownAlias(alias);
+      if (!isKnownModelTarget(target)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Unknown model "${target}" for alias "${alias}". Known models: ${listKnownModels().join(
+            ', '
+          )}. direct-api also accepts provider-prefixed names such as "or-<model>" or "ds-<model>".`
+        );
+      }
+    }
+    for (const [alias, effort] of Object.entries(aliasReasoning ?? {})) {
+      this.assertValidEffort(`alias_reasoning_effort.${alias}`, effort);
+    }
+    if (defaultEffort) {
+      this.assertValidEffort('default_reasoning_effort', defaultEffort);
+    }
+    for (const key of unset) {
+      if (key !== 'defaultReasoningEffort') {
+        this.assertKnownAlias(key);
+      }
+    }
+
+    updateUserConfig((raw) => {
+      if (aliasModel) {
+        const current = (raw.aliasModel ?? {}) as Record<string, unknown>;
+        raw.aliasModel = { ...current, ...aliasModel };
+      }
+      if (aliasReasoning) {
+        const current = (raw.aliasReasoningEffort ?? {}) as Record<string, unknown>;
+        raw.aliasReasoningEffort = { ...current, ...aliasReasoning };
+      }
+      if (defaultEffort) {
+        raw.defaultReasoningEffort = defaultEffort.toLowerCase();
+      }
+      for (const key of unset) {
+        if (key === 'defaultReasoningEffort') {
+          delete raw.defaultReasoningEffort;
+          continue;
+        }
+        // alias 名稱：同時清掉 model 與 reasoning 兩種覆寫。
+        for (const bucket of ['aliasModel', 'aliasReasoningEffort'] as const) {
+          const map = raw[bucket];
+          if (map && typeof map === 'object' && !Array.isArray(map)) {
+            delete (map as Record<string, unknown>)[key];
+            if (Object.keys(map as Record<string, unknown>).length === 0) {
+              delete raw[bucket];
+            }
+          }
+        }
+      }
+    });
+
+    return this.jsonResult(getModelsPayload());
   }
 
   private handleRun(toolArguments: Record<string, unknown>): ServerResult {
