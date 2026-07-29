@@ -199,7 +199,7 @@ claude agent 的 `matchesModel` 是 registry 最後一位的 catch-all（永遠�
 - 模型的**自報名稱不可信**（問 `gpt-5.6-terra`「你是哪個模型」它會說 GPT-5）。要驗證 `--model`
   真的送出去，把 alias 指到一個不存在但能過驗證的名稱（如 `gpt-5.6-doesnotexist`）再 `run`，
   看 CLI 是否回報該模型不支援。
-- 回歸測試：`node verify-alias-config.mjs`（49 項，已納入 `npm test`）。
+- 回歸測試：`node verify-alias-config.mjs`（60 項，已納入 `npm test`）。
 
 ## AI 啟動熔斷器（circuit breaker）
 

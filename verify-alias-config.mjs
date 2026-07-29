@@ -177,6 +177,20 @@ async function main(baseConfig) {
 
   // 結構性錯誤（路徑被同名目錄佔住 / symlink 迴圈 / 路徑過長）不會自己好，
   // 沿用 last-good 只會讓一份永遠讀不到的設定無限期存活 —— 要退回內建值。
+  // 先用注入逐一驗每個 code，再用「真的換成目錄」驗一次端到端。
+  //
+  // 每一輪都要**先把 last-good 重新建立起來**：結構性分支會清掉快取，
+  // 所以第一個 code 跑完之後 cache 就是空的 —— 後面的 code 就算被錯分成「暫時性」，
+  // 也會因為沒有 last-good 可用而一樣回內建值，斷言便分辨不出對錯（突變測試證實過）。
+  for (const code of ['EISDIR', 'ELOOP', 'ENAMETOOLONG']) {
+    writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
+    catalog.resolveModelAlias('codex-ultra'); // 讓 terra 成為 last-good
+    check(
+      `結構性讀檔失敗（${code}）退回內建值`,
+      withReadError(code, () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-5.6-sol',
+      `got ${withReadError(code, () => catalog.resolveModelAlias('codex-ultra'))}`
+    );
+  }
   rmSync(CONFIG);
   mkdirSync(CONFIG);
   try {
@@ -236,6 +250,25 @@ async function main(baseConfig) {
       `thrown=${thrown?.message?.slice(0, 100)}`
     );
     check('拒絕寫入後原檔一個 byte 都沒動', readFileSync(CONFIG, 'utf-8') === before);
+
+    // 讀取端與寫入端的「拿不到」判準必須分開：
+    // 讀取端把 EISDIR/ELOOP/ENAMETOOLONG 也算成結構性 → 退回內建值（對）；
+    // 但寫入端只有 ENOENT（真的沒這個檔）才能用空基底 —— 其餘代表「路徑上有東西、
+    // 只是我讀不到」，拿空基底寫下去就會蓋掉還在的資料。
+    for (const code of ['EISDIR', 'ELOOP', 'ENAMETOOLONG']) {
+      let err = null;
+      try {
+        withReadError(code, () => userConfig.updateUserConfig((raw) => (raw.touched = true)));
+      } catch (error) {
+        err = error;
+      }
+      check(
+        `寫入端不把 ${code} 當成「檔案不存在」`,
+        err !== null && /Refusing to update/.test(String(err?.message)),
+        `thrown=${err?.message?.slice(0, 80)}`
+      );
+    }
+    check('這幾輪拒絕之後原檔仍未被動過', readFileSync(CONFIG, 'utf-8') === before);
   }
 
   // 陣列的 typeof 也是 'object'：不擋的話 Object.entries 會解出 "0"/"1" 這種垃圾 alias。
@@ -245,6 +278,23 @@ async function main(baseConfig) {
     catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol' &&
       catalog.resolveModelAlias('0') === '0',
     `got ${catalog.resolveModelAlias('0')}`
+  );
+
+  // 根節點是陣列、以及 aliasReasoningEffort 是陣列，也都要整個忽略。
+  writeFileSync(CONFIG, JSON.stringify([{ aliasModel: { 'codex-ultra': 'gpt-5.4' } }], null, 2));
+  check('根節點是陣列時整份忽略', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol');
+  // 光看 alias 值分不出來（陣列本來就取不到欄位，兩種實作都回內建值）——
+  // 要看 status：有擋才會是 error/parse，沒擋的話會被當成「成功解析出一份空設定」。
+  check(
+    '根節點是陣列時 status 回報 parse 錯誤',
+    catalog.getModelsPayload().userConfig.status?.state === 'error',
+    JSON.stringify(catalog.getModelsPayload().userConfig.status)
+  );
+  writeConfig({ aliasReasoningEffort: ['high', 'low'] });
+  check(
+    'aliasReasoningEffort 是陣列時整個忽略',
+    catalog.getModelsPayload().userConfig.aliasReasoningEffort === undefined,
+    JSON.stringify(catalog.getModelsPayload().userConfig.aliasReasoningEffort)
   );
 
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
@@ -273,6 +323,16 @@ async function main(baseConfig) {
   check('一次 buildCliCommand 只讀一次設定檔', buildReads === 1, `read ${buildReads} times`);
   const payloadReads = countConfigReads(() => catalog.getModelsPayload());
   check('一次 getModelsPayload 只讀一次設定檔', payloadReads === 1, `read ${payloadReads} times`);
+
+  // 已經有 snapshot 時就完全不該再讀 —— set_config 靠這個把「寫入後回報」的那次讀取也省掉，
+  // 順便保證回報的就是本次寫入的結果，而不是中途被別人改過的版本。
+  const snapshot = (await load('dist/core/user-config.js')).loadUserConfigSnapshot();
+  const reusedReads = countConfigReads(() => catalog.getModelsPayload(snapshot));
+  check(
+    '傳入 snapshot 時 getModelsPayload 完全不讀檔',
+    reusedReads === 0,
+    `read ${reusedReads} times`
+  );
 
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'opus' } });
   cmd = build();

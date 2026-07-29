@@ -267,17 +267,23 @@ function parseAndCache(rawText: string): UserConfig {
 /**
  * 讀出設定檔的原始物件（未正規化）。寫入時必須以此為基底，才不會吃掉未知欄位。
  *
- * **只有「檔案不存在」才能回空物件。** 其他讀取／解析錯誤一律往上丟：
- * 原本的寫法是任何錯誤都回 `{}`，於是鎖檔或半份 JSON 的瞬間，`set_config` 會拿空基底
- * 套上 patch 再寫回去 —— 使用者原有的設定與所有未知欄位就被整份吃掉了。
- * 寧可讓 `set_config` 明確失敗，也不能靜默覆寫。
+ * **只有 `ENOENT`（檔案真的不存在）才能回空物件。**
+ * 其他讀取／解析錯誤一律往上丟：原本的寫法是任何錯誤都回 `{}`，於是鎖檔或半份 JSON 的
+ * 瞬間，`set_config` 會拿空基底套上 patch 再寫回去 —— 使用者原有的設定與所有未知欄位
+ * 就被整份吃掉了。寧可讓 `set_config` 明確失敗，也不能靜默覆寫。
+ *
+ * **注意這裡刻意不用 `isMissingError()`**：那個判斷是給**讀取端**用的，
+ * 它把 `EISDIR` / `ELOOP` / `ENAMETOOLONG` 也算成「結構性地拿不到」→ 退回內建值，
+ * 對讀取而言是對的。但對**寫入端**，那些情況代表「路徑上有東西、只是我讀不到」，
+ * 拿空基底寫下去就可能覆蓋掉還在的資料。兩端的判準必須分開
+ * （這個回歸就是把讀取端的集合擴大時一起帶壞寫入端的 —— 由最終稽核 @codex 抓到）。
  */
 function readRawConfig(): Record<string, unknown> {
   let text: string;
   try {
     text = readConfigText();
   } catch (error) {
-    if (isMissingError(error)) return {};
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
     throw new Error(
       `Refusing to update ${CONFIG_PATH}: cannot read the existing file ` +
         `(${(error as NodeJS.ErrnoException).code ?? 'unknown'}). ` +

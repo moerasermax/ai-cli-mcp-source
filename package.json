@@ -1,6 +1,6 @@
 {
   "name": "ai-cli-mcp",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "description": "Run Claude, Codex, Antigravity (agy), Kiro, Forge, and direct OpenAI-compatible API agents through MCP with background jobs. Self-maintained, registry-based architecture.",
   "private": true,
   "type": "module",

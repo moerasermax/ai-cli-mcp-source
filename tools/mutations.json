@@ -2,9 +2,44 @@
   {
     "name": "readRawConfig 暫時性讀失敗回 {}（資料遺失）",
     "file": "src/core/user-config.ts",
-    "from": "    if (isMissingError(error)) return {};\n    throw new Error(",
-    "to": "    if (isMissingError(error)) return {};\n    if (error) return {};\n    throw new Error(",
+    "from": "    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};",
+    "to": "    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};\n    if (error) return {};",
     "expect": "暫時性讀取失敗時 updateUserConfig 拒絕寫入"
+  },
+  {
+    "name": "寫入端沿用讀取端的結構性錯誤集合（EISDIR 等被當成不存在）",
+    "file": "src/core/user-config.ts",
+    "from": "    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};",
+    "to": "    if (isMissingError(error)) return {};",
+    "expect": "寫入端不把 EISDIR 當成「檔案不存在」"
+  },
+  {
+    "name": "根節點是陣列時不擋",
+    "file": "src/core/user-config.ts",
+    "from": "  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {",
+    "to": "  if (!parsed || typeof parsed !== 'object') {",
+    "expect": "根節點是陣列時 status 回報 parse 錯誤"
+  },
+  {
+    "name": "aliasReasoningEffort 是陣列時不擋",
+    "file": "src/core/user-config.ts",
+    "from": "    !Array.isArray(raw.aliasReasoningEffort)\n  ) {",
+    "to": "    true\n  ) {",
+    "expect": "aliasReasoningEffort 是陣列時整個忽略"
+  },
+  {
+    "name": "ELOOP 不算結構性錯誤",
+    "file": "src/core/user-config.ts",
+    "from": "  'ELOOP',\n",
+    "to": "",
+    "expect": "結構性讀檔失敗（ELOOP）退回內建值"
+  },
+  {
+    "name": "getModelsPayload 收到 snapshot 仍自己重讀",
+    "file": "src/models/catalog.ts",
+    "from": "  const { config } = snapshot;",
+    "to": "  const { config } = loadUserConfigSnapshot();\n  void snapshot;",
+    "expect": "傳入 snapshot 時 getModelsPayload 完全不讀檔"
   },
   {
     "name": "readRawConfig parse 失敗回 {}（資料遺失）",

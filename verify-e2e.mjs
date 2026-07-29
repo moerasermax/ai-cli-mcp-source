@@ -32,7 +32,14 @@ for (const [model, to] of [['haiku', 90], ['gpt-5.4-mini', 120], ['agy', 150]]) 
     const o = JSON.stringify(r.agentOutput || r.stdout || '');
     log(`  status=${r.status} exit=${r.exitCode} outLen=${o.length}`);
     log(`  output=${o.slice(0, 200)}`);
-    const ok = o.length > 5 && o !== '""' && o !== '{}';
+    // 三個條件都要看：只看輸出長度的話，「CLI 失敗但吐了一段錯誤訊息」會被判成成功。
+    const ok =
+      r.status === 'completed' &&
+      (r.exitCode === 0 || r.exitCode === undefined) &&
+      o.length > 5 &&
+      o !== '""' &&
+      o !== '{}' &&
+      /pong/i.test(o);
     if (!ok) failures += 1;
     log(ok ? '  OK 有輸出' : '  FAIL 無輸出');
   } catch (e) {
