@@ -8,6 +8,82 @@
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-07-30
+
+實測全部五個 agent 之後的收斂：Claude 5/5 模型可用、Codex 6/9（3 個被 ChatGPT 帳號層級擋下）、
+Antigravity 可用；**Kiro 沒額度**（CLI 回 `Not logged in`）、**Forge 從沒安裝過**
+（`resolvedPath: null`）。兩個長期不能用的 agent 拔掉，並把 direct-api 這條
+「自己接第三方 API」的路徑補上完整說明——它現在是主要的擴充管道。
+
+### 移除
+- **Kiro agent**（`src/agents/kiro.ts`）與其 7 個 model、`kiro-ultra` alias、
+  `query_usage` 的 Kiro 供應商。（Claude）
+- **Forge agent**（`src/agents/forge.ts`）與 `peek-extractor` 裡整套 Forge 專用擷取策略
+  （`extractForgeLines` / Execute-Finished 配對 / stderr 特例）。（Claude）
+- `PeekEventExtractor` 的 `source` 建構選項與 `flush()` 的 `terminal` 選項。這兩個**只有**
+  forge 的策略在讀，其餘 agent 從來不看；留著會是「看起來有作用、其實沒人讀」的死狀態。（Claude）
+
+### 變更（破壞性）
+- `kiro`、`kiro-default`、`kiro-ultra`、`kiro-deepseek-3.2`、`kiro-minimax-m2.5`、
+  `kiro-minimax-m2.1`、`kiro-glm-5`、`kiro-qwen3-coder-next`、`forge` 這些 model 名稱
+  現在會**丟出明確錯誤**。**這一條是重點**：claude 的 `matchesModel` 是 catch-all 永遠回 true，
+  不主動攔的話這些名稱會被 claude 悄悄接走並正常回答，呼叫端根本不會發現自己跑的不是 Kiro。
+  攔截點放在 alias 解析之後、`selectAgentForModel` 之前，所以連 alias 形式也擋得到。（Claude）
+  - **不受影響**：`forge-<model>` 仍然有效，那會被讀成 direct-api 的 provider `forge` 加 model，
+    在更早的 `resolveDirectApiModel()` 就解析走了。
+- `AgentId` 收窄為 `claude | codex | antigravity | direct-api`。`CliPaths` 是從它推導的
+  （`Record<Exclude<AgentId,'direct-api'>, string>`），所以型別一改，編譯器就把所有殘留點點名出來。（Claude）
+- `doctor` 不再回報 Kiro / Forge；`query_usage` 只剩 claude / codex / agy（全部 PTY，
+  移除了唯一走 pipe 的 Kiro，連帶簡化 `transport` 判斷）。（Claude）
+
+### 新增
+- **README 新增「direct-api：自己接任何第三方 API」專章**：`providers.json` 格式
+  （含 `key`/`token`、`baseURL` 等別名寫法）、`or-`/`ds-` 內建前綴與預設端點、
+  如何加自訂 provider（DeepSeek / Ollama 等範例）、`<provider>-<model>` 呼叫方式，
+  以及能力與限制（工具呼叫、session、`[image:]`、`[no-tools]`、30 次上限、api_key 遮蔽）。（Claude）
+- 回歸斷言：`kiro` / `kiro-default` / `kiro-ultra` / `kiro-glm-5` / `forge` 五個名稱
+  必須被拒絕**且不得被路由到 claude**（`verify-alias-config.mjs`，60 → 65 項）。
+  `verify-mcp.mjs` 另外斷言 models payload 不再有 kiro/forge 區塊與 `kiro-ultra` alias。（Claude）
+- 突變 `移除的 model 名稱不攔截（kiro/forge 靜默路由到 claude）`。（Claude）
+
+## [4.1.2] - 2026-07-30
+
+起因是一台機器的 `ai-cli` MCP 連不上（`Failed to reconnect to ai-cli: -32000`），
+另一台正常 —— 差別只在兩台註冊了不同的 entry point。
+
+### 修正
+- **`ai-cli mcp` 入口一連上就自殺**（從 `66ec771` 框架初版就存在）。`runMcpServer()`
+  在 transport 接上的瞬間就 resolve，但呼叫端會合理讀成「server 跑完了」；
+  `bin/ai-cli.ts` 正是在 `runCli()` resolve 之後呼叫 `process.exit()`，於是 server 在
+  handshake 完成前就死掉（實測 0.2 秒退出、stdout 全空），client 收到
+  `MCP error -32000: Connection closed`。改為 `runMcpServer()` 等到
+  `waitUntilClosed()` 才 resolve，讓三個入口從「碰巧正確」變成「因設計而正確」。
+  另外兩個入口（`dist/server.js`、`dist/bin/ai-cli-mcp.js`）之所以一直沒事，
+  只是因為它們沒有呼叫 `process.exit`，不是設計使然。（Claude）
+- **`verify-mcp.mjs` 從來只測得到三個入口中的一個**，所以上面那個 bug 活了四個版本
+  都沒被抓到 —— 它硬編 `C:\Users\Moera\...\dist\server.js`（另一台機器的絕對路徑）。
+  改為相對 `import.meta.url` 解析，並且**三個入口各跑一次完整 smoke test**
+  （handshake → 11 個工具 → models → doctor → list_processes）。（Claude）
+- **突變 harness 自己的假綠燈**：`tools/mutation-test.mjs` 寫死只跑
+  `verify-alias-config.mjs`，任何斷言落在別支腳本的突變都會被判成 SURVIVED。
+  新增 `script` 欄位讓每個突變指定負責的 verify 腳本（預設維持
+  `verify-alias-config.mjs`），基準檢查也改為逐一驗證用到的每一支。（Claude）
+- **突變 harness 在全新機器上直接 crash**：它無條件 `copyFileSync` 備份
+  `~/.local/share/ai-cli/config.json`，但使用者從沒改過設定時那個檔並不存在，
+  於是 ENOENT 當場中止。改為檔案不存在時跳過備份，收尾改成刪掉測試產生的那份。（Claude）
+
+### 變更
+- `package.json` 新增 `prepare: npm run build`。`dist/` 不進版控，clone 後必須編譯，
+  現在 `git clone && npm install` 一步到位。（Claude）
+- `verify-e2e.mjs` 去掉兩處硬編：server 路徑改為相對 `import.meta.url`，
+  工作目錄由 `C:\Users\Moera` 改為 `homedir()`。仍刻意不納入 `npm test`。（Claude）
+- README 移除硬編絕對路徑，新增「快速開始」與可直接複製的 `claude mcp add` 指令
+  （bash / PowerShell 兩版），並說明三個入口等價、以 `dist/server.js` 為官方推薦。（Claude）
+
+### 新增
+- 突變 `runMcpServer 不等 transport 關閉（ai-cli mcp 啟動即自殺）`，由
+  `verify-mcp.mjs` 負責抓。（Claude）
+
 ## [4.1.1] - 2026-07-30
 
 全部來自 v4.1.0 的**發版後驗收稽核**（@codex xhigh，唯讀＋實跑）。

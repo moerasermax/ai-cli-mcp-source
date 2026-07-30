@@ -1,6 +1,6 @@
 /**
  * Usage service — 查詢各 CLI agent 剩餘 token/quota。
- * 支援 Kiro（pipe）、Claude、Codex、agy（PTY）。
+ * 支援 Claude、Codex、agy（皆為 PTY）。Kiro 於 5.0.0 隨 agent 一起移除。
  * 結果快取 120 秒，error 快取 30 秒。
  */
 
@@ -63,23 +63,6 @@ function _parseLooseUsage(text: string): Record<string, unknown> {
   return usage;
 }
 
-export function parseKiroUsage(text: string) {
-  const raw = _cleanUsageText(text);
-  const creditsMatch = raw.match(/Credits\s*\(\s*([\d,.]+)\s+of\s+([\d,.]+)(?:\s+[^)]*)?\)/i);
-  const fallbackMatch = raw.match(/Credits\s+used:\s*([\d,.]+)/i);
-  const resetDateMatch = raw.match(/resets?\s+on\s+(\d{4}-\d{2}-\d{2})/i);
-  const overagesMatch = raw.match(/Overages:\s*(Enabled|Disabled|On|Off|True|False|Yes|No)/i);
-  const costMatch = raw.match(/Est\.?\s*cost:\s*(?:\$|USD\s*)?([\d,.]+)\s*(?:USD)?/i);
-  const percentUsed = _extractFirstNumber(raw, /(\d+(?:\.\d+)?)\s*%/);
-  return {
-    creditsUsed: creditsMatch ? _toNumber(creditsMatch[1]) : (fallbackMatch ? _toNumber(fallbackMatch[1]) : null),
-    creditsTotal: creditsMatch ? _toNumber(creditsMatch[2]) : null,
-    percentUsed,
-    resetDate: resetDateMatch ? resetDateMatch[1] : null,
-    overagesEnabled: overagesMatch ? _toBoolean(overagesMatch[1]) : null,
-    costUsd: costMatch ? _toNumber(costMatch[1]) : null,
-  };
-}
 
 export function parseClaudeUsage(text: string) {
   const raw = _cleanUsageText(text);
@@ -217,50 +200,6 @@ export function parseAgyUsage(text: string) {
 // ─── providers ───────────────────────────────────────────────────────────────
 
 interface PtyRunResult { output: string; exitCode: number | null; signal: string | null; timedOut: boolean }
-interface PipeRunResult { stdout: string; stderr: string; exitCode: number | null; signal: string | null; timedOut: boolean }
-
-class KiroUsageProvider {
-  provider = 'kiro';
-  transport = 'pipe';
-  constructor(private cliPath: string) {}
-
-  async query() {
-    const result = await this._run();
-    const text = _cleanUsageText(result.stderr || result.stdout);
-    if (!text) throw new Error(`Kiro usage: no output (exit ${result.exitCode ?? 'null'})`);
-    return parseKiroUsage(text);
-  }
-
-  private _run(): Promise<PipeRunResult> {
-    return new Promise((resolve, reject) => {
-      let child: ReturnType<typeof spawn>;
-      try {
-        child = spawn(this.cliPath, [], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
-      } catch (e) { reject(e); return; }
-
-      let stdout = '', stderr = '', timedOut = false, settled = false;
-      let writeT: ReturnType<typeof setTimeout> | null = null;
-      let timeoutT: ReturnType<typeof setTimeout> | null = null;
-      let forceT: ReturnType<typeof setTimeout> | null = null;
-      const cleanup = () => { if (writeT) clearTimeout(writeT); if (timeoutT) clearTimeout(timeoutT); if (forceT) clearTimeout(forceT); };
-      const ok = (v: PipeRunResult) => { if (settled) return; settled = true; cleanup(); resolve(v); };
-      const fail = (e: unknown) => { if (settled) return; settled = true; cleanup(); reject(e); };
-
-      child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-      child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-      child.stdin?.on('error', () => {});
-      child.on('error', fail);
-      child.on('close', (code, sig) => ok({ stdout, stderr, exitCode: code, signal: sig, timedOut }));
-
-      writeT = setTimeout(() => { try { child.stdin?.write('/usage\n'); child.stdin?.end(); } catch {} }, 500);
-      timeoutT = setTimeout(() => {
-        timedOut = true;
-        try { child.kill(); } catch {}
-        forceT = setTimeout(() => ok({ stdout, stderr, exitCode: null, signal: null, timedOut }), 1500);
-      }, 10_000);
-    });
-  }
-}
 
 class CodexUsageProvider {
   provider = 'codex';
@@ -478,13 +417,12 @@ class ClaudeUsageProvider {
 // ─── UsageService ─────────────────────────────────────────────────────────────
 
 export interface UsageCliPaths {
-  kiro?: string;
   claude?: string;
   codex?: string;
   antigravity?: string;
 }
 
-const ALL_AGENTS = ['kiro', 'claude', 'codex', 'agy'] as const;
+const ALL_AGENTS = ['claude', 'codex', 'agy'] as const;
 type AgentKey = typeof ALL_AGENTS[number];
 const DEFAULT_TTL = 120_000;
 const NEG_TTL = 30_000;
@@ -498,7 +436,7 @@ function _cacheInfo(hit: boolean, ageMs: number, ttlMs: number) {
 }
 
 function _makeResult(provider: string, status: string, usage: unknown, error: string | null, ttlMs: number) {
-  return { provider, transport: provider === 'kiro' ? 'pipe' : 'pty', status, cache: _cacheInfo(false, 0, ttlMs), usage, error };
+  return { provider, transport: 'pty', status, cache: _cacheInfo(false, 0, ttlMs), usage, error };
 }
 
 function _errMsg(e: unknown): string {
@@ -513,7 +451,6 @@ export class UsageService {
 
   constructor(cliPaths: UsageCliPaths = {}) {
     const entries: [string, { query(): Promise<unknown> }][] = [
-      ['kiro',   new KiroUsageProvider(cliPaths.kiro ?? '')],
       ['claude', new ClaudeUsageProvider(cliPaths.claude ?? '')],
       ['codex',  new CodexUsageProvider(cliPaths.codex ?? '')],
       ['agy',    new AgyUsageProvider(cliPaths.antigravity ?? '')],

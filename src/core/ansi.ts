@@ -1,6 +1,6 @@
 /**
  * ANSI 控制序列清理。
- * 用於 PTY 輸出（agy print mode 會吐 CSI/OSC/DCS 等序列）與 kiro 純文字輸出。
+ * 用於 PTY 輸出（agy print mode 會吐 CSI/OSC/DCS 等序列）與其他純文字輸出。
  * 1:1 還原自 dist 的 strip 邏輯（process-service.js + peek.js 用的較完整版本）。
  */
 

@@ -151,8 +151,6 @@ const service = new ProcessService({
     claude: 'CLAUDE',
     codex: 'CODEX',
     antigravity: 'AGY',
-    kiro: 'KIRO',
-    forge: 'FORGE',
   },
 });
 

@@ -13,7 +13,7 @@ import { resolve as pathResolve, isAbsolute } from 'node:path';
 import type { AgentDefinition, AgentId, BuiltCommand } from '../agents/types.js';
 import { selectAgentForModel, getAgent } from '../agents/registry.js';
 import { resolveDirectApiModel } from '../agents/direct-api.js';
-import { resolveModelAlias } from '../models/catalog.js';
+import { resolveModelAlias, isRemovedModel, removedModelMessage } from '../models/catalog.js';
 import { resolveReasoningEffort } from './reasoning.js';
 import {
   loadUserConfigSnapshot,
@@ -60,6 +60,12 @@ function resolveModelSelection(rawModel: string, config: UserConfig): ModelSelec
       providerName: directApiAliasModel.providerName,
       providerModel: directApiAliasModel.modelName,
     };
+  }
+  // 已移除的 agent 名稱要在這裡擋下來。放在 alias 解析「之後」，這樣連 kiro-ultra
+  // 這種 alias 也會被抓到；放在 selectAgentForModel 「之前」，因為 claude 的
+  // matchesModel 是 catch-all，晚一步就會被它靜默接走。
+  if (isRemovedModel(aliasedModel) || isRemovedModel(rawModel)) {
+    throw new Error(removedModelMessage(isRemovedModel(rawModel) ? rawModel : aliasedModel));
   }
   return {
     agent: selectAgentForModel(aliasedModel),
@@ -141,7 +147,7 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
 
   // reasoning：呼叫端明確指定 → 照舊驗證（不合法就丟錯）。
   // 未指定 → 由持久化設定 / 內建 ultra 預設補上，但只在該 agent 真的吃得下時才套用；
-  // 設定檔是「全域偏好」而非該次呼叫的明確意圖，不該讓 kiro/agy 這種不支援 reasoning
+  // 設定檔是「全域偏好」而非該次呼叫的明確意圖，不該讓 agy 這種不支援 reasoning
   // 的 agent 因此整個 run 失敗。
   const explicitEffort = options.reasoning_effort;
   let reasoningEffort: string;

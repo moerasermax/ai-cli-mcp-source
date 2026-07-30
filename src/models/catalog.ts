@@ -1,6 +1,6 @@
 /**
  * Model 目錄與 alias 表。
- * 1:1 還原自實際運行的 dist/model-catalog.js（含 antigravity/kiro，無 gemini）。
+ * 5.0.0 起只剩 claude / codex / antigravity / direct-api（kiro 與 forge 已移除）。
  *
  * 各 agent 的 model 清單其實也定義在各自的 agents/<name>.ts，
  * 這裡彙整出對外的 models payload 與描述字串。
@@ -39,8 +39,48 @@ export const MODEL_ALIASES: Record<string, string> = {
   'codex-ultra': 'gpt-5.6-sol',
   'agy-ultra': 'Gemini 3.1 Pro (High)',
   'antigravity-ultra': 'Gemini 3.1 Pro (High)',
-  'kiro-ultra': 'kiro-default',
 };
+
+/**
+ * 5.0.0 移除的 agent 所帶走的 model 名稱。
+ *
+ * 為什麼要留這份清單而不是直接讓它們變成「未知 model」：claude 的 matchesModel 是
+ * catch-all 永遠回 true，不特別攔的話這些名稱會**靜默跑去 claude** —— 呼叫端以為在跑
+ * Kiro，實際上拿到的是 Claude 的回答。這個 repo 已經為同類的靜默路由吃過虧，
+ * 所以寧可多一份清單，也要讓錯誤明確。
+ *
+ * 注意：這裡只擋「裸名稱」。`forge-<model>` 這種 provider-prefixed 形式仍然有效，
+ * 因為 forge 也可以是 providers.json 裡的 provider key，且那條路在
+ * command-builder 的 resolveDirectApiModel() 就先被解析走了。
+ */
+export const REMOVED_MODELS: Record<string, string> = {
+  kiro: 'Kiro',
+  'kiro-default': 'Kiro',
+  'kiro-ultra': 'Kiro',
+  'kiro-deepseek-3.2': 'Kiro',
+  'kiro-minimax-m2.5': 'Kiro',
+  'kiro-minimax-m2.1': 'Kiro',
+  'kiro-glm-5': 'Kiro',
+  'kiro-qwen3-coder-next': 'Kiro',
+  forge: 'Forge',
+};
+
+/** 這個 model 名稱是否屬於已移除的 agent。用 hasOwnProperty 避免打到 Object.prototype。 */
+export function isRemovedModel(model: string): boolean {
+  return Object.prototype.hasOwnProperty.call(REMOVED_MODELS, model);
+}
+
+/** 已移除 model 的統一錯誤訊息。 */
+export function removedModelMessage(model: string): string {
+  const agent = REMOVED_MODELS[model];
+  return (
+    `Model "${model}" was removed in 5.0.0 along with the ${agent} agent ` +
+    `(Kiro: out of quota / not logged in; Forge: CLI never installed). ` +
+    `Use claude, codex, or antigravity instead, or connect any third-party ` +
+    `OpenAI-compatible API yourself via direct-api ("<provider>-<model>", ` +
+    `configured in ~/.local/share/ai-cli/providers.json).`
+  );
+}
 
 /** alias 詳細資訊的內建定義。實際生效值請用 getEffectiveAliasDetails()。 */
 export const MODEL_ALIAS_DETAILS: ModelAliasDetail[] = [
@@ -48,7 +88,6 @@ export const MODEL_ALIAS_DETAILS: ModelAliasDetail[] = [
   { name: 'codex-ultra', resolvesTo: 'gpt-5.6-sol', agent: 'codex', defaultReasoningEffort: 'xhigh' },
   { name: 'agy-ultra', resolvesTo: 'Gemini 3.1 Pro (High)', agent: 'antigravity' },
   { name: 'antigravity-ultra', resolvesTo: 'Gemini 3.1 Pro (High)', agent: 'antigravity' },
-  { name: 'kiro-ultra', resolvesTo: 'kiro-default', agent: 'kiro' },
 ];
 
 /** direct-api 動態 model 後端提示。 */
@@ -132,13 +171,11 @@ function modelsByAgent(): Record<AgentId, readonly string[]> {
 export function getSupportedModelsDescription(): string {
   const byAgent = modelsByAgent();
   return [
-    '"claude-ultra", "codex-ultra", "agy-ultra", "kiro-ultra"',
+    '"claude-ultra", "codex-ultra", "agy-ultra"',
     ...byAgent.claude.map((m) => `"${m}"`),
     ...byAgent.codex.map((m) => `"${m}"`),
     ...byAgent.antigravity.map((m) => `"${m}"`),
-    ...byAgent.forge.map((m) => `"${m}"`),
     ...byAgent['direct-api'].map((m) => `"${m}"`),
-    ...byAgent.kiro.map((m) => `"${m}"`),
   ].join(', ');
 }
 
@@ -149,15 +186,13 @@ export function getModelParameterDescription(): string {
     ...byAgent.claude,
     ...byAgent.codex,
     ...byAgent.antigravity,
-    ...byAgent.kiro,
-    ...byAgent.forge,
     ...byAgent['direct-api'],
   ];
-  return `The model to use. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto xhigh reasoning), "agy-ultra" (Antigravity CLI), "kiro-ultra" (Kiro CLI default). Standard: ${all
+  return `The model to use. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto xhigh reasoning), "agy-ultra" (Antigravity CLI). Standard: ${all
     .map((m) => `"${m}"`)
     .join(
       ', '
-    )}. direct-api accepts provider-prefixed models using "or-<model>" for OpenRouter, "ds-<model>" for DashScope, or "<provider>-<model>" for provider keys configured in ~/.local/share/ai-cli/providers.json. "forge" is a provider key, not a Forge model family selector. Antigravity (agy) uses whichever model is configured by the agy CLI (Google AI tier default). Kiro uses its CLI default for "kiro" and "kiro-default"; model names starting with "kiro-" are passed through with --model unless they resolve to the default.`;
+    )}. direct-api accepts provider-prefixed models using "or-<model>" for OpenRouter, "ds-<model>" for DashScope, or "<provider>-<model>" for any provider key configured in ~/.local/share/ai-cli/providers.json — this is how you connect a third-party OpenAI-compatible API yourself. A name like "forge-<model>" is therefore read as provider "forge" plus a model, not as the removed Forge CLI. Antigravity (agy) uses whichever model is configured by the agy CLI (Google AI tier default); it ignores model selection entirely. The Kiro and Forge agents were removed in 5.0.0 — their model names are now rejected with an explicit error rather than silently falling back to Claude.`;
 }
 
 /** 所有 agent 宣告的 model 名稱（不含 direct-api 的動態 provider-prefixed 名稱）。 */
@@ -173,8 +208,11 @@ export function listKnownModels(): string[] {
  */
 export function isKnownModelTarget(model: string): boolean {
   // alias 名稱不是 model。alias 解析只做一層，把 alias 當 target 會直接把該名稱
-  // 原樣送進 CLI（例如 kiro-ultra 會被 kiro 剝成 --model ultra）。
+  // 原樣送進 CLI（例如 agy-ultra 會被當成 model 名稱送出去）。
   if (isBuiltinAlias(model)) return false;
+
+  // 已移除的 agent 名稱不能當 alias target，否則會在 run 時才炸。
+  if (isRemovedModel(model)) return false;
 
   // direct-api 的 provider prefix 必須真的解析得出來。只看 matchesModel 不夠：
   // 它是 startsWith('or-')/startsWith('ds-')，'or-' 這種空 model 也會過，
@@ -209,7 +247,7 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
   const { config } = snapshot;
   return {
     aliases: getEffectiveAliasDetails(config).map((alias) => {
-      // 只有支援 reasoning 的 agent 才回報 effective 值，避免 agy/kiro 顯示出
+      // 只有支援 reasoning 的 agent 才回報 effective 值，避免 agy 顯示出
       // 實際上不會被送進 CLI 的 effort。alias 被重新指向到不支援 reasoning 的
       // agent 時，內建那筆 defaultReasoningEffort 也要一併拿掉，否則會回報一個
       // 實際上不會生效的值。
@@ -225,8 +263,6 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
     claude: byAgent.claude,
     codex: byAgent.codex,
     antigravity: byAgent.antigravity,
-    kiro: byAgent.kiro,
-    forge: byAgent.forge,
     'direct-api': byAgent['direct-api'],
     dynamicModelBackends: {
       'direct-api': DIRECT_API_DYNAMIC_BACKEND,

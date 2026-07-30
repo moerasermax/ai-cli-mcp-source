@@ -14,13 +14,17 @@
  * 突變清單在 tools/mutations.json。新增一項修補時，順手加一個對應突變 ——
  * 如果它 SURVIVED，代表你的測試沒有真的在保護那段程式碼。
  *
+ * 每個突變可用 `script` 欄位指定由哪一支 verify 腳本負責抓（預設
+ * verify-alias-config.mjs）。那支腳本必須把失敗訊息印到 **stdout** 且含 "FAIL "，
+ * 裡面要包含該突變 `expect` 的字串，否則會被判成 KILLED(其他斷言)。
+ *
  * 在獨立的 git worktree 上跑，不碰主工作目錄。
  * 注意：verify-alias-config.mjs 會改寫真實的 ~/.local/share/ai-cli/config.json
  * （自帶 try/finally 還原），所以這支腳本不能與其他會動該檔的東西並行。
  */
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -56,8 +60,28 @@ const run = (args) => exec(process.execPath, args);
 const TSC = join('node_modules', 'typescript', 'bin', 'tsc');
 const results = [];
 
-copyFileSync(CONFIG, CONFIG_BAK);
-console.log(`使用者 config 已備份到 ${CONFIG_BAK}\n`);
+/**
+ * 每個突變由哪一支 verify 腳本負責抓。預設 verify-alias-config.mjs（既有 19 個突變
+ * 都在它的守備範圍）。
+ *
+ * 為什麼需要這個欄位：harness 原本寫死只跑 verify-alias-config.mjs，所以任何斷言
+ * 落在別支腳本的突變都會被判成 SURVIVED —— 那是 harness 自己的假綠燈，而不是
+ * 測試真的沒在測。4.1.2 修 `ai-cli mcp` 啟動即自殺時就撞到這件事：那條斷言在
+ * verify-mcp.mjs，而 verify-alias-config 走的是 ai-cli-mcp.js 入口，根本碰不到。
+ */
+const scriptOf = (mutation) => mutation.script ?? 'verify-alias-config.mjs';
+const SCRIPTS = [...new Set(MUTATIONS.map(scriptOf))];
+
+// 全新的機器上這個檔還不存在（使用者從沒改過設定），直接 copyFileSync 會 ENOENT
+// 整支腳本當場掛掉。那種情況下「還原」的正確語意是把測試順手產生的檔案刪掉，
+// 而不是複製一份不存在的備份回去。
+const hadConfig = existsSync(CONFIG);
+if (hadConfig) {
+  copyFileSync(CONFIG, CONFIG_BAK);
+  console.log(`使用者 config 已備份到 ${CONFIG_BAK}\n`);
+} else {
+  console.log(`使用者 config 不存在（${CONFIG}），收尾時會刪掉測試產生的那份\n`);
+}
 
 // worktree 一開始可能就有未提交的改動（例如刻意把待驗證的檔案複製進去），
 // 所以收尾比對的是「跟開跑時一不一樣」，而不是「是不是空的」。
@@ -66,12 +90,19 @@ const baselineStatus = exec('git', ['status', '--short']).out.trim();
 // 先確認基準是綠的：基準就紅的話，後面每個突變都會「被殺」而毫無意義。
 {
   const build = run([TSC]);
-  const base = run(['verify-alias-config.mjs']);
-  if (build.code !== 0 || base.code !== 0) {
-    console.error('基準未通過，中止：', build.out.slice(-500), base.out.slice(-800));
+  if (build.code !== 0) {
+    console.error('基準建置失敗，中止：', build.out.slice(-500));
     process.exit(1);
   }
-  console.log('基準 verify-alias-config：PASS\n');
+  for (const script of SCRIPTS) {
+    const base = run([script]);
+    if (base.code !== 0) {
+      console.error(`基準 ${script} 未通過，中止：`, base.out.slice(-800));
+      process.exit(1);
+    }
+    console.log(`基準 ${script}：PASS`);
+  }
+  console.log('');
 }
 
 for (const [i, mutation] of MUTATIONS.entries()) {
@@ -91,7 +122,7 @@ for (const [i, mutation] of MUTATIONS.entries()) {
   writeFileSync(path, normalized.replace(mutation.from, mutation.to));
   const build = run([TSC]);
   const { code, out } =
-    build.code !== 0 ? { code: -1, out: `BUILD FAILED\n${build.out}` } : run(['verify-alias-config.mjs']);
+    build.code !== 0 ? { code: -1, out: `BUILD FAILED\n${build.out}` } : run([scriptOf(mutation)]);
   writeFileSync(path, originalBytes);
 
   // 期待：這個突變讓測試失敗，而且失敗的是我們指定的那條斷言。
@@ -120,7 +151,8 @@ for (const [i, mutation] of MUTATIONS.entries()) {
 // `run('git', [...])` 會把第二個參數整個丟掉、命令根本沒跑，
 // 然後印出空字串當成「worktree 乾淨」—— 這正是這支工具在抓的那種假綠燈。
 const status = exec('git', ['status', '--short']);
-copyFileSync(CONFIG_BAK, CONFIG);
+if (hadConfig) copyFileSync(CONFIG_BAK, CONFIG);
+else rmSync(CONFIG, { force: true });
 
 console.log('\n================ 突變測試結果 ================');
 const survived = results.filter((r) => r.verdict === 'SURVIVED');

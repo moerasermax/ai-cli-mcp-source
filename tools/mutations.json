@@ -131,5 +131,20 @@
     "from": "        raw.aliasModel = { ...spreadable(raw.aliasModel), ...aliasModel };",
     "to": "        raw.aliasModel = { ...((raw.aliasModel ?? {}) as Record<string, unknown>), ...aliasModel };",
     "expect": "set_config 不會把陣列 aliasModel 轉成數字 alias"
+  },
+  {
+    "name": "runMcpServer 不等 transport 關閉（ai-cli mcp 啟動即自殺）",
+    "file": "src/app/mcp.ts",
+    "from": "  await server.waitUntilClosed();",
+    "to": "",
+    "script": "verify-mcp.mjs",
+    "expect": "入口 dist/bin/ai-cli.js mcp 的 MCP handshake"
+  },
+  {
+    "name": "移除的 model 名稱不攔截（kiro/forge 靜默路由到 claude）",
+    "file": "src/core/command-builder.ts",
+    "from": "  if (isRemovedModel(aliasedModel) || isRemovedModel(rawModel)) {\n    throw new Error(removedModelMessage(isRemovedModel(rawModel) ? rawModel : aliasedModel));\n  }",
+    "to": "",
+    "expect": "已移除的 model 被明確拒絕：kiro"
   }
 ]
