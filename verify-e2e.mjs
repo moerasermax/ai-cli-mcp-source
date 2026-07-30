@@ -2,6 +2,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const logs = [];
 const log = (...a) => logs.push(a.join(' '));
@@ -9,12 +11,13 @@ process.on('exit', () => writeFileSync('e2e-out.txt', logs.join('\n') + '\n'));
 
 const transport = new StdioClientTransport({
   command: 'node',
-  args: ['C:\\Users\\Moera\\ai-cli-mcp-source\\dist\\server.js'],
+  // 相對本檔解析，不要寫死任何機器上的絕對路徑。
+  args: [fileURLToPath(new URL('./dist/server.js', import.meta.url))],
 });
 const client = new Client({ name: 'e2e', version: '1.0.0' }, { capabilities: {} });
 await client.connect(transport);
 log('connected');
-const cwd = 'C:\\Users\\Moera';
+const cwd = homedir();
 
 async function runAndWait(model, prompt, timeout) {
   const started = await client.callTool({ name: 'run', arguments: { model, prompt, workFolder: cwd } });

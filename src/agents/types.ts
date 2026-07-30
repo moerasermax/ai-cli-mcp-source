@@ -10,8 +10,6 @@ export type AgentId =
   | 'claude'
   | 'codex'
   | 'antigravity'
-  | 'kiro'
-  | 'forge'
   | 'direct-api';
 
 /** spawn 策略：決定 process-service 怎麼啟動這個 agent 的子程序。 */
@@ -77,7 +75,7 @@ export interface ParseOutputContext {
 export interface BinaryConfig {
   /** 環境變數名稱，可覆寫 CLI 名稱或絕對路徑，例如 CLAUDE_CLI_NAME。 */
   envVarName: string;
-  /** 預設指令名稱，例如 'claude'、'agy'、'kiro-cli'。 */
+  /** 預設指令名稱，例如 'claude'、'codex'、'agy'。 */
   defaultCliName: string;
   /** 可選的本機安裝絕對路徑（依平台），找得到就優先用。 */
   localInstallPath?: string;
@@ -142,7 +140,7 @@ export interface AgentDefinition {
   /**
    * Windows 上以 pipe spawn 時，是否「不」透過 cmd.exe shell 啟動。
    * 預設 false（多數 CLI 是 npm shim，win32 需要 shell:true 才能啟動）。
-   * 設 true 用於真實 .exe（例如 kiro-cli.exe），避免 cmd.exe 對 prompt 重新切詞。
+   * 設 true 用於真實 .exe（而非 npm 的 .cmd shim），避免 cmd.exe 對 prompt 重新切詞。
    */
   win32DirectExec?: boolean;
 }

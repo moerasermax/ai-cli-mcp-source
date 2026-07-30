@@ -10,8 +10,6 @@ import { stripAnsi } from './ansi.js';
 import { debugLog } from './debug.js';
 
 const PEEK_TOOL_SUMMARY_MAX_LENGTH = 200;
-const FORGE_EXECUTE_PATTERN = /^● \[[^\]]+\] Execute \[([^\]]*)\]\s+(.+)$/;
-const FORGE_FINISHED_PATTERN = /^● \[[^\]]+\] Finished(?:\s+\S+)?\s*$/;
 
 function oneLine(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -272,56 +270,40 @@ function extractPeekEventsFromParsedEvent(
   return [];
 }
 
-interface ForgePendingTool {
-  id: string;
-  tool: string;
-  summary: string;
-  summary_truncated?: boolean;
-}
 
 export class PeekEventExtractor {
   private agent: AgentId;
   private pending = '';
   private includeToolCalls: boolean;
-  private source: 'stdout' | 'stderr';
   private toolMemory = new Map<string, RememberedTool>();
-  private forgePendingTool: ForgePendingTool | null = null;
-  private forgeToolSequence = 0;
 
-  constructor(agent: AgentId, options: { includeToolCalls?: boolean; source?: 'stdout' | 'stderr' } = {}) {
+  // source / terminal 兩個選項在 5.0.0 隨 forge 一起移除：它們只被 forge 的擷取策略
+  // 讀取（stderr 全丟、pending 只在 terminal 時吐出），其餘 agent 從來不看。留著會是
+  // 「看起來有作用、其實沒人讀」的死狀態。
+  constructor(agent: AgentId, options: { includeToolCalls?: boolean } = {}) {
     this.agent = agent;
     this.includeToolCalls = options.includeToolCalls === true;
-    this.source = options.source || 'stdout';
   }
 
   push(chunk: string, observedAt: string = new Date().toISOString()): PeekEvent[] {
-    if (this.agent === 'forge' && this.source === 'stderr') return [];
     if (!chunk) return [];
     const lines = `${this.pending}${chunk}`.split(/\r?\n/);
     this.pending = lines.pop() || '';
     return this.extractLines(lines, observedAt);
   }
 
-  flush(observedAt: string = new Date().toISOString(), options: { terminal?: boolean } = {}): PeekEvent[] {
-    if (this.agent === 'forge' && this.source === 'stderr') {
-      this.pending = '';
-      return [];
-    }
+  flush(observedAt: string = new Date().toISOString()): PeekEvent[] {
     const events: PeekEvent[] = [];
     if (this.pending) {
-      if (this.agent !== 'forge' || options.terminal === true) {
-        const line = this.pending;
-        this.pending = '';
-        events.push(...this.extractLines([line], observedAt));
-      }
+      const line = this.pending;
+      this.pending = '';
+      events.push(...this.extractLines([line], observedAt));
     }
-    events.push(...this.flushForgePendingTool(observedAt, options.terminal === true));
     return events;
   }
 
   private extractLines(lines: string[], observedAt: string): PeekEvent[] {
-    if (this.agent === 'forge') return this.extractForgeLines(lines, observedAt);
-    if (this.agent === 'kiro' || this.agent === 'antigravity') {
+    if (this.agent === 'antigravity') {
       return this.extractPlainTextLines(lines, observedAt);
     }
     const events: PeekEvent[] = [];
@@ -355,75 +337,4 @@ export class PeekEventExtractor {
     return events;
   }
 
-  private extractForgeLines(lines: string[], observedAt: string): PeekEvent[] {
-    const events: PeekEvent[] = [];
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const summary = this.extractForgeMessage(line, 'Summary:');
-      if (summary !== null) {
-        events.push({ kind: 'message', ts: observedAt, text: summary });
-        continue;
-      }
-      const completed = this.extractForgeMessage(line, 'Completed successfully:');
-      if (completed !== null) {
-        events.push({ kind: 'message', ts: observedAt, text: completed });
-        continue;
-      }
-      if (this.includeToolCalls) {
-        const executeMatch = line.match(FORGE_EXECUTE_PATTERN);
-        if (executeMatch) {
-          events.push(...this.completeForgePendingTool(observedAt));
-          const [, rawTool, rawSummary] = executeMatch;
-          const tool = rawTool.trim() && !/\s/.test(rawTool.trim()) ? rawTool.trim() : 'shell';
-          const event = createToolCallEvent({
-            ts: observedAt,
-            phase: 'started',
-            id: `forge_${this.forgeToolSequence++}`,
-            tool,
-            command: rawSummary,
-          });
-          this.forgePendingTool = {
-            id: event.id as string,
-            tool: event.tool as string,
-            summary: event.summary as string,
-            summary_truncated: event.summary_truncated as boolean | undefined,
-          };
-          events.push(event);
-          continue;
-        }
-        if (FORGE_FINISHED_PATTERN.test(line)) {
-          events.push(...this.completeForgePendingTool(observedAt));
-        }
-      }
-    }
-    return events;
-  }
-
-  private extractForgeMessage(line: string, prefix: string): string | null {
-    if (!line.startsWith(prefix)) return null;
-    const text = line.slice(prefix.length).trim();
-    return text || null;
-  }
-
-  private completeForgePendingTool(observedAt: string): PeekEvent[] {
-    if (!this.forgePendingTool) return [];
-    const pending = this.forgePendingTool;
-    this.forgePendingTool = null;
-    const event = createToolCallEvent({
-      ts: observedAt,
-      phase: 'completed',
-      id: pending.id,
-      tool: pending.tool,
-      status: 'unknown',
-      defaultStatus: 'unknown',
-    });
-    event.summary = pending.summary;
-    if (pending.summary_truncated) event.summary_truncated = true;
-    return [event];
-  }
-
-  private flushForgePendingTool(observedAt: string, terminal: boolean): PeekEvent[] {
-    if (this.agent !== 'forge' || !terminal) return [];
-    return this.completeForgePendingTool(observedAt);
-  }
 }

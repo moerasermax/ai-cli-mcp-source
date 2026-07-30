@@ -28,7 +28,5 @@ export function resolveAllCliPaths(): CliPaths {
     claude: path('claude'),
     codex: path('codex'),
     antigravity: path('antigravity'),
-    kiro: path('kiro'),
-    forge: path('forge'),
   };
 }

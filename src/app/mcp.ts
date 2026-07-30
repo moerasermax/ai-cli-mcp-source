@@ -43,14 +43,13 @@ export class AiCliMcpServer {
   private processService: ProcessService;
   private usageService: UsageService;
   private sigintHandler?: () => Promise<void>;
+  private closed: Promise<void>;
 
   constructor() {
     const cliPaths = resolveAllCliPaths();
     console.error(`[Setup] Claude CLI: ${cliPaths.claude}`);
     console.error(`[Setup] Codex CLI: ${cliPaths.codex}`);
     console.error(`[Setup] Antigravity CLI (agy): ${cliPaths.antigravity}`);
-    console.error(`[Setup] Kiro CLI: ${cliPaths.kiro}`);
-    console.error(`[Setup] Forge CLI: ${cliPaths.forge}`);
     console.error('[Setup] Direct API: ~/.local/share/ai-cli/providers.json');
 
     this.processService = new ProcessService({ cliPaths });
@@ -63,6 +62,12 @@ export class AiCliMcpServer {
 
     this.setupToolHandlers();
     this.server.onerror = (error) => console.error('[Error]', error);
+    // server 的「整段生命週期」promise，給 waitUntilClosed() 用。要在這裡就掛好：
+    // Protocol.connect() 只覆寫 transport.onclose（它再轉呼叫 this.server.onclose），
+    // 不會蓋掉這一行。
+    this.closed = new Promise<void>((resolve) => {
+      this.server.onclose = () => resolve();
+    });
     this.sigintHandler = async () => {
       await this.server.close();
       process.exit(0);
@@ -72,7 +77,7 @@ export class AiCliMcpServer {
 
   private getCliConfigurationError(): string | null {
     const doctorStatus = getCliDoctorStatus();
-    for (const name of ['claude', 'codex', 'forge'] as const) {
+    for (const name of ['claude', 'codex'] as const) {
       const status = doctorStatus[name] as { error?: string };
       if (status?.error) {
         return status.error;
@@ -86,7 +91,7 @@ export class AiCliMcpServer {
       tools: [
         {
           name: 'run',
-          description: `AI Agent Runner: Starts a Claude, Codex, Antigravity, Kiro, Forge, or direct API agent job in the background and returns a PID immediately. Use list_processes and get_result to monitor progress.
+          description: `AI Agent Runner: Starts a Claude, Codex, Antigravity, or direct API agent job in the background and returns a PID immediately. Use list_processes and get_result to monitor progress.
 
 • File ops: Create, read, (fuzzy) edit, move, copy, delete, list files, analyze/ocr images, file content analysis
 • Code: Generate / analyse / refactor / fix
@@ -129,12 +134,12 @@ ${getSupportedModelsDescription()}
               reasoning_effort: {
                 type: 'string',
                 description:
-                  'Reasoning control for Claude and Codex. Claude uses --effort with "low", "medium", "high", "xhigh", "max". Codex uses model_reasoning_effort with "low", "medium", "high", "xhigh". Antigravity, Kiro, Forge, and direct-api do not support reasoning_effort in this integration.',
+                  'Reasoning control for Claude and Codex. Claude uses --effort with "low", "medium", "high", "xhigh", "max". Codex uses model_reasoning_effort with "low", "medium", "high", "xhigh". Antigravity and direct-api do not support reasoning_effort in this integration.',
               },
               session_id: {
                 type: 'string',
                 description:
-                  'Optional session ID to resume a previous session. Supported for Claude, Codex, Antigravity, Forge, and direct-api. direct-api stores sessions under workFolder/.tmp/api_sessions.',
+                  'Optional session ID to resume a previous session. Supported for Claude, Codex, Antigravity, and direct-api. direct-api stores sessions under workFolder/.tmp/api_sessions.',
               },
             },
             required: ['workFolder'],
@@ -191,7 +196,7 @@ ${getSupportedModelsDescription()}
         {
           name: 'peek',
           description:
-            'One-shot short observation window for running child agents. Returns only natural-language message events, and optionally normalized tool_call events, observed during this call; not a history API, not gapless streaming, and not stdout/stderr tailing. In v1, message extraction is supported for Codex, Claude, direct-api, Antigravity, Kiro, and best-effort Forge Summary/Completed successfully lines. Forge tool calls are low-precision Execute/Finished markers and never include command output. Tool calls exclude raw tool output.',
+            'One-shot short observation window for running child agents. Returns only natural-language message events, and optionally normalized tool_call events, observed during this call; not a history API, not gapless streaming, and not stdout/stderr tailing. Message extraction is supported for Codex, Claude, direct-api, and Antigravity. Tool calls exclude raw tool output.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -282,14 +287,14 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
         },
         {
           name: 'query_usage',
-          description: 'Query remaining token/credit usage for AI CLI tools (Kiro, Claude, Codex, Antigravity/agy). Results are cached for 120 seconds. Use refresh=true to force a fresh query.',
+          description: 'Query remaining token/credit usage for AI CLI tools (Claude, Codex, Antigravity/agy). Results are cached for 120 seconds. Use refresh=true to force a fresh query.',
           inputSchema: {
             type: 'object',
             properties: {
               agents: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Optional list of agents to query (kiro, claude, codex, agy/antigravity). Defaults to all.',
+                description: 'Optional list of agents to query (claude, codex, agy/antigravity). Defaults to all.',
               },
               refresh: {
                 type: 'boolean',
@@ -613,6 +618,24 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
     console.error('AI CLI MCP server running on stdio');
   }
 
+  /**
+   * 等到 server 真的關閉為止。
+   *
+   * 為什麼需要這個：`run()` 只等到 transport 接上就 resolve，呼叫端很容易讀成
+   * 「server 跑完了」。`bin/ai-cli.ts` 就是這樣中招的——它在 runCli() resolve 之後
+   * 呼叫 process.exit()，於是 `ai-cli mcp` 一連上就自殺（實測 0.2 秒退出、stdout
+   * 全空），client 只看得到「MCP error -32000: Connection closed」。三個入口裡只有
+   * 這一個會 process.exit，另外兩個是「碰巧」沒事，不是設計使然。
+   *
+   * 注意這個 promise 不是退出時機的主導者：StdioServerTransport 只監聽 stdin 的
+   * data / error，**不監聽 end**，所以 client 斷線時 onclose 並不會觸發。那種情況下
+   * 是 stdin EOF 釋放掉 handle、event loop 淨空，行程自然以 0 退出。這裡的唯一職責
+   * 是擋掉呼叫端「啟動完成 == 可以退出」的誤判。
+   */
+  waitUntilClosed(): Promise<void> {
+    return this.closed;
+  }
+
   async cleanup(): Promise<void> {
     if (this.sigintHandler) {
       process.removeListener('SIGINT', this.sigintHandler);
@@ -624,4 +647,7 @@ Note: antigravity (agy) ignores model selection entirely; its CLI takes no --mod
 export async function runMcpServer(): Promise<void> {
   const server = new AiCliMcpServer();
   await server.run();
+  // 這個 promise 涵蓋整段 server 生命週期，不只是啟動。少了它，任何在 runMcpServer()
+  // resolve 之後呼叫 process.exit 的入口都會在 handshake 完成前把自己殺掉。
+  await server.waitUntilClosed();
 }

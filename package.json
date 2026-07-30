@@ -1,7 +1,7 @@
 {
   "name": "ai-cli-mcp",
-  "version": "4.1.1",
-  "description": "Run Claude, Codex, Antigravity (agy), Kiro, Forge, and direct OpenAI-compatible API agents through MCP with background jobs. Self-maintained, registry-based architecture.",
+  "version": "5.0.0",
+  "description": "Run Claude, Codex, Antigravity (agy), and any third-party OpenAI-compatible API through MCP with background jobs. Self-maintained, registry-based architecture.",
   "private": true,
   "type": "module",
   "main": "dist/server.js",
@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "mcp": "node dist/bin/ai-cli-mcp.js",

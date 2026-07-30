@@ -9,8 +9,6 @@ import type { AgentDefinition, AgentId } from './types.js';
 import { claudeAgent } from './claude.js';
 import { codexAgent } from './codex.js';
 import { antigravityAgent } from './antigravity.js';
-import { kiroAgent } from './kiro.js';
-import { forgeAgent } from './forge.js';
 import { directApiAgent } from './direct-api.js';
 
 /**
@@ -21,9 +19,7 @@ import { directApiAgent } from './direct-api.js';
 const AGENTS: readonly AgentDefinition[] = [
   directApiAgent,
   codexAgent,
-  kiroAgent,
   antigravityAgent,
-  forgeAgent,
   claudeAgent, // fallback，務必最後
 ];
 

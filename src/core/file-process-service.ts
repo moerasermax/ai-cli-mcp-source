@@ -443,8 +443,8 @@ export class FileProcessService {
       observers.push({
         process: proc,
         result,
-        stdoutExtractor: new PeekEventExtractor(proc.toolType, { includeToolCalls, source: 'stdout' }),
-        stderrExtractor: new PeekEventExtractor(proc.toolType, { includeToolCalls, source: 'stderr' }),
+        stdoutExtractor: new PeekEventExtractor(proc.toolType, { includeToolCalls }),
+        stderrExtractor: new PeekEventExtractor(proc.toolType, { includeToolCalls }),
         stdoutOffset: this.fileSizeSafe(proc.stdoutPath),
         stderrOffset: this.fileSizeSafe(proc.stderrPath),
       });
@@ -477,9 +477,8 @@ export class FileProcessService {
     for (const observer of observers) {
       observer.process = this.refreshStatus(this.readProcess(observer.process.pid));
       observer.result.status = observer.process.status;
-      const terminal = observer.process.status !== 'running';
-      appendPeekEvents(observer.result, observer.stdoutExtractor.flush(flushTs, { terminal }));
-      appendPeekEvents(observer.result, observer.stderrExtractor.flush(flushTs, { terminal }));
+      appendPeekEvents(observer.result, observer.stdoutExtractor.flush(flushTs));
+      appendPeekEvents(observer.result, observer.stderrExtractor.flush(flushTs));
     }
     return {
       peek_started_at: startedAt.toISOString(),

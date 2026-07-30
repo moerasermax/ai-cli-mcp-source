@@ -110,7 +110,7 @@ async function main(baseConfig) {
   check('接受 direct-api provider-prefixed', catalog.isKnownModelTarget('or-qwen/qwen3-max'));
   check('拒絕完全不認得的名稱', !catalog.isKnownModelTarget('totally-bogus'));
   // 以下三項是獨立稽核（@codex）抓出來的洞：
-  check('拒絕 alias 名稱當 target', !catalog.isKnownModelTarget('kiro-ultra'));
+  check('拒絕 alias 名稱當 target', !catalog.isKnownModelTarget('agy-ultra'));
   check('拒絕空 direct-api model（or-）', !catalog.isKnownModelTarget('or-'));
   check('拒絕空 direct-api model（ds-）', !catalog.isKnownModelTarget('ds-'));
 
@@ -306,11 +306,39 @@ async function main(baseConfig) {
       prompt: 'hi',
       workFolder: ROOT,
       model: 'codex-ultra',
-      cliPaths: { codex: 'codex', claude: 'claude', kiro: 'kiro' },
+      cliPaths: { codex: 'codex', claude: 'claude', antigravity: 'agy' },
     });
 
   let cmd = build();
   check('切換後帶新 --model', cmd.args.includes('gpt-5.6-terra'), JSON.stringify(cmd.args));
+
+  // ---- 3b. 已移除的 agent（kiro / forge）名稱必須明確報錯 ----
+  //
+  // 這組斷言防的是**靜默路由**：claude 的 matchesModel 是 catch-all 永遠回 true，
+  // 所以少了 command-builder 那道攔截，`kiro` 會被 claude 悄悄接走並正常回答，
+  // 呼叫端完全不知道自己跑的根本不是 Kiro。所以這裡不只檢查「有沒有丟錯」，
+  // 還要檢查「沒有被路由到 claude」。
+  console.log('\n[3b] 已移除的 kiro / forge 名稱');
+  for (const gone of ['kiro', 'kiro-default', 'kiro-ultra', 'kiro-glm-5', 'forge']) {
+    let threw = false;
+    let routedTo = null;
+    try {
+      const built = buildCliCommand({
+        prompt: 'hi',
+        workFolder: ROOT,
+        model: gone,
+        cliPaths: { codex: 'codex', claude: 'claude', antigravity: 'agy' },
+      });
+      routedTo = built.agent;
+    } catch (error) {
+      threw = /removed in 5\.0\.0/.test(error.message);
+    }
+    check(
+      `已移除的 model 被明確拒絕：${gone}`,
+      threw,
+      routedTo ? `未報錯，反而被靜默路由到 ${routedTo}` : '報錯訊息未說明已移除'
+    );
+  }
 
   // 一次高階操作只准讀一次設定檔。讀兩次的話，中間被改動就會組出
   // 「A 版 alias + B 版 reasoning」這種兩邊都不對的指令 —— 讀取次數就是這件事的代理指標。
@@ -416,7 +444,7 @@ async function mcpChecks() {
     check('拒絕未知 model', !!res.error);
     res = await call('set_config', { alias_model: { 'codex-ultra': 'or-' } });
     check('拒絕空 direct-api model', !!res.error);
-    res = await call('set_config', { alias_model: { 'codex-ultra': 'kiro-ultra' } });
+    res = await call('set_config', { alias_model: { 'codex-ultra': 'agy-ultra' } });
     check('拒絕 alias 當 target', !!res.error);
     res = await call('set_config', { alias_model: { 'nope-ultra': 'gpt-5.4' } });
     check('拒絕未知 alias', !!res.error);
@@ -469,13 +497,13 @@ async function mcpChecks() {
     writeConfig({ myCustomThing: { keep: 'me' } });
 
     // alias 指到不支援 reasoning 的 agent 時，不該回報一個不會生效的 effort
-    res = await call('set_config', { alias_model: { 'codex-ultra': 'kiro-default' } });
-    const kiroRow = aliasOf(res, 'codex-ultra');
-    check('跨 agent 後 agent 欄位跟著變', kiroRow.agent === 'kiro', `agent=${kiroRow.agent}`);
+    res = await call('set_config', { alias_model: { 'codex-ultra': 'agy' } });
+    const agyRow = aliasOf(res, 'codex-ultra');
+    check('跨 agent 後 agent 欄位跟著變', agyRow.agent === 'antigravity', `agent=${agyRow.agent}`);
     check(
       '不支援 reasoning 就不回報 effort',
-      kiroRow.defaultReasoningEffort === undefined,
-      `got ${kiroRow.defaultReasoningEffort}`
+      agyRow.defaultReasoningEffort === undefined,
+      `got ${agyRow.defaultReasoningEffort}`
     );
 
     // unset 一個 alias 必須同時清掉 model 與 reasoning 兩種覆寫（README 這樣寫）：
