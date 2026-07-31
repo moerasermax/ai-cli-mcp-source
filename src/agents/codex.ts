@@ -22,6 +22,47 @@ const CODEX_MODELS = [
 
 const CODEX_REASONING = new Set(['low', 'medium', 'high', 'xhigh']);
 
+/**
+ * 能力 → 這個 vendor 的嚴格限制。
+ *
+ * **給不出保證就丟例外**（fail-closed）。放寬是最糟的失敗方式：
+ * 呼叫端以為有限制、畫面上寫著有限制，而程序其實全開。
+ */
+const CODEX_SAFE_CAPABILITIES = new Set(['fs/read', 'analysis/produce']);
+
+function buildStrictCommand(
+  input: BuildCommandInput,
+  capabilities: readonly string[]
+): BuiltCommand {
+  const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId } = input;
+  for (const capability of capabilities) {
+    if (!CODEX_SAFE_CAPABILITIES.has(capability)) {
+      throw new Error(
+        `codex 的嚴格模式無法保證能力「${capability}」——拒絕啟動（不放寬）。`
+      );
+    }
+  }
+  /*
+    與 buildCommand 的差別：**沒有 --dangerously-bypass-approvals-and-sandbox**。
+      -s read-only          模型產生的指令只能讀
+      --ignore-user-config  不載使用者的全域設定
+      --ephemeral           不留 session 殘骸
+  */
+  const args: string[] = sessionId ? ['exec', 'resume', sessionId] : ['exec'];
+  if (reasoningEffort) args.push('-c', `model_reasoning_effort=${reasoningEffort}`);
+  if (resolvedModel) args.push('--model', resolvedModel);
+  args.push(
+    '--sandbox',
+    'read-only',
+    '--ignore-user-config',
+    '--ephemeral',
+    '--skip-git-repo-check',
+    '--json',
+    '-'
+  );
+  return { cliPath, args, cwd, agent: 'codex', prompt, resolvedModel, stdinPrompt: prompt };
+}
+
 function buildCommand(input: BuildCommandInput): BuiltCommand {
   const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId } = input;
   let args: string[];
@@ -114,5 +155,6 @@ export const codexAgent: AgentDefinition = {
     invalidMessage: 'Codex reasoning_effort supports only low, medium, high, xhigh.',
   },
   buildCommand,
+  buildStrictCommand,
   parseOutput,
 };

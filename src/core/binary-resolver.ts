@@ -123,13 +123,28 @@ export function resolveAgentCli(config: BinaryConfig): string {
   return getCliCommandOrThrow(inspectCliBinary(config));
 }
 
-/** doctor 用：所有 agent 的二進位狀態。 */
+/**
+ * doctor 用：所有 agent 的二進位狀態。
+ *
+ * ★ `null` 與 `false` 在這裡是**不同的意思**，不可互換：
+ *     false = 檢查過了，結果是否定的
+ *     null  = **這一項根本沒有被檢查**
+ *
+ *   舊版這四個欄位全是寫死的常數：`binaryAvailability: true` 即使一個
+ *   二進位檔都沒找到也照樣回 true；`loginState: false` 讀起來像
+ *   「沒登入」，但這個指令根本不驗登入（DOCTOR_HELP_TEXT 自己寫著）。
+ *   **一個看起來像答案的非答案，比不回答更糟**——讀的人不會去查證它。
+ *   （2026-07-31：正是這類「沒標明自己不是事實」的欄位造成過誤導。）
+ */
 export interface CliDoctorStatus {
   checks: {
+    /** 由各 agent 的實際結果推導，不是常數。 */
     binaryAvailability: boolean;
     pathResolution: boolean;
-    loginState: boolean;
-    termsAcceptance: boolean;
+    /** null = 未檢查。這個指令不驗登入。 */
+    loginState: null;
+    /** null = 未檢查。 */
+    termsAcceptance: null;
   };
   [agentId: string]: CliBinaryStatus | CliDoctorStatus['checks'];
 }
@@ -137,16 +152,18 @@ export interface CliDoctorStatus {
 export function buildDoctorStatus(
   configs: Array<{ id: AgentId; config: BinaryConfig }>
 ): CliDoctorStatus {
+  const results = configs.map(({ id, config }) => ({ id, status: inspectCliBinary(config) }));
   const status: CliDoctorStatus = {
     checks: {
-      binaryAvailability: true,
-      pathResolution: true,
-      loginState: false,
-      termsAcceptance: false,
+      // 真的去看結果：全部找得到才是 true——不是預設 true。
+      binaryAvailability: results.every((r) => r.status.available),
+      pathResolution: results.every((r) => r.status.resolvedPath !== null),
+      loginState: null,
+      termsAcceptance: null,
     },
   };
-  for (const { id, config } of configs) {
-    status[id] = inspectCliBinary(config);
+  for (const { id, status: agentStatus } of results) {
+    status[id] = agentStatus;
   }
   return status;
 }

@@ -1258,6 +1258,12 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
 export const directApiAgent: AgentDefinition = {
   id: 'direct-api',
   models: DIRECT_API_MODELS,
+  /*
+    ★ 這條路徑走 ~/.local/share/ai-cli/providers.json 的 API 金鑰，
+      是**按量計費**——與 claude/codex/agy 走各自 CLI 登入的訂閱額度
+      是不同的錢。消費端必須看得出差別，不能混在同一組選項裡。
+  */
+  billingRoute: 'metered-api',
   matchesModel: (model) => model.startsWith('or-') || model.startsWith('ds-'),
   reasoning: {
     supported: false,

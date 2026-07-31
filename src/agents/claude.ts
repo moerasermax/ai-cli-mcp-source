@@ -12,6 +12,53 @@ const CLAUDE_MODELS = ['sonnet', 'sonnet[1m]', 'opus', 'opusplan', 'haiku'] as c
 
 const CLAUDE_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
+/**
+ * 能力 → 這個 vendor 的嚴格限制。
+ *
+ * **給不出保證就丟例外**（fail-closed）。放寬是最糟的失敗方式：
+ * 呼叫端以為有限制、畫面上寫著有限制，而程序其實全開。
+ */
+const CLAUDE_TOOLS_BY_CAPABILITY: Record<string, readonly string[]> = {
+  'fs/read': ['Read', 'Glob', 'Grep'],
+  'analysis/produce': [], // 產出走 stdout，不需要工具
+};
+
+function buildStrictCommand(
+  input: BuildCommandInput,
+  capabilities: readonly string[]
+): BuiltCommand {
+  const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId } = input;
+  const tools = new Set<string>();
+  for (const capability of capabilities) {
+    const mapped = CLAUDE_TOOLS_BY_CAPABILITY[capability];
+    if (mapped === undefined) {
+      throw new Error(
+        `claude 的嚴格模式無法保證能力「${capability}」——拒絕啟動（不放寬）。`
+      );
+    }
+    for (const tool of mapped) tools.add(tool);
+  }
+  /*
+    與 buildCommand 的差別：**沒有 --dangerously-skip-permissions**。
+    --allowedTools 是白名單；--strict-mcp-config 與 --disable-slash-commands
+    擋掉使用者的全域客製（那是使用者的互動環境，不是受託任務該有的面）。
+  */
+  const args = [
+    '--allowedTools',
+    [...tools].join(','),
+    '--strict-mcp-config',
+    '--disable-slash-commands',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+  ];
+  if (sessionId) args.push('-r', sessionId, '--fork-session');
+  if (reasoningEffort) args.push('--effort', reasoningEffort);
+  args.push('-p');
+  if (resolvedModel) args.push('--model', resolvedModel);
+  return { cliPath, args, cwd, agent: 'claude', prompt, resolvedModel, stdinPrompt: prompt };
+}
+
 function buildCommand(input: BuildCommandInput): BuiltCommand {
   const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId } = input;
   const args = ['--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'];
@@ -113,5 +160,6 @@ export const claudeAgent: AgentDefinition = {
     invalidMessage: 'Claude reasoning_effort supports only low, medium, high, xhigh, max.',
   },
   buildCommand,
+  buildStrictCommand,
   parseOutput,
 };

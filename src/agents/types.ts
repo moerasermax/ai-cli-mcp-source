@@ -94,14 +94,54 @@ export interface ReasoningSupport {
 }
 
 /**
+ * 一筆模型清單的**出處**。
+ *
+ * ★ 這個欄位存在的理由是一次真實的誤導：2026-07-31，有人照
+ *   `antigravity.ts` 的註解斷定「agy 不支援 --model」，並把它當事實
+ *   轉述出去。實測 agy v1.1.9 早就支援了——**硬編的清單沒有標明自己
+ *   是硬編的**，讀的人就沒有理由懷疑它。
+ *
+ *   `vendor-cli` = 這一輪真的去問過 vendor CLI。
+ *   `builtin-fallback` = 原始碼裡的靜態清單，**未經確認**，可能已過時。
+ *
+ *   消費端必須把 `builtin-fallback` 當成「參考值」而不是事實。
+ *   這比「記得更新註解」可靠，因為它不依賴任何人的記性。
+ */
+export type ModelListSource = 'vendor-cli' | 'builtin-fallback';
+
+/**
+ * 計費路徑。**不同的錢，不能混在同一組沒有區別的選項裡。**
+ *
+ * `subscription-cli` = 走各 vendor CLI 自己的登入（訂閱額度）。
+ * `metered-api` = 走 providers.json 的 API 金鑰，**按量計費**。
+ */
+export type BillingRoute = 'subscription-cli' | 'metered-api';
+
+/**
  * 一個 AI agent 的完整定義。所有 agent 專屬行為都集中在這裡。
  */
 export interface AgentDefinition {
   /** 唯一 id。 */
   id: AgentId;
 
-  /** 此 agent 支援的標準 model 名稱清單。 */
+  /**
+   * 此 agent 支援的標準 model 名稱清單。
+   *
+   * **這是靜態後備值。** 有 `discoverModels` 的 agent 以動態結果為準；
+   * 這裡的內容一律以 `builtin-fallback` 出處對外呈現。
+   */
   models: readonly string[];
+
+  /** 計費路徑。未指定視為 `subscription-cli`。 */
+  billingRoute?: BillingRoute;
+
+  /**
+   * 向 vendor CLI 問它**現在**支援哪些模型。
+   *
+   * 實作必須：有逾時、**永不拋例外**（問不到就回 null）。
+   * 回 null 不是錯誤，是「這一輪沒問到」——呼叫端據此降級並照實標示。
+   */
+  discoverModels?(cliPath: string): readonly string[] | null;
 
   /**
    * 判斷一個（已解析 alias 後的）model 是否屬於此 agent。
@@ -118,6 +158,22 @@ export interface AgentDefinition {
 
   /** 組裝實際 CLI 指令。 */
   buildCommand(input: BuildCommandInput): BuiltCommand;
+
+  /**
+   * 組裝**嚴格模式**的 CLI 指令（`ai-cli exec` 專用）。
+   *
+   * 與 `buildCommand` 只差一件事，但那件事是決定性的：
+   * **不得使用任何 `--dangerously-*` 旁路**，改成把呼叫端宣告的
+   * `capabilities` 映射成該 vendor 真正的沙箱／工具限制。
+   *
+   * ★ 這個方法是選用的，而**缺席等於拒絕**（fail-closed）：
+   *   `exec` 對沒有實作它的 agent 直接拒絕啟動，**不會退回**
+   *   `buildCommand`。退回去等於在呼叫端以為「有限制」的時候全開權限跑
+   *   ——那是顯示一個不存在的約束，比不支援更糟。
+   *
+   * 給不出某個 capability 的保證時**必須丟例外**，不得放寬。
+   */
+  buildStrictCommand?(input: BuildCommandInput, capabilities: readonly string[]): BuiltCommand;
 
   /** 解析此 agent 的原始 stdout/stderr 成結構化結果。 */
   parseOutput(stdout: string, stderr: string, exitCode?: number, context?: ParseOutputContext): unknown;

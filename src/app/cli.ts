@@ -9,6 +9,7 @@ import { runMcpServer } from './mcp.js';
 import { FileProcessService, type FileStartOptions } from '../core/file-process-service.js';
 import { getCliDoctorStatus } from '../core/doctor.js';
 import { getModelsPayload } from '../models/catalog.js';
+import { runExec } from './exec.js';
 import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
 import { runUsagePlugin } from '../plugins/usage.js';
 
@@ -23,6 +24,7 @@ Commands:
   kill      Terminate a tracked pid
   cleanup   Remove completed and failed tracked processes
   doctor    Check supported AI CLI binaries
+  exec      Run an agent in the foreground (NDJSON frames, caller owns the process)
   models    List supported models and aliases
   mcp       Start the MCP server
   usage     Report local AI CLI usage/quota across providers
@@ -100,6 +102,31 @@ Options:
 export const PS_HELP_TEXT = `Usage: ai-cli ps
 
 List tracked processes.
+
+Options:
+  --help, -h                   Show this help message
+`;
+
+export const EXEC_HELP_TEXT = `Usage: ai-cli exec
+
+Run an agent in the FOREGROUND, streaming raw vendor stdout as NDJSON frames.
+Unlike \`run\`, this process stays alive until the agent finishes, so the caller
+owns the process (job/process-group containment, cancellation, PID identity).
+
+Input: a JSON object on stdin
+  { "cwd": "...", "model": "...", "prompt": "...",
+    "capabilities": ["fs/read"], "reasoningEffort": "high", "sessionId": "..." }
+
+Output on stdout: one JSON object per line
+  {"v":1,"type":"started",...}
+  {"v":1,"type":"stdout","seq":1,"encoding":"base64","data":"..."}
+  {"v":1,"type":"terminal","status":"succeeded","exitCode":0,"signal":null,"detail":null}
+
+Vendor stderr is forwarded verbatim to this process's stderr.
+The terminal frame is emitted only after child close + stdout EOF + stderr EOF.
+
+Capabilities are FAIL-CLOSED: agents without a strict (non-bypass) mode are
+refused rather than run with permission bypass.
 
 Options:
   --help, -h                   Show this help message
@@ -420,6 +447,20 @@ export async function runCli(argv: string[], deps: Partial<CliDeps> = {}): Promi
     }
     writeJson(stdout, await cleanupProcesses());
     return 0;
+  }
+
+  if (command === 'exec') {
+    const { flags } = parseArgs(argv.slice(1));
+    if (hasHelpFlag(flags)) {
+      stdout(EXEC_HELP_TEXT);
+      return 0;
+    }
+    /*
+      ★ 這裡 return 之後，`bin/ai-cli.ts` 會呼叫 process.exit()。
+        對 exec 而言那是**不安全**的：stdout 是 pipe 時非同步，最後一個
+        frame 可能還在緩衝區。所以 bin 那側對 exec 改成設 exitCode。
+    */
+    return await runExec();
   }
 
   if (command === 'models') {

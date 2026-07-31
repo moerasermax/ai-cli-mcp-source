@@ -8,6 +8,7 @@
 
 import { listAgents, getAgent, selectAgentForModel } from '../agents/registry.js';
 import { resolveDirectApiModel } from '../agents/direct-api.js';
+import { buildCatalogV2 } from './catalog-v2.js';
 import type { AgentId } from '../agents/types.js';
 import {
   describeUserConfig,
@@ -264,6 +265,17 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
     codex: byAgent.codex,
     antigravity: byAgent.antigravity,
     'direct-api': byAgent['direct-api'],
+    /*
+      ★ v2 目錄：**每一筆都說得出自己的出處與時間**。
+
+        上面那四個陣列是既有形狀、有現成消費者，所以不動。但它們沒有
+        任何欄位能讓讀的人分辨「這是問過 vendor 的」還是「這是原始碼裡
+        的靜態值」——2026-07-31 就因此發生過一次把過時硬編當成事實
+        轉述的誤導（agy 的模型清單與 --model 支援度都早已改變）。
+
+        新的消費端請一律讀 `catalogV2`。
+    */
+    catalogV2: buildCatalogV2(),
     dynamicModelBackends: {
       'direct-api': DIRECT_API_DYNAMIC_BACKEND,
     },

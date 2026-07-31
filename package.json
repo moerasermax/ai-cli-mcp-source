@@ -18,7 +18,7 @@
     "cli": "node dist/bin/ai-cli.js",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "node verify-breaker.mjs && node verify-rate.mjs && node verify-direct-api.mjs && node verify-alias-config.mjs && node verify-mcp.mjs"
+    "test": "node verify-breaker.mjs && node verify-rate.mjs && node verify-direct-api.mjs && node verify-alias-config.mjs && node verify-catalog-source.mjs && node verify-exec-contract.mjs && node verify-mcp.mjs"
   },
   "dependencies": {
     "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",

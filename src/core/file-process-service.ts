@@ -92,7 +92,16 @@ interface StoredProcess {
   startTime: string;
   stdoutPath: string;
   stderrPath: string;
-  status: 'running' | 'completed' | 'failed';
+  /**
+   * ★ `lost` 與 `failed` 是**不同的事**，不可互換：
+   *     failed = 收到了結束回報，而它是失敗的
+   *     lost   = **沒有收到結束回報**，我們不知道它怎麼結束的
+   *
+   *   舊版把「PID 不見了但沒有 exit-status」直接寫成 `failed`——
+   *   那是拿一個看起來合理的結論蓋掉「不知道」。呼叫端會據此判定
+   *   任務失敗並重跑，而它可能其實成功了。
+   */
+  status: 'running' | 'completed' | 'failed' | 'lost';
   exitCode?: number;
 }
 
@@ -503,9 +512,14 @@ export class FileProcessService {
       refreshed.status = exitStatus.status;
       refreshed.exitCode = exitStatus.exitCode;
     } else {
-      refreshed.status = 'failed';
+      /*
+        我們送了 SIGTERM，程序也不見了，但**沒有拿到結束回報**。
+        「被我們砍掉」不等於「失敗」——它可能在收到信號前就已經做完。
+        照實記 lost，讓呼叫端自己決定要不要重跑。
+      */
+      refreshed.status = 'lost';
       refreshed.exitCode = SIGTERM_EXIT_CODE;
-      this.writeExitStatus(refreshed, { status: 'failed', exitCode: SIGTERM_EXIT_CODE });
+      this.writeExitStatus(refreshed, { status: 'lost', exitCode: SIGTERM_EXIT_CODE });
     }
     this.writeProcess(refreshed);
     return { pid, status: 'terminated', message: 'Process terminated successfully' };
@@ -572,10 +586,16 @@ export class FileProcessService {
     if (!isProcessRunning(proc.pid)) {
       // pty-managed：OS 報告 pid 消失可能早於 onExit 寫 exit-status，先維持 running
       if (this.ptyManagedPids.has(proc.pid)) return proc;
-      proc.status = 'failed';
+      /*
+        PID 不見了，但**沒有**結束回報。我們不知道它是成功還是失敗
+        ——說 failed 是拿一個看起來合理的結論蓋掉「不知道」。
+        呼叫端會據此判定任務失敗並重跑，而它可能其實成功了。
+      */
+      proc.status = 'lost';
       this.appendTextFileSafe(
         proc.stderrPath,
-        '\nProcess exited without exit-status metadata; marking as failed.\n'
+        '\nProcess disappeared without exit-status metadata; marking as lost ' +
+          '(NOT failed — no terminal report was received).\n'
       );
       this.writeProcess(proc);
     }
