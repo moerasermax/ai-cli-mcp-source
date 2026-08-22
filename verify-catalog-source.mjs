@@ -25,7 +25,9 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const results = [];
 function check(ok, name, detail = '') {
   results.push([ok, name, detail]);
-  console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${detail ? ` — ${detail}` : ''}`);
+  // 格式與其他 verify 腳本一致：tools/mutation-test.mjs 靠「含 `FAIL ` 的行」
+  // 判定突變有沒有被對應斷言殺掉。印成 `[FAIL]` 會讓它一條都對不上。
+  console.log(`  ${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
 const load = (rel) => import(pathToFileURL(join(ROOT, 'dist', rel)).href);
@@ -179,6 +181,70 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
   check(
     !agy.matchesModel('claude-sonnet-4-6') && !agy.matchesModel('gpt-oss-120b-medium'),
     '★ agy 代理的 claude/gpt 模型**不**靠名字認領（會把人送到錯的 CLI）'
+  );
+}
+
+// ── 3c. ★ `agy models` 的真實輸出要解析得出來 ─────────────────
+//
+// 2026-08-22：discoverModels 從 2026-07-31 上線起**沒有成功過一次**。
+// 舊解析規則是「整行不含空白才算模型 id」，而 agy v1.1.17 的真實輸出是
+// `<id>\t<顯示名稱>`——顯示名稱必然帶空白，於是每一行都被濾掉、永遠回 null。
+// 目錄誠實地降級成 builtin-fallback，所以它看起來像「agy 查不到」而不像 bug。
+// 上一節（3）只驗「查不到時要誠實降級」，驗不到「查得到時解析對不對」——
+// 因為它把 discoverModels 換成 stub。這一節用**錄下來的真實輸出**補上那個洞。
+{
+  const { parseAgyModelsOutput, matchesAgyModel } = await load('agents/antigravity.js');
+
+  // agy v1.1.17 `agy models` 的原樣輸出：開頭一行狀態訊息，其餘 tab 分隔
+  const REAL_OUTPUT = [
+    'Fetching available models...',
+    'gemini-3.7-flash-high\tGemini 3.7 Flash (High)',
+    'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
+    'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
+    '',
+  ].join('\n');
+
+  const parsed = parseAgyModelsOutput(REAL_OUTPUT);
+  check(
+    Array.isArray(parsed) && parsed.length === 4,
+    '★ 帶顯示名稱的行要解析得出 id（舊規則在這一行就回 null）',
+    JSON.stringify(parsed)
+  );
+  check(parsed?.includes('gemini-3.1-pro-high'), 'tab 後面的顯示名稱不影響 id');
+  check(
+    !parsed?.some((m) => m.toLowerCase().startsWith('fetching')),
+    "狀態訊息行不會被當成模型名"
+  );
+  check(
+    parseAgyModelsOutput('\u001b[32mgemini-3.6-flash-low\u001b[0m\tGemini 3.6 Flash (Low)')?.[0] ===
+      'gemini-3.6-flash-low',
+    '上了色的輸出也解析得出來（ANSI 不得讓整行消失）'
+  );
+  check(
+    parseAgyModelsOutput('Fetching available models...\n') === null,
+    '★ 只有狀態訊息時回 null（不得回半套清單）'
+  );
+  check(
+    parsed?.includes('claude-sonnet-4-6'),
+    '解析階段不預先過濾——先看得見全部，取捨是下一步的事'
+  );
+
+  // 取捨在 discoverModels：只回報**本框架真的會路由到 agy** 的名字。
+  clearCatalogCache();
+  const advertised = buildCatalogV2()
+    .entries.filter((e) => e.agent === 'antigravity')
+    .map((e) => e.model);
+  const misrouted = advertised.filter((m) => registry.selectAgentForModel(m).id !== 'antigravity');
+  check(
+    misrouted.length === 0,
+    '★ 目錄裡每個 agy 模型都真的會路由回 agy（列得出來就要叫得動）',
+    misrouted.join(', ')
+  );
+  check(
+    advertised.every((m) => matchesAgyModel(m)),
+    'discoverModels 只回報 matchesAgyModel 認得的名字',
+    advertised.join(', ')
   );
 }
 

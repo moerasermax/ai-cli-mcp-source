@@ -27,7 +27,9 @@ const CLI = join(ROOT, 'dist', 'bin', 'ai-cli.js');
 const results = [];
 function check(ok, name, detail = '') {
   results.push([ok, name, detail]);
-  console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${detail ? ` — ${detail}` : ''}`);
+  // 格式與其他 verify 腳本一致：tools/mutation-test.mjs 靠「含 `FAIL ` 的行」
+  // 判定突變有沒有被對應斷言殺掉；印成 `[FAIL]` 會讓它一條都對不上。
+  console.log(`  ${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
 /** 跑一次 exec，回傳解析後的 frames。 */
@@ -91,6 +93,113 @@ const registry = await load('agents/registry.js');
     t2?.type === 'terminal' && t2.status === 'spawn-failed',
     '★ 給不出保證的能力 → 拒絕，而不是放寬',
     t2?.detail ?? ''
+  );
+}
+
+// ── 1b. 明確的 unrestricted 模式（2026-08-17，OmniMesh 全權員工）──
+//
+// fail-closed 的預設**一個字都不動**：沒帶 `authority` 的請求與從前
+// 完全一樣。新增的是一條**明確**的鬆綁：呼叫端寫出 `authority:
+// 'unrestricted'`（它自己要對「這是人授權的」負責），exec 才用該
+// vendor 的一般組裝（帶 `--dangerously-*`）。started frame 回報實際
+// 生效的模式，讓呼叫端驗得到——版本不合時呼叫端據此拒絕解讀，
+// 不會發生「以為全權、其實受限」或反過來的靜默錯位。
+{
+  // 語義衝突不猜：authority 與 capabilities 同時出現 → 拒絕
+  const ambiguous = await runExec({
+    cwd: ROOT,
+    model: 'opus',
+    prompt: 'hi',
+    authority: 'unrestricted',
+    capabilities: ['fs/read'],
+  });
+  const tAmb = ambiguous.frames.at(-1);
+  check(
+    tAmb?.type === 'terminal' &&
+      tAmb.status === 'spawn-failed' &&
+      // ★ 斷言到拒絕理由：機器上缺 CLI 也會 spawn-failed，那是假綠
+      /authority/.test(tAmb.detail ?? ''),
+    '★ authority 與 capabilities 同時出現 → 以「語義衝突」為由拒絕（不猜、不是碰巧缺 CLI）',
+    tAmb?.detail ?? JSON.stringify(tAmb)
+  );
+
+  // 未知的 authority 值 → 拒絕（不是當成沒寫）
+  const bogus = await runExec({
+    cwd: ROOT,
+    model: 'opus',
+    prompt: 'hi',
+    authority: 'yolo',
+  });
+  const tBogus = bogus.frames.at(-1);
+  check(
+    tBogus?.type === 'terminal' &&
+      tBogus.status === 'spawn-failed' &&
+      /authority/.test(tBogus.detail ?? ''),
+    "★ authority 只認 'unrestricted' 字面值，其他值以此為由拒絕（不是當成沒寫）",
+    tBogus?.detail ?? ''
+  );
+
+  // 決策邏輯直測（不 spawn、不花錢）：dist 匯出 planExec
+  const execMod = await load('app/exec.js');
+  check(
+    typeof execMod.planExec === 'function',
+    '★ exec 的決策邏輯（planExec）可直測——authority 分支不靠花錢的整跑驗',
+  );
+  if (typeof execMod.planExec === 'function') {
+    const un = execMod.planExec({
+      cwd: ROOT,
+      model: 'opus',
+      prompt: 'hi',
+      authority: 'unrestricted',
+    });
+    check(
+      un.authority === 'unrestricted' &&
+        un.built.args.some((a) => /dangerous/i.test(a)),
+      '★ unrestricted（claude）→ 一般組裝（帶旁路旗標），authority 回報 unrestricted',
+      un.built.args.join(' ')
+    );
+    const unCodex = execMod.planExec({
+      cwd: ROOT,
+      model: 'codex/gpt-5.3-codex',
+      prompt: 'hi',
+      authority: 'unrestricted',
+    });
+    check(
+      unCodex.authority === 'unrestricted' &&
+        unCodex.built.args.includes('--dangerously-bypass-approvals-and-sandbox'),
+      '★ unrestricted（codex）→ --dangerously-bypass-approvals-and-sandbox',
+      unCodex.built.args.join(' ')
+    );
+    const scoped = execMod.planExec({
+      cwd: ROOT,
+      model: 'opus',
+      prompt: 'hi',
+      capabilities: ['fs/read'],
+    });
+    check(
+      scoped.authority === 'scoped' &&
+        scoped.built.args.every((a) => !/dangerous/i.test(a)),
+      '★ 沒帶 authority → 嚴格路徑照舊（scoped、零危險旗標）',
+      scoped.built.args.join(' ')
+    );
+    let threw = false;
+    try {
+      execMod.planExec({ cwd: ROOT, model: 'or-some/model', prompt: 'hi', capabilities: [] });
+    } catch {
+      threw = true;
+    }
+    check(threw, '★ 對照組：沒有嚴格模式的 agent 在**不帶 authority** 時仍被拒（fail-closed 沒動）');
+  }
+
+  // started frame 必須回報生效模式（呼叫端的唯一確認點）
+  const { readFileSync } = await import('node:fs');
+  const execSrc = readFileSync(join(ROOT, 'src', 'app', 'exec.ts'), 'utf-8');
+  check(
+    // 釘到**值的來源**而不是只釘欄位名：型別已經逼著 authority 必須存在
+    // （拿掉就編不過），所以「有這個字」是白抓的。會出事的是欄位還在、
+    // 值卻寫死成某個字面值——那樣呼叫端看到的模式與實際生效的不是同一件事。
+    /type: 'started'[\s\S]{0,400}?authority: plan\.authority/.test(execSrc),
+    '★ started frame 帶 authority 欄位（執行端回報實際生效的模式）'
   );
 }
 

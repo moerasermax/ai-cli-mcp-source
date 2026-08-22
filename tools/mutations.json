@@ -146,5 +146,61 @@
     "from": "  if (isRemovedModel(aliasedModel) || isRemovedModel(rawModel)) {\n    throw new Error(removedModelMessage(isRemovedModel(rawModel) ? rawModel : aliasedModel));\n  }",
     "to": "",
     "expect": "已移除的 model 被明確拒絕：kiro"
+  },
+  {
+    "name": "agy models 解析退回「整行不含空白」（顯示名稱把每一行都濾掉）",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    .map((line) => line.split(/\\s+/)[0] ?? '')\n    .filter((id) => AGY_MODEL_ID.test(id));",
+    "to": "    .filter((id) => id.length > 0 && !id.includes(' '));",
+    "expect": "★ 帶顯示名稱的行要解析得出 id（舊規則在這一行就回 null）"
+  },
+  {
+    "name": "不剝 ANSI 跳脫序列（上了色的整行消失）",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    .map((line) => line.replace(/\\u001b\\[[0-9;]*m/g, '').trim())",
+    "to": "    .map((line) => line.trim())",
+    "expect": "上了色的輸出也解析得出來（ANSI 不得讓整行消失）"
+  },
+  {
+    "name": "discoverModels 照單全收（列出路由不到 agy 的 claude-*/gpt-oss-*）",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    const routable = parsed.filter((id) => matchesAgyModel(id));",
+    "to": "    const routable = [...parsed];",
+    "expect": "★ 目錄裡每個 agy 模型都真的會路由回 agy（列得出來就要叫得動）"
+  },
+  {
+    "name": "authority 與 capabilities 同時出現時不擋（猜呼叫端的意思）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    if (request.capabilities !== undefined) {",
+    "to": "    if (false) {",
+    "expect": "★ authority 與 capabilities 同時出現 → 以「語義衝突」為由拒絕（不猜、不是碰巧缺 CLI）"
+  },
+  {
+    "name": "authority 收下任意值（未知值被當成 unrestricted）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    if (requestedAuthority !== 'unrestricted') {",
+    "to": "    if (requestedAuthority === '') {",
+    "expect": "★ authority 只認 'unrestricted' 字面值，其他值以此為由拒絕（不是當成沒寫）"
+  },
+  {
+    "name": "started frame 的 authority 寫死成 scoped（回報的與實際生效的不同）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    authority: plan.authority,",
+    "to": "    authority: 'scoped',",
+    "expect": "★ started frame 帶 authority 欄位（執行端回報實際生效的模式）"
+  },
+  {
+    "name": "unrestricted 仍走嚴格組裝（要求不設限卻靜默受限）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    return { authority: 'unrestricted', agent, built };",
+    "to": "    void built;",
+    "expect": "★ unrestricted（claude）→ 一般組裝（帶旁路旗標），authority 回報 unrestricted"
   }
 ]
