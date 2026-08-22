@@ -160,10 +160,34 @@ export function getEffectiveAliasDetails(
 }
 
 /** 依固定顯示順序取得各 agent 的 model 清單。 */
+/**
+ * 對外的各 agent model 清單。
+ *
+ * ★ 2026-08-22：以前這裡只回**靜態**的 `agent.models`，於是 agy 的動態查詢修好之後，
+ *   catalogV2 誠實地列出 11 個實查模型，而這裡（也就是 `run` 的候選名單與工具描述）
+ *   還停在寫死的 4 個——查得到、跑得動、卻沒被列在使用者真正會看的地方。
+ *
+ *   現在改成「靜態清單 ∪ 實查到且可路由的」：
+ *   - **只增不減**。靜態清單是策展過的（含 `agy` / `agy-default` 這種框架 alias，
+ *     它們不是 vendor 的模型 id，查詢永遠不會回報它們），砍掉會弄丟有效用法。
+ *   - 實查來的只收 `routable` 的。vendor 回報但本框架路由不到的名字（agy 代理的
+ *     `claude-sonnet-4-6` 之類）**不進候選名單**——列出來就要叫得動。
+ *     它們仍完整出現在 `catalogV2`，標著 `routable: false`。
+ */
 function modelsByAgent(): Record<AgentId, readonly string[]> {
+  const discovered = new Map<AgentId, string[]>();
+  for (const entry of buildCatalogV2().entries) {
+    if (!entry.routable) continue;
+    const list = discovered.get(entry.agent);
+    if (list) list.push(entry.model);
+    else discovered.set(entry.agent, [entry.model]);
+  }
+
   const out = {} as Record<AgentId, readonly string[]>;
   for (const agent of listAgents()) {
-    out[agent.id] = agent.models;
+    const known = new Set(agent.models);
+    const extra = (discovered.get(agent.id) ?? []).filter((model) => !known.has(model));
+    out[agent.id] = extra.length > 0 ? [...agent.models, ...extra] : agent.models;
   }
   return out;
 }

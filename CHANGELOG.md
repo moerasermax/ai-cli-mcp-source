@@ -74,6 +74,34 @@
     而型別已經逼著這個欄位必須存在（拿掉根本編不過），等於白抓。改成釘 `plan.authority`
     這個**值的來源**——欄位還在、值被寫死成字面值的情況現在會被抓到。
 
+### 變更（模型目錄：列得完整，且每一筆說得出自己能不能派工）
+
+上一版把 agy 的動態查詢修好之後留下兩個洞，這一版一起補：
+
+- **`CatalogEntry` 新增 `routable: boolean`**（由 `agent.matchesModel(model)` 推得，
+  不寫死任何 vendor 規則）。vendor 回報的清單可能含本框架送不到它那裡的名字
+  ——agy 就代理了 `claude-sonnet-4-6` / `claude-opus-4-6-thinking` / `gpt-oss-120b-medium`，
+  那些名字會被 `selectAgentForModel` 送去 claude/codex。（Claude）
+- **`discoverModels()` 改成回報 vendor 說的全部**，不在那一層過濾。
+  上一版是在 `discoverModels` 就把路由不到的名字濾掉——動機沒錯（避免候選名單出現
+  「列得出來、選了卻跑去別家」的選項），但做法錯了：目錄標著 `vendor-cli`
+  卻默默少三筆，而「少了」這件事在輸出裡完全看不見。**那正是 catalog-v2 這一層
+  存在的理由所要防的病，只是換了個位置發作。** 現在是「列出來並標明」。（Claude）
+- **`modelsByAgent()` 改成「靜態清單 ∪ 實查到且可路由的」**。以前只回靜態值，
+  於是 agy 查詢修好之後，`catalogV2` 誠實列出 11 個實查模型，而 `run` 的候選名單
+  與工具描述還停在寫死的 4 個——**查得到、跑得動、卻沒列在使用者真正會看的地方**
+  （實測 `gemini-3.7-flash-low` 可正常派工，但當時沒被列出）。
+  只增不減：靜態清單含 `agy` / `agy-default` 這種框架 alias，vendor 永遠不會回報它們，
+  砍掉會弄丟有效用法。實查來的只收 `routable` 的。（Claude）
+
+結果：`catalogV2` 列 agy 全部 14 筆（11 可派工 + 3 標明不可路由），
+`run` 的候選名單 13 筆（4 靜態 + 9 實查）。claude / codex / direct-api 不受影響。
+
+- 回歸斷言 35 → 41（`verify-catalog-source.mjs`）：routable 是 boolean、標示與實際路由
+  一致、候選名單只放可路由的、框架 alias 不消失、實查結果要進候選名單。（Claude）
+- 突變 28 → 31（拿掉一個因這次改動而過時的，補四個）：routable 寫死 true / 寫死 false、
+  候選名單不過濾 routable、候選名單退回靜態。四個都實測 KILLED。（Claude）
+
 ## [5.0.0] - 2026-07-30
 
 實測全部五個 agent 之後的收斂：Claude 5/5 模型可用、Codex 6/9（3 個被 ChatGPT 帳號層級擋下）、

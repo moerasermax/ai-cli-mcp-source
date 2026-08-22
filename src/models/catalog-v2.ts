@@ -37,6 +37,18 @@ export interface CatalogEntry {
   source: ModelListSource;
   /** ISO8601。`builtin-fallback` 也給，代表「這一輪讀到這份靜態值的時間」。 */
   verifiedAt: string;
+  /**
+   * 這個名字送進 `run` 會不會被路由回**同一個 agent**。
+   *
+   * 為什麼需要這個欄位：vendor 回報的清單可能包含本框架送不到它那裡的名字。
+   * agy 就代理了 `claude-sonnet-4-6` / `gpt-oss-120b-medium`——那些名字同時屬於
+   * claude/codex agent，`selectAgentForModel` 會把它們送去別家。
+   *
+   * 遇到這種名字有兩種做法：**默默扣掉**，或**列出來並標明**。
+   * 扣掉會讓「問過 CLI」的清單與 CLI 實際說的不一致，而且不一致這件事看不見
+   * ——那正是這一層要防的病。所以選後者。
+   */
+  routable: boolean;
 }
 
 export interface CatalogV2 {
@@ -162,6 +174,8 @@ export function buildCatalogV2(): CatalogV2 {
         billingRoute: agent.billingRoute ?? 'subscription-cli',
         source: row.source,
         verifiedAt: row.verifiedAt,
+        // 用 agent 自己的路由判斷，不寫死任何 vendor 的規則。
+        routable: agent.matchesModel(model),
       });
     }
   }

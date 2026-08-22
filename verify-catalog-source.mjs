@@ -230,22 +230,62 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
     '解析階段不預先過濾——先看得見全部，取捨是下一步的事'
   );
 
-  // 取捨在 discoverModels：只回報**本框架真的會路由到 agy** 的名字。
+  // 取捨不在 discoverModels（那一層說實話），而在目錄層的 routable 標記。
   clearCatalogCache();
-  const advertised = buildCatalogV2()
-    .entries.filter((e) => e.agent === 'antigravity')
-    .map((e) => e.model);
-  const misrouted = advertised.filter((m) => registry.selectAgentForModel(m).id !== 'antigravity');
+  const catalog = buildCatalogV2();
+  const agyEntries = catalog.entries.filter((e) => e.agent === 'antigravity');
+  const agyRow = catalog.agents.find((a) => a.agent === 'antigravity');
+
+  check(
+    agyEntries.length > 0 && agyEntries.every((e) => typeof e.routable === 'boolean'),
+    '★ 每一筆都說得出自己能不能派工（routable 是 boolean，不是 undefined）'
+  );
+
+  const routable = agyEntries.filter((e) => e.routable).map((e) => e.model);
+  const blocked = agyEntries.filter((e) => !e.routable).map((e) => e.model);
+
+  const misrouted = routable.filter((m) => registry.selectAgentForModel(m).id !== 'antigravity');
   check(
     misrouted.length === 0,
-    '★ 目錄裡每個 agy 模型都真的會路由回 agy（列得出來就要叫得動）',
+    '★ 標成 routable 的每一個都真的路由回 agy（列得出來就要叫得動）',
     misrouted.join(', ')
   );
   check(
-    advertised.every((m) => matchesAgyModel(m)),
-    'discoverModels 只回報 matchesAgyModel 認得的名字',
-    advertised.join(', ')
+    blocked.every((m) => registry.selectAgentForModel(m).id !== 'antigravity'),
+    '★ 標成不可路由的，實際上確實路由不回 agy（標示與現實一致）',
+    blocked.join(', ')
   );
+  check(
+    routable.every((m) => matchesAgyModel(m)),
+    'routable 由 agent 自己的 matchesModel 推得，不是另寫一套規則'
+  );
+
+  // run 的候選名單（舊的字串陣列）：只放可路由的，而且要吃得到實查結果
+  const payload = getModelsPayload();
+  check(
+    payload.antigravity.every((m) => matchesAgyModel(m)),
+    '★ run 的候選名單只放可路由的名字（列出來就要叫得動）',
+    payload.antigravity.join(', ')
+  );
+  check(
+    payload.antigravity.includes('agy') && payload.antigravity.includes('agy-default'),
+    '★ 框架 alias 不因為改讀實查結果而消失（vendor 永遠不會回報它們）'
+  );
+
+  if (agyRow.source === 'vendor-cli') {
+    check(
+      blocked.length > 0,
+      '★ vendor 回報但本框架路由不到的名字要「列出來並標明」，不得靜默扣掉',
+      `不可路由：${blocked.join(', ') || '(無)'}`
+    );
+    check(
+      routable.every((m) => payload.antigravity.includes(m)),
+      '★ 實查到的可路由模型都要進 run 的候選名單（不能停在靜態清單）',
+      payload.antigravity.join(', ')
+    );
+  } else {
+    console.log('  [SKIP] 這一輪沒問到 vendor，跳過「實查結果要進候選名單」的斷言');
+  }
 }
 
 // ── 4. 既有形狀不得被破壞 ─────────────────────────────────────
