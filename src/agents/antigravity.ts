@@ -72,8 +72,7 @@ export function parseAgyModelsOutput(stdout: string): readonly string[] | null {
 /**
  * 問 agy 現在支援哪些模型。
  *
- * 失敗一律回 null（CLI 不在、逾時、非零退出、輸出空、
- * 或查到了但沒有一個是本框架會路由到 agy 的名字）——
+ * 失敗一律回 null（CLI 不在、逾時、非零退出、輸出空）——
  * **不得回半套清單**，那會讓呼叫端以為問到了。
  */
 function discoverModels(cliPath: string): readonly string[] | null {
@@ -84,16 +83,19 @@ function discoverModels(cliPath: string): readonly string[] | null {
       windowsHide: true,
     });
     if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return null;
-    const parsed = parseAgyModelsOutput(result.stdout);
-    if (parsed === null) return null;
     /*
-      只回報**本框架真的會路由到 agy** 的 id。agy 自己也代理 `claude-sonnet-4-6`、
-      `gpt-oss-120b-medium` 這些名字，但 matchesAgyModel 刻意不收（靠名字猜會把人
-      送到錯的 CLI），而 `antigravity/claude-sonnet-4-6` 這種目錄寫法目前沒有任何
-      地方能路由。照單全收只會讓清單多出「列得出來、選了卻跑去 Claude CLI」的選項。
+      **agy 說什麼就回報什麼**，不在這裡過濾。
+
+      2026-08-22 的第一版把「本框架路由不到的名字」（agy 代理的 `claude-sonnet-4-6`、
+      `claude-opus-4-6-thinking`、`gpt-oss-120b-medium`）在這裡就濾掉了。動機沒錯
+      ——照單全收會讓 `run` 的候選名單多出「列得出來、選了卻被 claude 的 catch-all
+      接走」的選項——但做法錯了：目錄標著 `vendor-cli`（意思是「這一輪問過 CLI」），
+      實際上卻默默少三筆，而「少了」這件事在輸出裡完全看不見。
+      那正是 catalog-v2 這一層存在的理由所要防的病，只是換了個位置發作。
+
+      現在改成：這一層說實話，「能不能派工」由目錄層的 `routable` 標記表達。
     */
-    const routable = parsed.filter((id) => matchesAgyModel(id));
-    return routable.length > 0 ? routable : null;
+    return parseAgyModelsOutput(result.stdout);
   } catch {
     return null;
   }

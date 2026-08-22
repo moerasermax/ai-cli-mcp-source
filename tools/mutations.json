@@ -164,14 +164,6 @@
     "expect": "上了色的輸出也解析得出來（ANSI 不得讓整行消失）"
   },
   {
-    "name": "discoverModels 照單全收（列出路由不到 agy 的 claude-*/gpt-oss-*）",
-    "file": "src/agents/antigravity.ts",
-    "script": "verify-catalog-source.mjs",
-    "from": "    const routable = parsed.filter((id) => matchesAgyModel(id));",
-    "to": "    const routable = [...parsed];",
-    "expect": "★ 目錄裡每個 agy 模型都真的會路由回 agy（列得出來就要叫得動）"
-  },
-  {
     "name": "authority 與 capabilities 同時出現時不擋（猜呼叫端的意思）",
     "file": "src/app/exec.ts",
     "script": "verify-exec-contract.mjs",
@@ -202,5 +194,37 @@
     "from": "    return { authority: 'unrestricted', agent, built };",
     "to": "    void built;",
     "expect": "★ unrestricted（claude）→ 一般組裝（帶旁路旗標），authority 回報 unrestricted"
+  },
+  {
+    "name": "routable 一律標成 true（列出路由不到的名字）",
+    "file": "src/models/catalog-v2.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "        routable: agent.matchesModel(model),",
+    "to": "        routable: true,",
+    "expect": "★ 標成 routable 的每一個都真的路由回 agy（列得出來就要叫得動）"
+  },
+  {
+    "name": "routable 一律標成 false（把叫得動的說成叫不動）",
+    "file": "src/models/catalog-v2.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "        routable: agent.matchesModel(model),",
+    "to": "        routable: false,",
+    "expect": "★ 標成不可路由的，實際上確實路由不回 agy（標示與現實一致）"
+  },
+  {
+    "name": "run 的候選名單不過濾 routable（選了會跑去別家）",
+    "file": "src/models/catalog.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    if (!entry.routable) continue;",
+    "to": "    if (false) continue;",
+    "expect": "★ run 的候選名單只放可路由的名字（列出來就要叫得動）"
+  },
+  {
+    "name": "候選名單退回靜態清單（實查結果進不了使用者看得到的地方）",
+    "file": "src/models/catalog.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    out[agent.id] = extra.length > 0 ? [...agent.models, ...extra] : agent.models;",
+    "to": "    void extra;\n    out[agent.id] = agent.models;",
+    "expect": "★ 實查到的可路由模型都要進 run 的候選名單（不能停在靜態清單）"
   }
 ]
