@@ -38,6 +38,7 @@
   `tools/mutation-test.mjs` 是掃「含 `FAIL ` 的行」判定突變有沒有被對應斷言殺掉，
   `[FAIL]` 一條都對不上——等於這支腳本先前根本無法納入突變測試。（Claude）
 
+- `verify-exec-contract.mjs` 的失敗行同樣由 `[FAIL] x` 改成 `FAIL x`（理由同上）。（Claude）
 
 ### 新增
 - `parseAgyModelsOutput()` 從 `discoverModels()` 抽出並匯出，改用**錄下來的真實 `agy models`
@@ -46,6 +47,32 @@
   驗不到「查得到時解析對不對」——這次的 bug 正好落在那個洞裡。（Claude）
 - 三個對應突變（`tools/mutations.json`，21 → 24）：解析退回舊規則、不剝 ANSI、
   照單全收不過濾路由。三個都實測 KILLED（原地套用＋還原，未走 worktree harness）。（Claude）
+
+### 新增（`exec` 的明確不設限授權）
+- **`authority: 'unrestricted'`**。fail-closed 的預設**一個字都沒動**——沒帶 `authority` 的請求
+  與從前完全一樣。新增的是一條**明確**的鬆綁：呼叫端自己寫出這個字面值，代表「這次的不設限
+  是人授權的、由呼叫端負責」，exec 才改用該 vendor 的一般組裝（帶 `--dangerously-*`）。
+  這不是退回——退回是「呼叫端要求限制、我們給不出、卻偷偷放寬」。（Claude）
+  - `authority` 與 `capabilities` 同時出現 → 以**語義衝突**為由拒絕，不猜呼叫端想要哪一個。
+  - 只認 `'unrestricted'` 字面值；未知值（例如 `'yolo'`）一律拒絕，**不當成沒寫**
+    ——當成沒寫會讓呼叫端以為授權生效、實際上受限。
+  - `started` frame 新增 `authority` 欄位，回報**實際**生效的模式。版本不合的對端不認識
+    這個欄位，於是能發現「要求了 unrestricted 但對方沒生效」而拒絕解讀。
+  - 這個設計與它的 8 條斷言是 **2026-08-17 就寫好的**，但 `src/app/exec.ts` 只加了檔頭註解、
+    實作從缺，`verify-exec-contract.mjs` 因此一直停在 20/24（其中 4 條連跑都跑不到，
+    因為 `planExec` 不存在）。現在 28/28。
+- **`planExec()` 匯出**：exec 的決策（選 agent、選組裝、定生效模式）抽成純函式，不 spawn、
+  不寫 frame。這條分支若只能靠整跑驗證，每驗一次都要真的啟動一個 vendor CLI——花錢、慢、
+  受機器狀態影響，於是實務上就不會有人驗它，而它偏偏是「權限有沒有真的收好」的那條線。（Claude）
+- **`splitCatalogModelId()`**：`exec` 支援 `<agent>/<model>` 目錄 id（`codex/gpt-5.3-codex`）。
+  前綴不是已知 agent id 時原樣保留——direct-api 的 `or-qwen/qwen3.7-plus` 本來就含斜線，
+  拆掉會毀掉那條路徑。目錄 id 指定的 vendor 與名稱路由不一致時（`antigravity/claude-sonnet-4-6`）
+  **拒絕**，不做跨 vendor 強制指派。**只在 `exec` 生效，`run` 的路由一行未動。**（Claude）
+- 四個對應突變（`tools/mutations.json`，24 → 28）：語義衝突不擋、authority 收下任意值、
+  started frame 的 authority 寫死、unrestricted 仍走嚴格組裝。四個都實測 KILLED。（Claude）
+  - 其中一個順帶抓出原斷言的弱點：「started frame 帶 authority」原本是掃原始碼有沒有這個字，
+    而型別已經逼著這個欄位必須存在（拿掉根本編不過），等於白抓。改成釘 `plan.authority`
+    這個**值的來源**——欄位還在、值被寫死成字面值的情況現在會被抓到。
 
 ## [5.0.0] - 2026-07-30
 

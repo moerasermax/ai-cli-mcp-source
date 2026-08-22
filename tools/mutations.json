@@ -170,5 +170,37 @@
     "from": "    const routable = parsed.filter((id) => matchesAgyModel(id));",
     "to": "    const routable = [...parsed];",
     "expect": "★ 目錄裡每個 agy 模型都真的會路由回 agy（列得出來就要叫得動）"
+  },
+  {
+    "name": "authority 與 capabilities 同時出現時不擋（猜呼叫端的意思）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    if (request.capabilities !== undefined) {",
+    "to": "    if (false) {",
+    "expect": "★ authority 與 capabilities 同時出現 → 以「語義衝突」為由拒絕（不猜、不是碰巧缺 CLI）"
+  },
+  {
+    "name": "authority 收下任意值（未知值被當成 unrestricted）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    if (requestedAuthority !== 'unrestricted') {",
+    "to": "    if (requestedAuthority === '') {",
+    "expect": "★ authority 只認 'unrestricted' 字面值，其他值以此為由拒絕（不是當成沒寫）"
+  },
+  {
+    "name": "started frame 的 authority 寫死成 scoped（回報的與實際生效的不同）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    authority: plan.authority,",
+    "to": "    authority: 'scoped',",
+    "expect": "★ started frame 帶 authority 欄位（執行端回報實際生效的模式）"
+  },
+  {
+    "name": "unrestricted 仍走嚴格組裝（要求不設限卻靜默受限）",
+    "file": "src/app/exec.ts",
+    "script": "verify-exec-contract.mjs",
+    "from": "    return { authority: 'unrestricted', agent, built };",
+    "to": "    void built;",
+    "expect": "★ unrestricted（claude）→ 一般組裝（帶旁路旗標），authority 回報 unrestricted"
   }
 ]

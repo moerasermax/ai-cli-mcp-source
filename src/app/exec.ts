@@ -10,6 +10,13 @@
  * 1. **能力 fail-closed**：agent 沒有 `buildStrictCommand` 就拒絕啟動，
  *    **不退回** `buildCommand`（那會帶著 `--dangerously-*` 全開權限跑，
  *    而呼叫端以為有限制）。
+ *    唯一的例外是**明確的** `authority: 'unrestricted'`（2026-08-17，
+ *    供 OmniMesh 的全權員工使用）：呼叫端自己寫出這個字面值，代表
+ *    「這次執行的不設限是人授權的，由呼叫端負責」，exec 才用該 vendor
+ *    的一般組裝。這不是退回——退回是呼叫端要求限制而我們給不出時
+ *    偷偷放寬；這裡是呼叫端**要求不限制**。started frame 會回報實際
+ *    生效的模式（`authority` 欄位），呼叫端據此驗證，版本不合時能
+ *    發現「要求了 unrestricted 但對方不認識」而拒絕解讀。
  * 2. **terminal frame 必須等三件事齊全**：child close、stdout EOF、
  *    stderr EOF。少等任何一個，最後幾個 byte 會在「已完成」之後才到，
  *    而呼叫端已經把那次執行封存了——那就是無聲的資料遺失。
@@ -36,7 +43,23 @@ export interface ExecRequest {
   reasoningEffort?: string;
   /** 這次執行允許的能力。空陣列 = 什麼都不准，仍會啟動（純問答）。 */
   capabilities?: string[];
+  /**
+   * 明確的不設限授權。**只認 `'unrestricted'` 這個字面值。**
+   *
+   * 與 `capabilities` 互斥：一個是「只給這些能力」、一個是「不設限」，
+   * 同時出現是語義衝突，exec 不猜。
+   */
+  authority?: string;
   sessionId?: string;
+}
+
+/** exec 這次執行實際生效的模式。started frame 會回報它。 */
+export type ExecAuthority = 'scoped' | 'unrestricted';
+
+export interface ExecPlan {
+  authority: ExecAuthority;
+  agent: AgentDefinition;
+  built: ReturnType<typeof buildCliCommand>;
 }
 
 /** 一個 NDJSON frame。`v` 是協定版本，呼叫端必須檢查。 */
@@ -44,6 +67,8 @@ type Frame =
   | {
       v: 1;
       type: 'started';
+      /** 實際生效的模式。呼叫端據此確認「我要的不設限真的生效了」。 */
+      authority: ExecAuthority;
       vendor: string;
       requestedModel: string;
       resolvedModel: string;
@@ -84,6 +109,15 @@ function parseRequest(raw: string): ExecRequest {
   if (capabilities !== undefined && !Array.isArray(capabilities)) {
     throw new Error('capabilities 必須是陣列');
   }
+  /*
+    authority 的**值**由 planExec 檢查（那裡才有完整語義），這裡只擋型別。
+    錯誤訊息一律含 "authority" ——呼叫端與回歸測試都靠它區分
+    「被這條規則拒絕」與「碰巧缺 CLI 也回 spawn-failed」。
+  */
+  const authority = row['authority'];
+  if (authority !== undefined && typeof authority !== 'string') {
+    throw new Error('authority 必須是字串');
+  }
   return {
     cwd: row['cwd'] as string,
     model: row['model'] as string,
@@ -92,6 +126,7 @@ function parseRequest(raw: string): ExecRequest {
       ? { reasoningEffort: row['reasoningEffort'] }
       : {}),
     ...(Array.isArray(capabilities) ? { capabilities: capabilities.map(String) } : {}),
+    ...(typeof authority === 'string' ? { authority } : {}),
     ...(typeof row['sessionId'] === 'string' ? { sessionId: row['sessionId'] } : {}),
   };
 }
@@ -115,6 +150,117 @@ function resolveCliPaths(): Record<string, string> {
   return paths;
 }
 
+/**
+ * `<agent>/<model>` 目錄 id → 拆成 agent 與 model。
+ *
+ * 前綴不是已知 agent id 時**原樣回傳**：direct-api 的
+ * `or-qwen/qwen3.7-plus` 這種 provider/model 名字本來就含斜線，
+ * 把它當目錄 id 拆掉會直接毀掉那條路徑。
+ */
+export function splitCatalogModelId(model: string): { agentId: string | null; model: string } {
+  const slash = model.indexOf('/');
+  if (slash <= 0) return { agentId: null, model };
+  const prefix = model.slice(0, slash);
+  const rest = model.slice(slash + 1);
+  if (rest === '' || !listAgents().some((agent) => agent.id === prefix)) {
+    return { agentId: null, model };
+  }
+  return { agentId: prefix, model: rest };
+}
+
+/**
+ * exec 的**決策**：用哪個 agent、哪一種組裝、這次生效的模式是什麼。
+ *
+ * 抽出來是為了**能直測**。authority 這條分支若只能靠整跑驗證，
+ * 每驗一次都要真的啟動一個 vendor CLI——花錢、慢、還受機器狀態影響，
+ * 於是實務上就不會有人驗它，而它偏偏是「權限有沒有真的收好」的那條線。
+ * 這裡不 spawn、不寫 frame，只做決定。
+ */
+export function planExec(request: ExecRequest): ExecPlan {
+  const requestedAuthority = request.authority;
+  if (requestedAuthority !== undefined) {
+    if (request.capabilities !== undefined) {
+      throw new Error(
+        'authority 與 capabilities 同時出現：一個要求不設限、一個要求只給特定能力，' +
+          '這是語義衝突。exec 不猜呼叫端想要哪一個——只給其中一個。'
+      );
+    }
+    if (requestedAuthority !== 'unrestricted') {
+      throw new Error(
+        `authority 只認 'unrestricted' 這個字面值，收到「${requestedAuthority}」。` +
+          '未知的值不當成沒寫——當成沒寫會讓呼叫端以為授權生效了，而實際上是受限的。'
+      );
+    }
+  }
+
+  const { agentId, model } = splitCatalogModelId(request.model);
+  const resolvedModel = resolveModelAlias(model);
+  const agent = selectAgentForModel(resolvedModel);
+  if (agentId !== null && agentId !== agent.id) {
+    /*
+      目錄 id 明講了 vendor，但這個 model 依名稱會路由到別家
+      （`antigravity/claude-sonnet-4-6`：agy 確實代理 claude，但本框架的
+      command builder 是按 agent 組的，硬指過去只會組出對方吃不下的指令）。
+      說清楚並拒絕，不要靜默跑到另一家去。
+    */
+    throw new Error(
+      `目錄 id「${request.model}」指定 agent「${agentId}」，但 model「${model}」` +
+        `依名稱會路由到「${agent.id}」。exec 不做跨 vendor 的強制指派。`
+    );
+  }
+
+  /*
+    ★ fail-closed 的那一行。沒有嚴格模式就拒絕——**不退回** buildCommand，
+      那會帶著 --dangerously-* 全開權限跑。
+      檢查刻意放在 buildCliCommand **之前**：拒絕的理由要是「這個 agent 沒有
+      嚴格模式」，而不是它在組指令時碰巧先炸掉的某個別的原因。
+  */
+  const strict = agent.buildStrictCommand;
+  if (requestedAuthority !== 'unrestricted' && typeof strict !== 'function') {
+    throw new Error(
+      `agent「${agent.id}」沒有嚴格模式（buildStrictCommand），exec 拒絕啟動。` +
+        '退回一般模式會帶著權限旁路執行，而呼叫端以為有限制——不做這件事。'
+    );
+  }
+
+  const built = buildCliCommand({
+    workFolder: request.cwd,
+    prompt: request.prompt,
+    model,
+    cliPaths: resolveCliPaths(),
+    ...(request.reasoningEffort !== undefined
+      ? { reasoning_effort: request.reasoningEffort }
+      : {}),
+    ...(request.sessionId !== undefined ? { session_id: request.sessionId } : {}),
+  });
+
+  if (requestedAuthority === 'unrestricted') {
+    /*
+      呼叫端**要求**不限制——這不是 fail-closed 的退回。
+      退回是「呼叫端要求限制、我們給不出、卻偷偷放寬」；
+      這裡是呼叫端明確寫出授權，由它自己負責。用 vendor 的一般組裝。
+    */
+    return { authority: 'unrestricted', agent, built };
+  }
+
+  return {
+    authority: 'scoped',
+    agent,
+    built: (strict as NonNullable<typeof strict>)(
+      {
+        cliPath: built.cliPath,
+        cwd: built.cwd,
+        prompt: built.prompt,
+        resolvedModel: built.resolvedModel,
+        rawModel: request.model,
+        reasoningEffort: request.reasoningEffort ?? '',
+        ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
+      },
+      request.capabilities ?? []
+    ),
+  };
+}
+
 export async function runExec(): Promise<number> {
   let request: ExecRequest;
   try {
@@ -131,45 +277,9 @@ export async function runExec(): Promise<number> {
     return 2;
   }
 
-  let agent: AgentDefinition;
-  let built: ReturnType<typeof buildCliCommand>;
+  let plan: ExecPlan;
   try {
-    const resolvedModel = resolveModelAlias(request.model);
-    agent = selectAgentForModel(resolvedModel);
-    /*
-      ★ fail-closed 的那一行。沒有嚴格模式就拒絕——**不退回**
-        buildCommand，那會帶著 --dangerously-* 全開權限跑。
-    */
-    if (typeof agent.buildStrictCommand !== 'function') {
-      throw new Error(
-        `agent「${agent.id}」沒有嚴格模式（buildStrictCommand），exec 拒絕啟動。` +
-          '退回一般模式會帶著權限旁路執行，而呼叫端以為有限制——不做這件事。'
-      );
-    }
-    built = buildCliCommand({
-      workFolder: request.cwd,
-      prompt: request.prompt,
-      model: request.model,
-      cliPaths: resolveCliPaths(),
-      ...(request.reasoningEffort !== undefined
-        ? { reasoning_effort: request.reasoningEffort }
-        : {}),
-      ...(request.sessionId !== undefined ? { session_id: request.sessionId } : {}),
-      // buildCliCommand 會呼叫 agent.buildCommand；我們只借它的模型/prompt 解析，
-      // 指令本身下面用 buildStrictCommand 重組。
-    });
-    built = agent.buildStrictCommand(
-      {
-        cliPath: built.cliPath,
-        cwd: built.cwd,
-        prompt: built.prompt,
-        resolvedModel: built.resolvedModel,
-        rawModel: request.model,
-        reasoningEffort: request.reasoningEffort ?? '',
-        ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
-      },
-      request.capabilities ?? []
-    );
+    plan = planExec(request);
   } catch (error) {
     writeFrame({
       v: 1,
@@ -181,6 +291,8 @@ export async function runExec(): Promise<number> {
     });
     return 2;
   }
+
+  const built = plan.built;
 
   if (built.cliPath.trim() === '') {
     /*
@@ -201,6 +313,9 @@ export async function runExec(): Promise<number> {
   writeFrame({
     v: 1,
     type: 'started',
+    // 呼叫端的唯一確認點：它要求 unrestricted，就必須在這裡看到 unrestricted。
+    // 版本不合的對端不認識這個欄位，於是能發現「要求了但對方沒生效」而拒絕解讀。
+    authority: plan.authority,
     vendor: built.agent,
     requestedModel: request.model,
     resolvedModel: built.resolvedModel,
