@@ -11,4 +11,5 @@ dist.bak-*/
 .codexdone_*
 # 一次性測試輸出與臨時腳本
 mcp-test-out.txt
+e2e-out.txt
 run_usage.js
