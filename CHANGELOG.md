@@ -102,6 +102,10 @@
 - 突變 28 → 31（拿掉一個因這次改動而過時的，補四個）：routable 寫死 true / 寫死 false、
   候選名單不過濾 routable、候選名單退回靜態。四個都實測 KILLED。（Claude）
 
+### 其他
+- `.gitignore` 補上 `e2e-out.txt`。`verify-e2e.mjs` 每次跑都會重新產生它，
+  旁邊的 `mcp-test-out.txt` 早就被忽略了，這個漏了。（Claude）
+
 ## [5.0.0] - 2026-07-30
 
 實測全部五個 agent 之後的收斂：Claude 5/5 模型可用、Codex 6/9（3 個被 ChatGPT 帳號層級擋下）、
