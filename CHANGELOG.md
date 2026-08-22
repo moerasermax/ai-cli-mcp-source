@@ -8,6 +8,45 @@
 
 ## [Unreleased]
 
+### 修正
+- **`agy models` 的查詢從上線起就沒有成功過一次。** 舊解析規則是「整行不含空白才算模型 id」，
+  而 agy v1.1.17 的實際輸出是 `<id>	<顯示名稱>`（`gemini-3.1-pro-high	Gemini 3.1 Pro (High)`）
+  ——顯示名稱必然帶空白，於是**每一行都被濾掉**，`discoverModels()` 永遠回 `null`，目錄永遠
+  降級成 `builtin-fallback`。降級標示本身是誠實的，所以症狀看起來像「agy 查不到」而不像 bug。
+  改成取每行第一個空白分隔欄位、且必須長得像模型 id，並先剝掉 ANSI 跳脫序列。修好後
+  `models` / `doctor` 對 antigravity 回 `source: vendor-cli`，模型從靜態的 4 個變成實查的 11 個
+  （`gemini-3.7/3.6/3.5-flash-{high,medium,low}`、`gemini-3.1-pro-{high,low}`）。（Claude）
+  - **這個 bug 本來就有斷言抓得到**：`verify-catalog-source.mjs` 的「★ 有 agy 時真的去問了 CLI」
+    在有裝 agy 的機器上從 2026-07-31 起一直是紅的。沒被發現不是因為缺測試，是因為那支測試
+    沒在有 agy 的機器上跑過——沒有 agy 的機器會走 SKIP 分支。
+
+### 變更
+- `discoverModels()` 只回報**本框架真的會路由到 agy** 的 id。`agy models` 也會列出它代理的
+  `claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`，但 `matchesAgyModel`
+  刻意不收這些名字（靠名字猜會把使用者送到錯的 CLI）。照單全收會讓 `models` 多出
+  「列得出來、選了卻被 claude 的 catch-all 接走」的選項。（Claude）
+- `matchesModel` 抽成具名匯出的 `matchesAgyModel()`，路由判斷只留一份實作，`discoverModels`
+  共用同一份。（Claude）
+- **更正兩處對外說明**：`set_config` 的 note 與 `model` 參數描述都還寫著「agy ignores model
+  selection entirely / its CLI takes no --model flag」。那是 v1.0.x 的事實，2026-07-31 起
+  `buildCommand` 早就在傳 `--model` 了。實測 `--model gemini-3.1-pro-high` 與
+  `--model gemini-3.5-flash-high` 會得到不同的模型。（Claude）
+- **更正 `matchesModel` 註解裡的一句假用法**：原本寫「要指定『agy 上的 claude』請用目錄的
+  `antigravity/claude-sonnet-4-6`」。實查沒有任何地方會拆 `<agent>/<model>`——
+  `selectAgentForModel` 只拿整個字串去問 `matchesModel`。那只是目錄的顯示 id，不是呼叫寫法。（Claude）
+- `verify-catalog-source.mjs` 的失敗行由 `[FAIL] x` 改成 `FAIL x`，與其他 verify 腳本一致。
+  `tools/mutation-test.mjs` 是掃「含 `FAIL ` 的行」判定突變有沒有被對應斷言殺掉，
+  `[FAIL]` 一條都對不上——等於這支腳本先前根本無法納入突變測試。（Claude）
+
+
+### 新增
+- `parseAgyModelsOutput()` 從 `discoverModels()` 抽出並匯出，改用**錄下來的真實 `agy models`
+  輸出**做回歸測試（`verify-catalog-source.mjs` 新增第 3c 節，8 條斷言，27 → 35 項）。
+  原本的第 3 節把 `discoverModels` 換成 stub，只驗得到「查不到時要誠實降級」，
+  驗不到「查得到時解析對不對」——這次的 bug 正好落在那個洞裡。（Claude）
+- 三個對應突變（`tools/mutations.json`，21 → 24）：解析退回舊規則、不剝 ANSI、
+  照單全收不過濾路由。三個都實測 KILLED（原地套用＋還原，未走 worktree harness）。（Claude）
+
 ## [5.0.0] - 2026-07-30
 
 實測全部五個 agent 之後的收斂：Claude 5/5 模型可用、Codex 6/9（3 個被 ChatGPT 帳號層級擋下）、

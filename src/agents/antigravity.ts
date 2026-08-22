@@ -41,10 +41,39 @@ const ANTIGRAVITY_FALLBACK_MODELS = [
 /** `agy models` 的逾時。它是本機讀設定，正常遠低於此。 */
 const DISCOVER_TIMEOUT_MS = 5_000;
 
+/** agy 的模型 id：小寫英數開頭，只含小寫英數、點與連字號。與 normalizeAgyModel 同一套。 */
+const AGY_MODEL_ID = /^[a-z0-9][a-z0-9.-]*$/;
+
+/**
+ * 解析 `agy models` 的 stdout。
+ *
+ * ★ 2026-08-22 修正：舊版用「整行不含空白」當過濾條件，但 v1.1.17 的真實輸出是
+ *   `<id>\t<顯示名稱>`（`gemini-3.1-pro-high\tGemini 3.1 Pro (High)`），顯示名稱必然
+ *   帶空白 —— 於是**每一行都被濾掉**，discoverModels 永遠回 null，目錄永遠降級成
+ *   builtin-fallback。降級本身標示得誠實，所以它看起來像「agy 查不到」而不像 bug。
+ *
+ *   現在改成取每行第一個空白分隔欄位，且必須長得像模型 id。開頭那行
+ *   `Fetching available models...` 的第一欄是 `Fetching`，大寫開頭，自動出局。
+ */
+export function parseAgyModelsOutput(stdout: string): readonly string[] | null {
+  if (typeof stdout !== 'string') return null;
+  const ids = stdout
+    .split(/\r?\n/)
+    /*
+      先剝掉 ANSI 跳脫序列。有些 CLI 即使輸出到 pipe 也會上色，而帶了跳脫字元的
+      id 會通不過下面的樣式檢查、整行被丟掉——那正是這次要修掉的靜默失敗形狀。
+    */
+    .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
+    .map((line) => line.split(/\s+/)[0] ?? '')
+    .filter((id) => AGY_MODEL_ID.test(id));
+  return ids.length > 0 ? [...new Set(ids)] : null;
+}
+
 /**
  * 問 agy 現在支援哪些模型。
  *
- * 失敗一律回 null（CLI 不在、逾時、非零退出、輸出空）——
+ * 失敗一律回 null（CLI 不在、逾時、非零退出、輸出空、
+ * 或查到了但沒有一個是本框架會路由到 agy 的名字）——
  * **不得回半套清單**，那會讓呼叫端以為問到了。
  */
 function discoverModels(cliPath: string): readonly string[] | null {
@@ -55,16 +84,16 @@ function discoverModels(cliPath: string): readonly string[] | null {
       windowsHide: true,
     });
     if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return null;
-    const models = result.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      /*
-        排除含空白的行：`agy models` 一行一個模型 id，帶空白的多半是
-        標題或警告。寧可少列一個真模型，也不要把一句話當成模型名
-        ——後者會變成選單裡一個「選了就失敗」的選項。
-      */
-      .filter((line) => line.length > 0 && !line.includes(' '));
-    return models.length > 0 ? models : null;
+    const parsed = parseAgyModelsOutput(result.stdout);
+    if (parsed === null) return null;
+    /*
+      只回報**本框架真的會路由到 agy** 的 id。agy 自己也代理 `claude-sonnet-4-6`、
+      `gpt-oss-120b-medium` 這些名字，但 matchesAgyModel 刻意不收（靠名字猜會把人
+      送到錯的 CLI），而 `antigravity/claude-sonnet-4-6` 這種目錄寫法目前沒有任何
+      地方能路由。照單全收只會讓清單多出「列得出來、選了卻跑去 Claude CLI」的選項。
+    */
+    const routable = parsed.filter((id) => matchesAgyModel(id));
+    return routable.length > 0 ? routable : null;
   } catch {
     return null;
   }
@@ -91,7 +120,7 @@ export function normalizeAgyModel(model: string): string | null {
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-');
   // agy 的模型 id 只由小寫英數、點與連字號組成。其餘一律不傳。
-  return /^[a-z0-9][a-z0-9.-]*$/.test(normalized) ? normalized : null;
+  return AGY_MODEL_ID.test(normalized) ? normalized : null;
 }
 
 /**
@@ -185,14 +214,22 @@ function resolveAntigravityLocalPath(): string {
     : join(homedir(), '.agy', 'bin', 'agy');
 }
 
-export const antigravityAgent: AgentDefinition = {
-  id: 'antigravity',
-  models: ANTIGRAVITY_FALLBACK_MODELS,
-  billingRoute: 'subscription-cli',
-  discoverModels,
-  // 路由：agy / agy-default / agy-* / antigravity* / *-agy / 大寫 "Gemini ..."
-  // 大寫 "Gemini " 區別於 lowercase gemini-cli 模型（本框架已不支援 gemini）。
-  matchesModel: (model) =>
+/**
+ * 路由：agy / agy-default / agy-* / antigravity* / *-agy / 大寫 "Gemini ..." / gemini-*
+ *
+ * 大寫 "Gemini " 區別於 lowercase gemini-cli 模型（本框架已不支援 gemini）。
+ *
+ * **刻意不收** agy 也代理的 `claude-*` / `gpt-oss-*`——那些名字同時屬於
+ * claude/codex agent，靠名字猜會把使用者送到錯的 CLI。
+ *
+ * ★ 2026-08-22 更正：這裡原本寫「要指定『agy 上的 claude』請用目錄的
+ *   `antigravity/claude-sonnet-4-6`」。實查沒有這回事——selectAgentForModel
+ *   只拿整個字串問 matchesModel，沒有任何地方會拆 `<agent>/<model>`。
+ *   那個寫法只是目錄的顯示 id。要真的支援得先實作路由，在那之前不要
+ *   把它寫成用法。discoverModels 也因此不把這些名字列進清單。
+ */
+export function matchesAgyModel(model: string): boolean {
+  return (
     model === 'agy' ||
     model === 'agy-default' ||
     model.startsWith('agy-') ||
@@ -200,13 +237,17 @@ export const antigravityAgent: AgentDefinition = {
     model.endsWith('-agy') ||
     // 舊的顯示寫法（agy settings.json 風格），alias 表仍在用
     model.startsWith('Gemini ') ||
-    /*
-      v1.1.9 的真實 id 形如 `gemini-3.6-flash-high`。
-      **刻意不收** agy 也代理的 `claude-*` / `gpt-oss-*`——那些名字
-      同時屬於 claude/codex agent，靠名字猜會把使用者送到錯的 CLI。
-      要指定「agy 上的 claude」請用目錄的 `antigravity/claude-sonnet-4-6`。
-    */
-    model.startsWith('gemini-'),
+    // v1.1.17 的真實 id 形如 `gemini-3.6-flash-high`
+    model.startsWith('gemini-')
+  );
+}
+
+export const antigravityAgent: AgentDefinition = {
+  id: 'antigravity',
+  models: ANTIGRAVITY_FALLBACK_MODELS,
+  billingRoute: 'subscription-cli',
+  discoverModels,
+  matchesModel: matchesAgyModel,
   binary: {
     envVarName: 'AGY_CLI_NAME',
     defaultCliName: 'agy',

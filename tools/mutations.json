@@ -146,5 +146,29 @@
     "from": "  if (isRemovedModel(aliasedModel) || isRemovedModel(rawModel)) {\n    throw new Error(removedModelMessage(isRemovedModel(rawModel) ? rawModel : aliasedModel));\n  }",
     "to": "",
     "expect": "已移除的 model 被明確拒絕：kiro"
+  },
+  {
+    "name": "agy models 解析退回「整行不含空白」（顯示名稱把每一行都濾掉）",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    .map((line) => line.split(/\\s+/)[0] ?? '')\n    .filter((id) => AGY_MODEL_ID.test(id));",
+    "to": "    .filter((id) => id.length > 0 && !id.includes(' '));",
+    "expect": "★ 帶顯示名稱的行要解析得出 id（舊規則在這一行就回 null）"
+  },
+  {
+    "name": "不剝 ANSI 跳脫序列（上了色的整行消失）",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    .map((line) => line.replace(/\\u001b\\[[0-9;]*m/g, '').trim())",
+    "to": "    .map((line) => line.trim())",
+    "expect": "上了色的輸出也解析得出來（ANSI 不得讓整行消失）"
+  },
+  {
+    "name": "discoverModels 照單全收（列出路由不到 agy 的 claude-*/gpt-oss-*）",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    const routable = parsed.filter((id) => matchesAgyModel(id));",
+    "to": "    const routable = [...parsed];",
+    "expect": "★ 目錄裡每個 agy 模型都真的會路由回 agy（列得出來就要叫得動）"
   }
 ]
