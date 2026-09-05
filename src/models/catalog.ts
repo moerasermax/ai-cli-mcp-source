@@ -10,6 +10,7 @@ import { listAgents, getAgent, selectAgentForModel } from '../agents/registry.js
 import { resolveDirectApiModel } from '../agents/direct-api.js';
 import { buildCatalogV2 } from './catalog-v2.js';
 import type { AgentId } from '../agents/types.js';
+import { acceptsConfiguredEffort } from '../core/reasoning.js';
 import {
   describeUserConfig,
   loadUserConfigSnapshot,
@@ -37,7 +38,7 @@ export interface EffectiveModelAliasDetail extends ModelAliasDetail {
 /** alias → 實際 model。1:1 還原 dist。 */
 export const MODEL_ALIASES: Record<string, string> = {
   'claude-ultra': 'opus',
-  'codex-ultra': 'gpt-5.6-sol',
+  'codex-ultra': 'gpt-6-astra',
   'agy-ultra': 'Gemini 3.1 Pro (High)',
   'antigravity-ultra': 'Gemini 3.1 Pro (High)',
 };
@@ -86,7 +87,7 @@ export function removedModelMessage(model: string): string {
 /** alias 詳細資訊的內建定義。實際生效值請用 getEffectiveAliasDetails()。 */
 export const MODEL_ALIAS_DETAILS: ModelAliasDetail[] = [
   { name: 'claude-ultra', resolvesTo: 'opus', agent: 'claude', defaultReasoningEffort: 'max' },
-  { name: 'codex-ultra', resolvesTo: 'gpt-5.6-sol', agent: 'codex', defaultReasoningEffort: 'xhigh' },
+  { name: 'codex-ultra', resolvesTo: 'gpt-6-astra', agent: 'codex', defaultReasoningEffort: 'max' },
   { name: 'agy-ultra', resolvesTo: 'Gemini 3.1 Pro (High)', agent: 'antigravity' },
   { name: 'antigravity-ultra', resolvesTo: 'Gemini 3.1 Pro (High)', agent: 'antigravity' },
 ];
@@ -213,11 +214,11 @@ export function getModelParameterDescription(): string {
     ...byAgent.antigravity,
     ...byAgent['direct-api'],
   ];
-  return `The model to use. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto xhigh reasoning), "agy-ultra" (Antigravity CLI). Standard: ${all
+  return `The model to use. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto max reasoning), "agy-ultra" (Antigravity CLI). Standard: ${all
     .map((m) => `"${m}"`)
     .join(
       ', '
-    )}. direct-api accepts provider-prefixed models using "or-<model>" for OpenRouter, "ds-<model>" for DashScope, or "<provider>-<model>" for any provider key configured in ~/.local/share/ai-cli/providers.json — this is how you connect a third-party OpenAI-compatible API yourself. A name like "forge-<model>" is therefore read as provider "forge" plus a model, not as the removed Forge CLI. Antigravity (agy) accepts model selection: the name is normalized to an agy model id and passed as --model, while "agy" and "agy-default" pass nothing and fall back to the agy CLI's own default. agy carries the reasoning level in the model id itself (-high / -medium / -low), which is why reasoning_effort is not accepted for it. The Kiro and Forge agents were removed in 5.0.0 — their model names are now rejected with an explicit error rather than silently falling back to Claude.`;
+    )}. "gpt-6-astra" (and therefore "codex-ultra") needs codex-cli 0.153 or newer; 0.151 is rejected by the API with "requires a newer version of Codex". direct-api accepts provider-prefixed models using "or-<model>" for OpenRouter, "ds-<model>" for DashScope, or "<provider>-<model>" for any provider key configured in ~/.local/share/ai-cli/providers.json — this is how you connect a third-party OpenAI-compatible API yourself. A name like "forge-<model>" is therefore read as provider "forge" plus a model, not as the removed Forge CLI. Antigravity (agy) accepts model selection: the name is normalized to an agy model id and passed as --model, while "agy" and "agy-default" pass nothing and fall back to the agy CLI's own default. agy carries the reasoning level in the model id itself (-high / -medium / -low), which is why reasoning_effort is not accepted for it. The Kiro and Forge agents were removed in 5.0.0 — their model names are now rejected with an explicit error rather than silently falling back to Claude.`;
 }
 
 /** 所有 agent 宣告的 model 名稱（不含 direct-api 的動態 provider-prefixed 名稱）。 */
@@ -272,18 +273,17 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
   const { config } = snapshot;
   return {
     aliases: getEffectiveAliasDetails(config).map((alias) => {
-      // 只有支援 reasoning 的 agent 才回報 effective 值，避免 agy 顯示出
-      // 實際上不會被送進 CLI 的 effort。alias 被重新指向到不支援 reasoning 的
-      // agent 時，內建那筆 defaultReasoningEffort 也要一併拿掉，否則會回報一個
-      // 實際上不會生效的值。
-      if (!getAgent(alias.agent).reasoning.supported) {
-        const { defaultReasoningEffort: _ignored, ...rest } = alias;
-        return rest;
-      }
-      return {
-        ...alias,
-        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name, config),
-      };
+      // 只回報「真的會被送進 CLI」的 effort，規則與 command-builder 送出時共用同一個
+      // acceptsConfiguredEffort：agent 不支援 reasoning（agy / direct-api），或值不在該 agent
+      // 的允許集合（codex-ultra 被重指到 opus 後，內建的 ultra 對 claude 不成立），都不回報，
+      // 否則會回報一個指令裡根本沒有的值。後者是獨立稽核 @codex-gpt-6-astra 抓到的：
+      // 舊寫法只看 supported、不看 allowed。
+      const support = getAgent(alias.agent).reasoning;
+      const { defaultReasoningEffort: _builtin, ...rest } = alias;
+      if (!support.supported) return rest;
+      const effective = resolveConfiguredReasoningEffort(alias.name, config);
+      if (effective && !acceptsConfiguredEffort(support, effective)) return rest;
+      return { ...rest, defaultReasoningEffort: effective };
     }),
     claude: byAgent.claude,
     codex: byAgent.codex,

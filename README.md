@@ -195,13 +195,13 @@ reasoning 預設值的優先序（高 → 低）：
 2. `AI_CLI_DEFAULT_REASONING_EFFORT` 環境變數
 3. `config.json` 的 `aliasReasoningEffort[model]`
 4. `config.json` 的 `defaultReasoningEffort`
-5. 內建 ultra alias 預設（`claude-ultra` = `max`、`codex-ultra` = `xhigh`）
+5. 內建 ultra alias 預設（`claude-ultra` = `max`、`codex-ultra` = `max`）
 
 兩者行為不同，這點是刻意的：
 
 - **明確傳入**的值不合法會**丟錯**（維持原本行為）。
 - **設定檔／環境變數**推導出的預設，若該 agent 不支援 reasoning（antigravity /
-  direct-api）或該值不在其允許集合（例如 codex 不吃 `max`），會**靜默略過**、
+  direct-api）或該值不在其允許集合（例如 claude 不吃 `ultra`），會**靜默略過**、
   改用該 CLI 自身預設。全域偏好不該讓個別 run 整個失敗。
 
 目前生效的設定可從 `models` 工具回傳的 `userConfig` 欄位查看；`aliases[].defaultReasoningEffort`
@@ -224,8 +224,12 @@ reasoning 預設值的優先序（高 → 低）：
 | alias | 內建指向 |
 |-------|----------|
 | `claude-ultra` | `opus` |
-| `codex-ultra` | `gpt-5.6-sol` |
+| `codex-ultra` | `gpt-6-astra` |
 | `agy-ultra` / `antigravity-ultra` | `Gemini 3.1 Pro (High)` |
+
+> **`gpt-6-astra` 需要 codex-cli 0.153 以上。** 0.151.0 的模型快取雖然列得出它，實跑會被 API 以
+> `requires a newer version of Codex` 拒絕（2026-09-05 實測；0.153.4 可用）。`codex-ultra` 既然改指它，
+> 舊版 CLI 上呼叫 `codex-ultra` 也會失敗——升級 CLI，或用下面的 `aliasModel` 暫時把它指回 `gpt-5.6-sol`。
 
 `config.json` 的 `aliasModel` 可以覆寫它。解析優先序（高 → 低）：
 

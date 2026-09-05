@@ -14,7 +14,7 @@ import type { AgentDefinition, AgentId, BuiltCommand } from '../agents/types.js'
 import { selectAgentForModel, getAgent } from '../agents/registry.js';
 import { resolveDirectApiModel } from '../agents/direct-api.js';
 import { resolveModelAlias, isRemovedModel, removedModelMessage } from '../models/catalog.js';
-import { resolveReasoningEffort } from './reasoning.js';
+import { acceptsConfiguredEffort, resolveReasoningEffort } from './reasoning.js';
 import {
   loadUserConfigSnapshot,
   resolveConfiguredReasoningEffort,
@@ -84,13 +84,10 @@ function resolveDefaultReasoningEffort(
 ): string {
   const configured = resolveConfiguredReasoningEffort(rawModel, config);
   if (!configured) return '';
-  if (!agent.reasoning.supported) {
-    debugLog(`[Config] Skipping default reasoning "${configured}": ${agent.id} does not support it`);
-    return '';
-  }
-  if (agent.reasoning.allowed && !agent.reasoning.allowed.has(configured)) {
+  // 規則本體在 reasoning.ts 的 acceptsConfiguredEffort：models payload 回報時用的是同一份。
+  if (!acceptsConfiguredEffort(agent.reasoning, configured)) {
     debugLog(
-      `[Config] Skipping default reasoning "${configured}": not allowed for ${agent.id}; using its CLI default`
+      `[Config] Skipping default reasoning "${configured}": ${agent.id} does not support it or it is outside its allowed set; using its CLI default`
     );
     return '';
   }

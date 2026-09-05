@@ -43,7 +43,7 @@ export const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 /** 設定檔不存在時的內建行為（1:1 沿用原本 dist 的 ultra alias 預設）。 */
 export const BUILTIN_ALIAS_REASONING: Record<string, string> = {
   'claude-ultra': 'max',
-  'codex-ultra': 'xhigh',
+  'codex-ultra': 'max',
 };
 
 /**
@@ -379,7 +379,7 @@ export function loadUserConfigSnapshot(): ConfigSnapshot {
  *   1. 環境變數 AI_CLI_DEFAULT_REASONING_EFFORT
  *   2. config.json 的 aliasReasoningEffort[rawModel]
  *   3. config.json 的 defaultReasoningEffort
- *   4. 內建 ultra alias 預設（claude-ultra=max / codex-ultra=xhigh）
+ *   4. 內建 ultra alias 預設（claude-ultra=max / codex-ultra=max）
  *
  * 注意：這裡只回傳「想要的值」，是否真的套用由 caller 依 agent 能力決定。
  */

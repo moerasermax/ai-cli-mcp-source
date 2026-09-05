@@ -8,6 +8,45 @@
 
 ## [Unreleased]
 
+### 新增（GPT-6 Astra 與 codex 的 max / ultra effort）
+- **`gpt-6-astra`（GPT-6-Astra）加入 codex 目錄，排在清單最前。** 名稱與能力抄自 codex-cli 的
+  `~/.codex/models_cache.json`（2026-09-05）：priority 1、text + image、reasoning 六級
+  low / medium / high / xhigh / max / ultra、CLI 端預設 medium。實跑確認：`gpt-6-astra` 配 `ultra`
+  與 `max` 都能經由 `run` → `wait` 拿到回答。（Claude，moerasermax 指示；程式碼由
+  @codex-gpt-6-astra（xhigh）與 @gemini-3.1-pro 獨立審查——前者 3 項發現全部採納、見下方「變更」，
+  後者未發現確信問題）
+  - **需要 codex-cli ≥ 0.153.x。** 0.151.0 的 `models_cache.json` 雖然已經列出 `gpt-6-astra`，
+    實跑會先報 `Model metadata for gpt-6-astra not found`，接著被 API 以
+    `requires a newer version of Codex` 拒絕（HTTP 400）。這台機器已從 0.151.0 升到 0.153.4。
+- **codex 的 `reasoning_effort` 多收 `max` 與 `ultra`**；全域集合 `ALLOWED_REASONING_EFFORTS`
+  加入 `ultra`。claude 仍只到 `max`：明確傳 `ultra` 給 claude 會以 agent 專屬錯誤拒絕，設定檔給的
+  `ultra` 落到 claude 則照舊靜默略過。codex 這邊收的是各模型能力的**聯集**、不按模型細分——同一份
+  快取顯示 gpt-5.6-luna 到 max、gpt-5.5 / gpt-5.4-mini / gpt-5.3-codex-spark 仍只到 xhigh；
+  不支援的組合由 codex CLI 自己拒絕，錯誤原樣回到呼叫端。（Claude）
+- `verify-alias-config.mjs` 新增第 3c 節（8 條）、set_config 段 2 條與第 3 節 1 條（現為 76 項）；
+  `tools/mutations.json` 新增 5 個對應突變（31 → 36），全部實測 KILLED、且各自由指定的斷言殺掉。（Claude）
+  - 突變測試順帶抓到新斷言自己的弱點：codex 拒收 ultra 時 `buildCliCommand` 會拋例外，原本的
+    寫法讓整支腳本當場中斷、後面的 set_config 斷言一條都跑不到——兩個突變因此被判成
+    「KILLED(其他斷言)」。改成把例外收成 FAIL 後，4 個突變各自由指定的斷言殺掉。
+
+### 變更（GPT-6 Astra）
+- **`codex-ultra` 改指 `gpt-6-astra`，內建預設 effort 由 `xhigh` 改為 `max`**（`ultra` 保留給明確傳入）。
+  「codex 最強組合」這個 alias 的意思沒變，變的是最強組合本身；`config.json` 的 `aliasModel` /
+  `aliasReasoningEffort` 仍可覆寫。優先序沒動：使用者若在 `config.json` 設了
+  `aliasReasoningEffort["codex-ultra"]` 或 `defaultReasoningEffort`，那個值仍然贏過內建的 `max`。
+  （Claude，moerasermax 指示）
+- `run` 的 `reasoning_effort` 參數描述、`ai-cli run --help`、README 的 alias 表與優先序說明同步更新。
+  README 原本拿「codex 不吃 `max`」當靜默略過的例子，現在已不成立，改用「claude 不吃 `ultra`」。（Claude）
+- **`models` 回報的 `aliases[].defaultReasoningEffort` 只回報真的會送出的值。** 舊寫法只看該 agent
+  「支不支援 reasoning」、不看「值在不在它的允許集合」——設定檔給 `codex-ultra` 的 effort 是 `ultra`、
+  `aliasModel` 又把它重指到 `opus` 時，payload 回報 `ultra`，指令裡卻沒有 `--effort`（claude 不吃
+  ultra，command-builder 靜默略過）。
+  現在「送不送」與「報不報」共用同一條規則 `acceptsConfiguredEffort()`（`core/reasoning.ts`），
+  command-builder 也改用它。新增 1 條斷言與 1 個突變。（獨立稽核 @codex-gpt-6-astra 抓到；Claude 修）
+- README 的 alias 表與 `run` 的 `model` 參數描述補上 **codex-cli 版本門檻**：`gpt-6-astra`（因此也包括
+  `codex-ultra`）需要 0.153 以上，舊版可用 `aliasModel` 暫時指回 `gpt-5.6-sol`。（獨立稽核
+  @codex-gpt-6-astra 指出未揭露此相容性條件；Claude 補）
+
 ### 修正
 - **`agy models` 的查詢從上線起就沒有成功過一次。** 舊解析規則是「整行不含空白才算模型 id」，
   而 agy v1.1.17 的實際輸出是 `<id>	<顯示名稱>`（`gemini-3.1-pro-high	Gemini 3.1 Pro (High)`）

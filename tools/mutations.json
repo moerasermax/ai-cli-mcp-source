@@ -107,8 +107,8 @@
   {
     "name": "getModelsPayload 退回每個 alias 各讀一次",
     "file": "src/models/catalog.ts",
-    "from": "        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name, config),",
-    "to": "        defaultReasoningEffort: resolveConfiguredReasoningEffort(alias.name),",
+    "from": "      const effective = resolveConfiguredReasoningEffort(alias.name, config);",
+    "to": "      const effective = resolveConfiguredReasoningEffort(alias.name);",
     "expect": "一次 getModelsPayload 只讀一次設定檔"
   },
   {
@@ -226,5 +226,40 @@
     "from": "    out[agent.id] = extra.length > 0 ? [...agent.models, ...extra] : agent.models;",
     "to": "    void extra;\n    out[agent.id] = agent.models;",
     "expect": "★ 實查到的可路由模型都要進 run 的候選名單（不能停在靜態清單）"
+  },
+  {
+    "name": "codex 不收 ultra（reasoning 集合退回沒有 ultra 的版本）",
+    "file": "src/agents/codex.ts",
+    "from": "const CODEX_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);",
+    "to": "const CODEX_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max']);",
+    "expect": "codex 明確指定 ultra 會送出 model_reasoning_effort=ultra"
+  },
+  {
+    "name": "全域 reasoning 集合不含 ultra（set_config 會把合法新值當打錯字）",
+    "file": "src/core/reasoning.ts",
+    "from": "  'max',\n  // ultra：2026-09-05 隨 gpt-6-astra 加入，目前只有 codex 吃（claude 到 max 為止）。\n  'ultra',\n",
+    "to": "  'max',\n",
+    "expect": "set_config 接受 ultra 為全域預設"
+  },
+  {
+    "name": "codex-ultra 的內建預設 effort 停在 xhigh",
+    "file": "src/core/user-config.ts",
+    "from": "  'codex-ultra': 'max',",
+    "to": "  'codex-ultra': 'xhigh',",
+    "expect": "codex-ultra 內建預設為 max"
+  },
+  {
+    "name": "claude 也收 ultra（agent 專屬集合放寬）",
+    "file": "src/agents/claude.ts",
+    "from": "const CLAUDE_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max']);",
+    "to": "const CLAUDE_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);",
+    "expect": "claude 明確指定 ultra 被拒絕"
+  },
+  {
+    "name": "payload 只看 supported、不看 allowed（回報一個不會送出的 effort）",
+    "file": "src/models/catalog.ts",
+    "from": "      if (effective && !acceptsConfiguredEffort(support, effective)) return rest;\n",
+    "to": "",
+    "expect": "重指到 claude 時 ultra 不送出也不回報"
   }
 ]

@@ -117,7 +117,7 @@ async function main(baseConfig) {
   // ---- 2. 純邏輯：resolveModelAlias ----
   console.log('\n[2] resolveModelAlias 邊界');
   writeConfig(baseConfig);
-  check('無覆寫時走內建表', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol');
+  check('無覆寫時走內建表', catalog.resolveModelAlias('codex-ultra') === 'gpt-6-astra');
   check('非 alias 原樣回傳', catalog.resolveModelAlias('opus') === 'opus');
   const proto = catalog.resolveModelAlias('constructor');
   check('prototype key 不會回傳函式', typeof proto === 'string' && proto === 'constructor',
@@ -187,7 +187,7 @@ async function main(baseConfig) {
     catalog.resolveModelAlias('codex-ultra'); // 讓 terra 成為 last-good
     check(
       `結構性讀檔失敗（${code}）退回內建值`,
-      withReadError(code, () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-5.6-sol',
+      withReadError(code, () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-6-astra',
       `got ${withReadError(code, () => catalog.resolveModelAlias('codex-ultra'))}`
     );
   }
@@ -196,7 +196,7 @@ async function main(baseConfig) {
   try {
     check(
       '結構性讀檔失敗（EISDIR）退回內建值',
-      catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol',
+      catalog.resolveModelAlias('codex-ultra') === 'gpt-6-astra',
       `got ${catalog.resolveModelAlias('codex-ultra')}`
     );
   } finally {
@@ -206,7 +206,7 @@ async function main(baseConfig) {
   // 相對地，「檔案真的不存在」是使用者的意思，必須退回內建值而不是沿用 last-good。
   check(
     '檔案不存在時退回內建值',
-    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol',
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-6-astra',
     `got ${catalog.resolveModelAlias('codex-ultra')}`
   );
 
@@ -225,10 +225,10 @@ async function main(baseConfig) {
   // 解析失敗之後，cache 必須被清掉：否則接下來一次讀檔失敗會把這份「使用者已經改壞、
   // 語意上作廢」的舊設定當成 last-good 復活。
   writeFileSync(CONFIG, '{ this is not json');
-  check('壞掉的 JSON 退回內建值', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol');
+  check('壞掉的 JSON 退回內建值', catalog.resolveModelAlias('codex-ultra') === 'gpt-6-astra');
   check(
     '壞掉的 JSON 之後遇到暫時性讀檔失敗，不會復活舊設定',
-    withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-5.6-sol',
+    withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra')) === 'gpt-6-astra',
     `got ${withReadError('EBUSY', () => catalog.resolveModelAlias('codex-ultra'))}`
   );
 
@@ -275,14 +275,14 @@ async function main(baseConfig) {
   writeConfig({ ...baseConfig, aliasModel: ['gpt-5.4', 'opus'] });
   check(
     'aliasModel 是陣列時整個忽略',
-    catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol' &&
+    catalog.resolveModelAlias('codex-ultra') === 'gpt-6-astra' &&
       catalog.resolveModelAlias('0') === '0',
     `got ${catalog.resolveModelAlias('0')}`
   );
 
   // 根節點是陣列、以及 aliasReasoningEffort 是陣列，也都要整個忽略。
   writeFileSync(CONFIG, JSON.stringify([{ aliasModel: { 'codex-ultra': 'gpt-5.4' } }], null, 2));
-  check('根節點是陣列時整份忽略', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-sol');
+  check('根節點是陣列時整份忽略', catalog.resolveModelAlias('codex-ultra') === 'gpt-6-astra');
   // 光看 alias 值分不出來（陣列本來就取不到欄位，兩種實作都回內建值）——
   // 要看 status：有擋才會是 error/parse，沒擋的話會被當成「成功解析出一份空設定」。
   check(
@@ -366,9 +366,96 @@ async function main(baseConfig) {
   cmd = build();
   check('跨 agent 重指會換 agent', cmd.agent === 'claude', `agent=${cmd.agent}`);
 
+  // 設定檔給 codex-ultra 的 effort 是 ultra、又把它重指到 claude → ultra 對 claude 不成立 →
+  // 指令不帶 --effort；payload 也不能回報 ultra。兩邊必須一致（獨立稽核 @codex-gpt-6-astra 抓到
+  // payload 那邊只看 supported、不看 allowed）。不沿用 baseConfig：使用者自己的預設可能是 claude
+  // 吃得下的值，會遮掉這個案例。
+  writeConfig({ aliasModel: { 'codex-ultra': 'opus' }, aliasReasoningEffort: { 'codex-ultra': 'ultra' } });
+  cmd = build();
+  const repointed = catalog.getModelsPayload().aliases.find((a) => a.name === 'codex-ultra');
+  check(
+    '重指到 claude 時 ultra 不送出也不回報（payload 與指令一致）',
+    cmd.agent === 'claude' &&
+      !cmd.args.includes('--effort') &&
+      repointed.defaultReasoningEffort === undefined,
+    `args=${JSON.stringify(cmd.args)} reported=${repointed.defaultReasoningEffort}`
+  );
+
   writeConfig(baseConfig);
   cmd = build();
-  check('移除覆寫後退回內建', cmd.agent === 'codex' && cmd.args.includes('gpt-5.6-sol'));
+  check('移除覆寫後退回內建', cmd.agent === 'codex' && cmd.args.includes('gpt-6-astra'));
+
+  // ---- 3c. gpt-6-astra 與 ultra / max effort（2026-09-05 加入）----
+  //
+  // 這組斷言釘三件事：(1) codex 真的把 ultra / max 送進指令；(2) claude 不收 ultra，
+  // 而且錯誤是「agent 專屬」的那種（不是被全域集合擋下，那樣訊息會誤導成值本身不存在）；
+  // (3) 設定檔給的 ultra 落到 claude 時靜默略過而不是讓整個 run 失敗——README 承諾過這件事。
+  console.log('\n[3c] gpt-6-astra 與 ultra / max effort');
+  const buildWith = (model, reasoning_effort) =>
+    buildCliCommand({
+      prompt: 'hi',
+      workFolder: ROOT,
+      model,
+      reasoning_effort,
+      cliPaths: { codex: 'codex', claude: 'claude', antigravity: 'agy' },
+    });
+  // 明確指定的 effort 不合法時 buildCliCommand 會拋例外。這裡要把它變成 FAIL 而不是讓整支
+  // 腳本中斷——中斷會讓後面的斷言（包括第 4 節的 set_config）一條都跑不到，突變測試就會
+  // 把「該抓到的斷言」誤判成「被其他斷言抓到」（實測過）。
+  const tryBuild = (model, reasoning_effort) => {
+    try {
+      return { cmd: buildWith(model, reasoning_effort) };
+    } catch (error) {
+      return { error: error.message };
+    }
+  };
+  check('gpt-6-astra 列在已知模型清單', catalog.listKnownModels().includes('gpt-6-astra'));
+  check('gpt-6-astra 路由到 codex', catalog.resolveAgentIdForModel('gpt-6-astra') === 'codex');
+  // 內建預設要在「沒有任何使用者設定」下看，否則會被使用者自己的 defaultReasoningEffort 蓋掉。
+  writeConfig({});
+  cmd = build();
+  check(
+    'codex-ultra 內建預設為 max（送出 --model gpt-6-astra 與 model_reasoning_effort=max）',
+    cmd.args.includes('model_reasoning_effort=max') && cmd.args.includes('gpt-6-astra'),
+    JSON.stringify(cmd.args)
+  );
+  let built = tryBuild('gpt-6-astra', 'ultra');
+  check(
+    'codex 明確指定 ultra 會送出 model_reasoning_effort=ultra',
+    !!built.cmd && built.cmd.args.includes('model_reasoning_effort=ultra'),
+    built.error ?? JSON.stringify(built.cmd.args)
+  );
+  built = tryBuild('gpt-6-astra', 'max');
+  check(
+    'codex 明確指定 max 會送出 model_reasoning_effort=max',
+    !!built.cmd && built.cmd.args.includes('model_reasoning_effort=max'),
+    built.error ?? JSON.stringify(built.cmd.args)
+  );
+  let claudeErr = '';
+  try {
+    buildWith('sonnet', 'ultra');
+  } catch (error) {
+    claudeErr = error.message;
+  }
+  check(
+    'claude 明確指定 ultra 被拒絕（agent 專屬錯誤）',
+    /Claude reasoning_effort supports only/.test(claudeErr),
+    claudeErr ? `got: ${claudeErr}` : '未報錯'
+  );
+  writeConfig({ defaultReasoningEffort: 'ultra' });
+  cmd = buildWith('sonnet', undefined);
+  check(
+    '設定檔的 ultra 落到 claude 時靜默略過（不帶 --effort）',
+    cmd.agent === 'claude' && !cmd.args.includes('--effort'),
+    JSON.stringify(cmd.args)
+  );
+  cmd = buildWith('gpt-5.5', undefined);
+  check(
+    '設定檔的 ultra 落到 codex 時照送',
+    cmd.agent === 'codex' && cmd.args.includes('model_reasoning_effort=ultra'),
+    JSON.stringify(cmd.args)
+  );
+  writeConfig(baseConfig);
 
   // ---- 4. 端到端 set_config ----
   console.log('\n[4] set_config 端到端（真的起一個 MCP server）');
@@ -435,7 +522,7 @@ async function mcpChecks() {
     let res = await call('set_config', { alias_model: { 'codex-ultra': 'gpt-5.6-terra' } });
     const row = aliasOf(res, 'codex-ultra');
     check('set_config 寫入生效', row.resolvesTo === 'gpt-5.6-terra' && row.source === 'config');
-    check('回報內建原值', row.builtinResolvesTo === 'gpt-5.6-sol');
+    check('回報內建原值', row.builtinResolvesTo === 'gpt-6-astra');
 
     const onDisk = JSON.parse(readFileSync(CONFIG, 'utf-8'));
     check('保留設定檔中的未知欄位', onDisk.myCustomThing?.keep === 'me');
@@ -467,6 +554,16 @@ async function mcpChecks() {
     check('拒絕空的變更', !!res.error);
     res = await call('set_config', { alias_reasoning_effort: { 'codex-ultra': 'nonsense' } });
     check('拒絕不合法的 reasoning effort', !!res.error);
+    // ultra 是 2026-09-05 才進全域集合的；set_config 的驗證走 ALLOWED_REASONING_EFFORTS，
+    // 少了它會把「合法的新值」當成打錯字拒絕。
+    res = await call('set_config', { default_reasoning_effort: 'ultra' });
+    check(
+      'set_config 接受 ultra 為全域預設',
+      !res.error && !!res.result,
+      JSON.stringify(res.error ?? '').slice(0, 200)
+    );
+    res = await call('set_config', { unset: ['defaultReasoningEffort'] });
+    check('unset defaultReasoningEffort 成功', !res.error && !!res.result);
 
     // 設定檔已經壞掉時，set_config 絕對不能拿空基底套上 patch 寫回去 ——
     // 那會把使用者原本的內容整份吃掉。必須明確失敗、原檔一個 byte 都不許動。
@@ -521,10 +618,10 @@ async function mcpChecks() {
 
     res = await call('set_config', { unset: ['codex-ultra'] });
     const back = aliasOf(res, 'codex-ultra');
-    check('unset 退回內建', back.resolvesTo === 'gpt-5.6-sol' && back.source === 'builtin');
+    check('unset 退回內建', back.resolvesTo === 'gpt-6-astra' && back.source === 'builtin');
     check(
       'unset 同時清掉 reasoning 覆寫',
-      back.defaultReasoningEffort === 'xhigh',
+      back.defaultReasoningEffort === 'max',
       `got ${back.defaultReasoningEffort}`
     );
   } finally {

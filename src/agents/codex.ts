@@ -9,6 +9,7 @@ import type { AgentDefinition, BuildCommandInput, BuiltCommand } from './types.j
 import { debugLog } from '../core/debug.js';
 
 const CODEX_MODELS = [
+  'gpt-6-astra',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -20,7 +21,18 @@ const CODEX_MODELS = [
   'gpt-5.2',
 ] as const;
 
-const CODEX_REASONING = new Set(['low', 'medium', 'high', 'xhigh']);
+/**
+ * codex 的 reasoning 級別。
+ *
+ * ★ 2026-09-05 依 codex-cli 0.151.0 的 `~/.codex/models_cache.json` 對照：
+ *   gpt-6-astra / gpt-5.6-sol / gpt-5.6-terra 提供 low…ultra 六級，gpt-5.6-luna
+ *   到 max，gpt-5.5 / gpt-5.4-mini / gpt-5.3-codex-spark 仍只到 xhigh。
+ *
+ *   這裡收的是**聯集**，不按模型細分：這份清單是靜態後備值（見 types.ts 的
+ *   ModelListSource），逐模型寫死只會多一份更容易過時的表；模型不支援的級別
+ *   由 codex CLI 自己拒絕，錯誤訊息會原樣回到呼叫端。
+ */
+const CODEX_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 /**
  * 能力 → 這個 vendor 的嚴格限制。
@@ -152,7 +164,7 @@ export const codexAgent: AgentDefinition = {
   reasoning: {
     supported: true,
     allowed: CODEX_REASONING,
-    invalidMessage: 'Codex reasoning_effort supports only low, medium, high, xhigh.',
+    invalidMessage: 'Codex reasoning_effort supports only low, medium, high, xhigh, max, ultra.',
   },
   buildCommand,
   buildStrictCommand,

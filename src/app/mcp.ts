@@ -134,7 +134,7 @@ ${getSupportedModelsDescription()}
               reasoning_effort: {
                 type: 'string',
                 description:
-                  'Reasoning control for Claude and Codex. Claude uses --effort with "low", "medium", "high", "xhigh", "max". Codex uses model_reasoning_effort with "low", "medium", "high", "xhigh". Antigravity and direct-api do not support reasoning_effort in this integration.',
+                  'Reasoning control for Claude and Codex. Claude uses --effort with "low", "medium", "high", "xhigh", "max". Codex uses model_reasoning_effort with "low", "medium", "high", "xhigh", "max", "ultra" — "max" and "ultra" are only offered by the newer models (gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra; gpt-5.6-luna stops at "max", gpt-5.5 and older stop at "xhigh"); an unsupported combination is rejected by the codex CLI itself. Antigravity and direct-api do not support reasoning_effort in this integration.',
               },
               session_id: {
                 type: 'string',
