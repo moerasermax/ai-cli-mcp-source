@@ -35,9 +35,11 @@ import { getAgent } from '../agents/registry.js';
 import { buildCliCommand, type BuildCliCommandOptions } from './command-builder.js';
 import { resolveAllCliPaths } from './doctor.js';
 import { buildProcessResult } from './process-result.js';
+import { buildLiveness, emptyOutputStats, listProcessTiming, type ProcessOutputStats } from './liveness.js';
 import { stripAnsi } from './ansi.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import {
+  LivenessEventExtractor,
   PeekEventExtractor,
 } from './peek-extractor.js';
 import {
@@ -82,7 +84,7 @@ function normalizeCwdForStorage(cwd: string): string {
     .join('');
 }
 
-interface StoredProcess {
+interface StoredProcess extends ProcessOutputStats {
   pid: number;
   prompt: string;
   workFolder: string;
@@ -90,6 +92,7 @@ interface StoredProcess {
   model?: string;
   toolType: AgentId;
   startTime: string;
+  endTime?: string;
   stdoutPath: string;
   stderrPath: string;
   /**
@@ -120,6 +123,13 @@ export class FileProcessService {
   private ptyManagedPids = new Set<number>();
   private breaker: CircuitBreaker;
   private directPidSequence = 0;
+  private outputEvents = new Map<string, {
+    offset: number;
+    extractor: LivenessEventExtractor;
+    lastEvent: string | null;
+    eventCount: number;
+    lastEventAt: number;
+  }>();
 
   constructor(
     options: { stateDir?: string; cliPaths?: Partial<Record<AgentId, string>>; breaker?: CircuitBreaker } = {}
@@ -178,6 +188,7 @@ export class FileProcessService {
     this.touchFile(stdoutPath);
     this.touchFile(stderrPath);
     const stored: StoredProcess = {
+      ...emptyOutputStats(),
       pid,
       prompt: cmd.prompt,
       workFolder: cmd.cwd,
@@ -214,6 +225,7 @@ export class FileProcessService {
     this.touchFile(stdoutPath);
     this.touchFile(stderrPath);
     const stored: StoredProcess = {
+      ...emptyOutputStats(),
       pid,
       prompt: cmd.prompt,
       workFolder: cmd.cwd,
@@ -242,6 +254,7 @@ export class FileProcessService {
       stored.exitCode = 1;
       this.writeExitStatus(stored, { status: 'failed', exitCode: 1 });
     }
+    stored.endTime = new Date().toISOString();
     this.writeProcess(stored);
     return {
       pid,
@@ -272,12 +285,14 @@ export class FileProcessService {
       args: cmd.args,
       cwd: cmd.cwd,
       stdinPrompt: hasStdinPrompt ? cmd.stdinPrompt : null,
+      needsShell: !getAgent(cmd.agent).win32DirectExec,
     }), 'utf-8');
 
     const childProcess = spawn(process.execPath, [wrapperPath, specPath], {
       cwd: cmd.cwd,
       detached: true,
       stdio: 'ignore',
+      windowsHide: true,
     });
     const pid = childProcess.pid;
     childProcess.unref();
@@ -291,6 +306,7 @@ export class FileProcessService {
     this.touchFile(stdoutPath);
     this.touchFile(stderrPath);
     const stored: StoredProcess = {
+      ...emptyOutputStats(),
       pid,
       prompt: cmd.prompt,
       workFolder: cmd.cwd,
@@ -348,6 +364,7 @@ export class FileProcessService {
       this.ptyManagedPids.delete(pid);
     });
     const stored: StoredProcess = {
+      ...emptyOutputStats(),
       pid,
       prompt: cmd.prompt,
       workFolder: cmd.cwd,
@@ -369,11 +386,16 @@ export class FileProcessService {
   }
 
   async listProcesses() {
-    return this.readAllProcesses().map((proc) => ({
-      pid: proc.pid,
-      agent: proc.toolType,
-      status: this.refreshStatus(proc).status,
-    }));
+    return this.readAllProcesses().map((stored) => {
+      const proc = this.refreshStatus(stored);
+      const liveness = proc.status === 'running' ? this.processLiveness(proc) : undefined;
+      return {
+        pid: proc.pid,
+        agent: proc.toolType,
+        status: proc.status,
+        ...listProcessTiming(proc.startTime, proc.endTime, liveness),
+      };
+    });
   }
 
   async getProcessResult(pid: number, verbose = false) {
@@ -398,6 +420,7 @@ export class FileProcessService {
         model: refreshed.model,
         stdout,
         stderr,
+        liveness: refreshed.status === 'running' ? this.processLiveness(refreshed) : undefined,
       },
       agentOutput,
       verbose
@@ -413,7 +436,11 @@ export class FileProcessService {
         return Promise.all(pids.map((pid) => this.getProcessResult(pid, verbose)));
       }
       if (Date.now() - start >= timeoutSeconds * 1000) {
-        throw new Error(`Timed out after ${timeoutSeconds} seconds waiting for processes`);
+        const results = await Promise.all(pids.map((pid) => this.getProcessResult(pid, verbose)));
+        for (const result of results) {
+          if (result.status === 'running') result.timedOut = true;
+        }
+        return results;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -511,6 +538,7 @@ export class FileProcessService {
     if (exitStatus) {
       refreshed.status = exitStatus.status;
       refreshed.exitCode = exitStatus.exitCode;
+      refreshed.endTime = exitStatus.endTime;
     } else {
       /*
         我們送了 SIGTERM，程序也不見了，但**沒有拿到結束回報**。
@@ -533,6 +561,8 @@ export class FileProcessService {
       const processDir = this.resolveStoredProcessDir(refreshed);
       if (existsSync(processDir)) {
         rmSync(processDir, { recursive: true, force: true });
+        this.outputEvents.delete(refreshed.stdoutPath);
+        this.outputEvents.delete(refreshed.stderrPath);
         removed++;
       }
     }
@@ -563,7 +593,7 @@ export class FileProcessService {
   }
 
   private parseProcessFile(metaPath: string): StoredProcess {
-    const proc = JSON.parse(readFileSync(metaPath, 'utf-8')) as StoredProcess;
+    const proc = { ...emptyOutputStats(), ...JSON.parse(readFileSync(metaPath, 'utf-8')) } as StoredProcess;
     if (!proc.cwdKey) proc.cwdKey = basename(dirname(dirname(metaPath)));
     return proc;
   }
@@ -580,6 +610,7 @@ export class FileProcessService {
     if (persisted) {
       proc.status = persisted.status;
       proc.exitCode = persisted.exitCode;
+      proc.endTime = persisted.endTime;
       this.writeProcess(proc);
       return proc;
     }
@@ -602,12 +633,15 @@ export class FileProcessService {
     return proc;
   }
 
-  private readExitStatus(proc: StoredProcess): { status: 'completed' | 'failed'; exitCode: number } | null {
+  private readExitStatus(proc: StoredProcess): { status: 'completed' | 'failed'; exitCode: number; endTime: string } | null {
     const exitMetaPath = this.resolveExitStatusPath(this.resolveStoredProcessDir(proc));
     if (!existsSync(exitMetaPath)) return null;
     try {
       const parsed = JSON.parse(readFileSync(exitMetaPath, 'utf-8'));
-      if (parsed.status === 'completed' || parsed.status === 'failed') return parsed;
+      if (parsed.status === 'completed' || parsed.status === 'failed') {
+        // 舊 wrapper 沒寫結束時間；exit-status 檔的 mtime 是結束時刻的近似值。
+        return { ...parsed, endTime: statSync(exitMetaPath).mtime.toISOString() };
+      }
     } catch {
       return null;
     }
@@ -641,6 +675,52 @@ export class FileProcessService {
   private fileSizeSafe(filePath: string): number {
     if (!existsSync(filePath)) return 0;
     return statSync(filePath).size;
+  }
+
+  /**
+   * 選擇讀端推導：size / mtime 可跨 CLI 行程取得，零 bytes 的空檔不算曾有輸出。
+   * eventCount 要完整計數，所以新讀端首次逐塊掃描（16 KiB，不保留整份文字），
+   * 同一讀端之後只解碼新增 bytes；半行保留到下個 chunk，避免重算事件。
+   * 兩個串流的事件先後只能以各自 mtime 近似，不在 meta 製造多 writer 競爭。
+   */
+  private processLiveness(proc: StoredProcess) {
+    const outputs = (['stdout', 'stderr'] as const).map((stream) => {
+      const filePath = proc[stream === 'stdout' ? 'stdoutPath' : 'stderrPath'];
+      const stat = existsSync(filePath) ? statSync(filePath) : null;
+      const size = stat?.size ?? 0;
+      let cached = this.outputEvents.get(filePath);
+      if (!cached || size < cached.offset) {
+        cached = { offset: 0, extractor: new LivenessEventExtractor(proc.toolType),
+          lastEvent: null, eventCount: 0, lastEventAt: 0 };
+        this.outputEvents.set(filePath, cached);
+      }
+      if (size > cached.offset) {
+        const fd = openSync(filePath, 'r');
+        try {
+          const buffer = Buffer.alloc(16 * 1024);
+          while (cached.offset < size) {
+            const read = readSync(fd, buffer, 0, Math.min(buffer.length, size - cached.offset), cached.offset);
+            if (!read) break;
+            cached.offset += read;
+            const events = cached.extractor.push(buffer.subarray(0, read));
+            cached.eventCount += events.length;
+            if (events.length) {
+              cached.lastEvent = events[events.length - 1];
+              cached.lastEventAt = stat!.mtimeMs;
+            }
+          }
+        } finally {
+          closeSync(fd);
+        }
+      }
+      proc[stream === 'stdout' ? 'stdoutBytes' : 'stderrBytes'] = size;
+      return { ...cached, outputAt: size > 0 ? stat!.mtimeMs : null };
+    });
+    const outputTimes = outputs.flatMap((output) => output.outputAt === null ? [] : [output.outputAt]);
+    proc.lastOutputAt = outputTimes.length ? new Date(Math.max(...outputTimes)).toISOString() : null;
+    proc.eventCount = outputs.reduce((sum, output) => sum + output.eventCount, 0);
+    proc.lastEvent = outputs.sort((a, b) => b.lastEventAt - a.lastEventAt)[0].lastEvent;
+    return buildLiveness(proc, proc.startTime, isProcessRunning(proc.pid) && !this.readExitStatus(proc));
   }
 
   private readTextFromOffset(filePath: string, offset: number): { text: string; offset: number } {
@@ -684,7 +764,8 @@ export class FileProcessService {
     return join(processDir, 'exit-status.json');
   }
   private resolveDetachedWrapperNodeWin32Path(): string {
-    return join(this.stateDir, 'detached-runner-win32.cjs');
+    // 換版本名，已存在的舊 wrapper 才不會讓 .cmd 修正永遠沒有生效。
+    return join(this.stateDir, 'detached-runner-win32-v2.cjs');
   }
 
   private ensureDetachedWrapperNodeWin32(): string {
@@ -702,7 +783,11 @@ const errP=join(dir,"stderr.log");
 const ext=join(dir,"exit-status.json");
 function waitDir(cb){const p=()=>{try{statSync(dir);cb();}catch{setTimeout(p,50);}};p();}
 waitDir(()=>{
-const child=spawn(spec.cliPath,spec.args,{cwd:spec.cwd,stdio:[spec.stdinPrompt?"pipe":"ignore","pipe","pipe"],shell:false,windowsVerbatimArguments:true});
+// Node 20+ 不可直接 spawn npm 的 .cmd shim；與記憶體版一致，明確經過 cmd.exe。
+const command='"'+spec.cliPath+'" '+spec.args.map(a=>a.includes(' ')?'"'+a+'"':a).join(' ');
+const binary=spec.needsShell?(process.env.ComSpec||process.env.COMSPEC||'cmd.exe'):spec.cliPath;
+const args=spec.needsShell?['/d','/s','/c','"'+command+'"']:spec.args;
+const child=spawn(binary,args,{cwd:spec.cwd,stdio:[spec.stdinPrompt?"pipe":"ignore","pipe","pipe"],shell:false,windowsVerbatimArguments:!!spec.needsShell,windowsHide:true});
 if(spec.stdinPrompt&&child.stdin){child.stdin.on("error",()=>{});try{child.stdin.write(spec.stdinPrompt);child.stdin.end();}catch{}}
 child.stdout.on("data",d=>{try{appendFileSync(out,d);}catch{}});
 child.stderr.on("data",d=>{try{appendFileSync(errP,d);}catch{}});

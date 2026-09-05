@@ -14,7 +14,9 @@ import type { AgentId } from '../agents/types.js';
 import { getAgent } from '../agents/registry.js';
 import { buildCliCommand, type BuildCliCommandOptions } from './command-builder.js';
 import { buildProcessResult } from './process-result.js';
+import { buildLiveness, emptyOutputStats, listProcessTiming, type ProcessOutputStats } from './liveness.js';
 import {
+  LivenessEventExtractor,
   PeekEventExtractor,
 } from './peek-extractor.js';
 import {
@@ -71,7 +73,7 @@ class DirectManagedProcess extends EventEmitter {
 
 type ManagedProcess = ChildProcess | PtyChild | DirectManagedProcess;
 
-interface ProcessEntry {
+interface ProcessEntry extends ProcessOutputStats {
   pid: number;
   process: ManagedProcess;
   prompt: string;
@@ -79,6 +81,8 @@ interface ProcessEntry {
   model?: string;
   toolType: AgentId;
   startTime: string;
+  endTime?: string;
+  closed: boolean;
   stdout: string;
   stderr: string;
   status: 'running' | 'completed' | 'failed';
@@ -171,6 +175,8 @@ export class ProcessService {
     }
 
     const entry: ProcessEntry = {
+      ...emptyOutputStats(),
+      closed: false,
       pid,
       process: childProcess,
       prompt: cmd.prompt,
@@ -183,15 +189,7 @@ export class ProcessService {
       status: 'running',
     };
     this.processManager.set(pid, entry);
-
-    childProcess.stdout?.on('data', (data) => {
-      const e = this.processManager.get(pid);
-      if (e) e.stdout += data.toString();
-    });
-    childProcess.stderr?.on('data', (data) => {
-      const e = this.processManager.get(pid);
-      if (e) e.stderr += data.toString();
-    });
+    this.observeOutput(entry);
     childProcess.on('close', (code) => {
       const e = this.processManager.get(pid);
       if (e) {
@@ -211,6 +209,32 @@ export class ProcessService {
     return pid;
   }
 
+  /** pipe、PTY（合併為 stdout）與 direct-api 都經過同一個 chunk 記帳入口。 */
+  private observeOutput(entry: ProcessEntry): void {
+    const extractors = {
+      stdout: new LivenessEventExtractor(entry.toolType),
+      stderr: new LivenessEventExtractor(entry.toolType),
+    };
+    const recordEvents = (events: string[]) => {
+      entry.eventCount += events.length;
+      if (events.length) entry.lastEvent = events[events.length - 1];
+    };
+    for (const stream of ['stdout', 'stderr'] as const) {
+      entry.process[stream]?.on('data', (chunk: Buffer | string) => {
+        entry[stream] += chunk.toString();
+        entry[stream === 'stdout' ? 'stdoutBytes' : 'stderrBytes'] += Buffer.byteLength(chunk);
+        entry.lastOutputAt = new Date().toISOString();
+        recordEvents(extractors[stream].push(chunk));
+      });
+    }
+    entry.process.once('close', () => {
+      entry.closed = true;
+      entry.endTime = new Date().toISOString();
+      recordEvents(extractors.stdout.flush());
+      recordEvents(extractors.stderr.flush());
+    });
+  }
+
   private startDirectProcess(
     cmd: ReturnType<typeof buildCliCommand>,
     model?: string
@@ -222,6 +246,8 @@ export class ProcessService {
     const pid = this.allocateDirectPid();
     const directProcess = new DirectManagedProcess(pid);
     const entry: ProcessEntry = {
+      ...emptyOutputStats(),
+      closed: false,
       pid,
       process: directProcess,
       prompt: cmd.prompt,
@@ -234,15 +260,12 @@ export class ProcessService {
       status: 'running',
     };
     this.processManager.set(pid, entry);
+    this.observeOutput(entry);
 
     const writeStdout = (chunk: string): void => {
-      const e = this.processManager.get(pid);
-      if (e) e.stdout += chunk;
       directProcess.stdout.write(chunk);
     };
     const writeStderr = (chunk: string): void => {
-      const e = this.processManager.get(pid);
-      if (e) e.stderr += chunk;
       directProcess.stderr.write(chunk);
     };
 
@@ -267,7 +290,6 @@ export class ProcessService {
           e.exitCode = aborted ? 143 : 1;
           if (!aborted) {
             const message = error instanceof Error ? error.message : String(error);
-            e.stderr += `\nDirect API error: ${message}`;
             directProcess.stderr.write(`\nDirect API error: ${message}`);
           }
         }
@@ -300,6 +322,8 @@ export class ProcessService {
     });
 
     const entry: ProcessEntry = {
+      ...emptyOutputStats(),
+      closed: false,
       pid,
       process: child,
       prompt: cmd.prompt,
@@ -312,11 +336,7 @@ export class ProcessService {
       status: 'running',
     };
     this.processManager.set(pid, entry);
-
-    child.stdout.on('data', (chunk) => {
-      const e = this.processManager.get(pid);
-      if (e) e.stdout += chunk.toString();
-    });
+    this.observeOutput(entry);
 
     return {
       pid,
@@ -326,12 +346,14 @@ export class ProcessService {
     };
   }
 
-  listProcesses(): Array<{ pid: number; agent: AgentId; status: string }> {
-    const processes: Array<{ pid: number; agent: AgentId; status: string }> = [];
-    for (const [pid, proc] of this.processManager.entries()) {
-      processes.push({ pid, agent: proc.toolType, status: proc.status });
-    }
-    return processes;
+  listProcesses() {
+    return [...this.processManager.values()].map((proc) => ({
+      pid: proc.pid,
+      agent: proc.toolType,
+      status: proc.status,
+      ...listProcessTiming(proc.startTime, proc.endTime,
+        proc.status === 'running' ? buildLiveness(proc, proc.startTime, !proc.closed) : undefined),
+    }));
   }
 
   getProcessResult(pid: number, verbose = false): Record<string, unknown> {
@@ -356,6 +378,7 @@ export class ProcessService {
         model: proc.model,
         stdout: proc.stdout,
         stderr: proc.stderr,
+        liveness: proc.status === 'running' ? buildLiveness(proc, proc.startTime, !proc.closed) : undefined,
       },
       agentOutput,
       verbose
@@ -372,30 +395,45 @@ export class ProcessService {
         throw new Error(`Process with PID ${pid} not found`);
       }
     }
-    const waitPromises = pids.map((pid) => {
+    const listeners: Array<() => void> = [];
+    const waitPromises = [...new Set(pids)].map((pid) => {
       const entry = this.processManager.get(pid)!;
       if (entry.status !== 'running') {
         return Promise.resolve();
       }
       return new Promise<void>((resolve) => {
-        entry.process.once('close', () => resolve());
+        const done = () => resolve();
+        entry.process.once('close', done);
+        entry.process.once('error', done);
+        listeners.push(() => {
+          entry.process.off('close', done);
+          entry.process.off('error', done);
+        });
       });
     });
 
     const timeoutMs = timeoutSeconds * 1000;
     let timeoutHandle: NodeJS.Timeout | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
+    let timedOut = false;
+    const timeoutPromise = new Promise<void>((resolve) => {
       timeoutHandle = setTimeout(() => {
-        reject(new Error(`Timed out after ${timeoutSeconds} seconds waiting for processes`));
+        timedOut = true;
+        resolve();
       }, timeoutMs);
       timeoutHandle.unref?.();
     });
 
     try {
       await Promise.race([Promise.all(waitPromises), timeoutPromise]);
-      return pids.map((pid) => this.getProcessResult(pid, verbose));
+      return pids.map((pid) => {
+        const result = this.getProcessResult(pid, verbose);
+        if (timedOut && result.status === 'running') result.timedOut = true;
+        return result;
+      });
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      // 呼叫端會反覆短等候；逾時的 listener 不可一直留到 child close 才清。
+      for (const removeListeners of listeners) removeListeners();
     }
   }
 
@@ -434,10 +472,10 @@ export class ProcessService {
       const stdoutExtractor = new PeekEventExtractor(entry.toolType, { includeToolCalls });
       const stderrExtractor = new PeekEventExtractor(entry.toolType, { includeToolCalls });
       const onStdout = (data: Buffer | string) => {
-        appendPeekEvents(result, stdoutExtractor.push(data.toString(), new Date().toISOString()));
+        appendPeekEvents(result, stdoutExtractor.push(data, new Date().toISOString()));
       };
       const onStderr = (data: Buffer | string) => {
-        appendPeekEvents(result, stderrExtractor.push(data.toString(), new Date().toISOString()));
+        appendPeekEvents(result, stderrExtractor.push(data, new Date().toISOString()));
       };
       if (entry.status === 'running') {
         entry.process.stdout?.on('data', onStdout);
@@ -504,6 +542,7 @@ export class ProcessService {
     }
     entry.process.kill('SIGTERM');
     entry.status = 'failed';
+    entry.endTime = new Date().toISOString();
     entry.stderr += '\nProcess terminated by user';
     return { pid, status: 'terminated', message: 'Process terminated successfully' };
   }

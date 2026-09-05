@@ -20,12 +20,14 @@
 - 維持既有風格：繁體中文註解、檔頭用區塊註解說明該檔職責、對外行為改動要標註。
 - 改完一定要能編譯：`npm run build`（或 `npm run typecheck`）必須零錯誤。
 - 有對應的驗證腳本（`verify-*.mjs`）時，跑過確認通過；新功能盡量補一支。
-- `npm test` 串起五支驗證腳本（breaker / rate / direct-api / alias-config / mcp），都不會打真實 AI 供應商。
+- `npm test` 串起八支驗證腳本（breaker / rate / direct-api / alias-config / catalog-source / exec-contract / mcp / liveness），都不會打真實 AI 供應商。
+- `verify-liveness.mjs` 用 `tools/stubs/slow-agent` 驗證 MCP / file 跨行程 liveness、wait 逾時回傳、CLI exit 3 與 lost 對照組；暫存檔放 repo 的 `dist/`。
 - **修完 bug 請順手加一個突變**到 `tools/mutations.json`：把修補改壞、確認對應斷言真的會 FAIL。
   這個專案已經吃過三次假綠燈的虧（測試看起來在測、其實測不到）。用法見 `tools/mutation-test.mjs` 檔頭。
-  **但 `verify-alias-config.mjs` 會暫時改寫你真實的 `~/.local/share/ai-cli/config.json`**
+  **但 `verify-alias-config.mjs` 與 `verify-liveness.mjs` 會暫時改寫你真實的 `~/.local/share/ai-cli/config.json`**
   （腳本自帶備份與還原）。在別人的機器或 CI 上跑之前先知道這件事；跑完可以 `git diff` 不到，
   但值得自己確認設定檔內容有還原。
+- Windows 突變 worktree 收尾時，**先刪 `node_modules` junction 本身，再刪 worktree 目錄**；不可用 `git worktree remove --force` 穿過 junction，否則可能誤刪主 repo 的相依套件。
 - `verify-e2e.mjs` 會真的呼叫 claude / codex / agy 三家 CLI、消耗額度，**刻意不放進 `npm test`**，
   只在需要驗證端到端行為時手動跑。
 

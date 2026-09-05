@@ -276,6 +276,76 @@ claude agent 的 `matchesModel` 是 registry 最後一位的 catch-all（永遠�
   注意 `forge-<model>` 不受影響——那會被讀成 direct-api 的 provider `forge` 加上 model。
 - 回歸測試：`node verify-alias-config.mjs`（65 項，已納入 `npm test`）。
 
+## 等待端怎麼知道 AI 還活著
+
+`wait` 逾時只代表這次觀察時間用完，程序會繼續跑。以前兩條路徑都丟
+`Timed out after N seconds`，MCP 把它包成 InternalError；呼叫端 AI 容易將它當成任務失敗而遺棄 pid。
+現在 MCP 與 CLI 都**回傳目前結果的陣列**，只有逾時時仍 `running` 的項目帶 `timedOut: true`。
+不存在的 pid 仍是錯誤。`completed` / `failed` / `lost` 都不帶 `liveness` 或 `timedOut`。
+
+`get_result`、`wait`、`list_processes` 的 running 項目都有同一個 `liveness` 物件，compact 與 verbose 都會回：
+
+| 欄位 | 型別 | 意義 |
+|------|------|------|
+| `alive` | boolean | MCP：尚未收到 close；file：OS PID 存在且沒有 exit-status。它表示程序存活，不能保證模型正在產生答案 |
+| `elapsedSec` | number | 從啟動到現在的秒數，可含小數 |
+| `sinceLastOutputSec` | number / null | 距最後 stdout / stderr chunk 的秒數；從未輸出是 null |
+| `stdoutBytes` | number | 收到的 stdout 位元組數；PTY 合併的輸出也計入 stdout |
+| `stderrBytes` | number | 收到的 stderr 位元組數 |
+| `lastEvent` | string / null | 最後一個有意義事件的一行摘要，最多 120 字；Codex 含事件 type、item.type 及最多 80 字的 command / text，Claude 含 type 與工具名，agy 去 ANSI，direct-api 取 type |
+| `eventCount` | number | 已解碼的完整、有意義事件數；空行、壞 JSON 與未完成半行不計 |
+| `hint` | string | 給 AI 的英文建議：starting up、最近有輸出、活著但沉默，或等待結束 metadata |
+
+`list_processes`（CLI 為 `ps`）還會在 running 項目直接放 `elapsedSec`、`sinceLastOutputSec`、`lastEvent`，
+方便快速掃描。已結束的項目只在知道結束時間時附 `elapsedSec`，該時間不再隨輪詢增加。
+file 路徑沿用 `lost`：PID 消失且沒有結束回報表示結果未知，不能當成 failed。
+PTY 在 OS PID 消失到寫下 exit-status 之間，可能短暫顯示 running 且 `alive: false`。
+
+檔案版從 stdout / stderr 檔的 size 與非空檔 mtime 推導統計，不需要啟動它的 CLI 留在記憶體。
+內部 `lastOutputAt` 是 ISO 時間；file 以 mtime 近似，兩個串流的事件先後也只能近似。
+為了讓 `eventCount` 完整，新讀端首次逐塊掃描輸出檔，同一讀端接著只讀新增 bytes。
+
+建議每次 `wait` 使用 **90 秒或更短**的 timeout，持續保存原 pid 並重複等待。
+只要 `liveness.alive` 是 true，就不要因為逾時而遺棄它或另啟一份相同任務。
+需要看即時訊息／工具事件時呼叫 `peek`；它只觀察這次視窗的新事件，不回放歷史，也不會回傳 Codex reasoning 內容。
+
+以下假設已有連線的 MCP `client` 與 `run` 回傳的 `pid`：
+
+```js
+const call = async (name, args) => {
+  const response = await client.callTool({ name, arguments: args });
+  if (response.isError) throw new Error(response.content[0].text);
+  return JSON.parse(response.content[0].text);
+};
+
+for (;;) {
+  const [result] = await call('wait', { pids: [pid], timeout: 90 });
+  if (result.status !== 'running') {
+    console.log(result); // completed / failed / lost：依實際狀態處理
+    break;
+  }
+  console.log(result.liveness.hint);
+  console.log(await call('peek', {
+    pids: [pid], peek_time_sec: 10, include_tool_calls: true,
+  }));
+  // 保留 pid，回到 wait；timedOut 不是任務失敗。
+}
+```
+
+CLI 同樣印 JSON：`ai-cli wait <pid> --timeout 90` 的 exit code 為 **3 = 逾時且仍 running**、
+**0 = 全部已結束**（不代表每個任務成功）、**1 = 呼叫錯誤**。輪詢程式要接受 3 並繼續等。
+
+**codex 在推理時零輸出是正常的。** `exec --json` 送出 `turn.started` 後，到第一個 item 完成之前
+可能幾分鐘沒有 stdout；Claude 推理時也可能沉默。因此有輸出但靜默未滿 120 秒時 hint 建議 keep waiting；
+超過 120 秒且 alive 時會說明 reasoning 可能沒有輸出。完全沒輸出時，前 30 秒顯示 starting up，
+30 秒後仍 alive 則建議繼續等待或 peek。
+
+使用者於 **2026-09-05 本機 trivial prompt 實測**：啟動到 `thread.started` 約 **0.3–1.2 秒**；
+載入 `~/.codex/config.toml` 的 4 個 MCP servers（含 ai-cli 自己），比 `--ignore-user-config` 整體多 **1–2 秒**；
+gpt-6-astra medium 回一個字約 **5.7 秒**，gpt-5.4-mini low 約 **6.5 秒**。
+這些是單機量測，主要等待發生在模型端推理；本功能讓等待端看得見程序狀態，不改模型速度。
+回歸驗證使用 stub，不重打真實供應商：`node verify-liveness.mjs`。
+
 ## AI 啟動熔斷器（circuit breaker）
 
 為避免「呼叫端框架 bug 造成無窮迴圈、對 AI 供應商狂打請求、進而被誤判為共用帳號或濫用而違規」，

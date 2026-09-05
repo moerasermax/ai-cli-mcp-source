@@ -1,6 +1,7 @@
 /** 組裝對外回傳的 process result。1:1 還原 dist/process-result.js。 */
 
 import type { AgentId } from '../agents/types.js';
+import type { ProcessLiveness } from './liveness.js';
 
 export interface ProcessResultContext {
   pid: number;
@@ -13,6 +14,7 @@ export interface ProcessResultContext {
   model?: string;
   stdout: string;
   stderr: string;
+  liveness?: ProcessLiveness;
 }
 
 function compactAgentOutput(agentOutput: any): any {
@@ -64,6 +66,9 @@ export function buildProcessResult(
     exitCode: context.exitCode ?? null,
     model: context.model ?? null,
   };
+  if (context.status === 'running' && context.liveness) {
+    response.liveness = context.liveness;
+  }
   if (verbose) {
     response.startTime = context.startTime;
     response.workFolder = context.workFolder;

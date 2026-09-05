@@ -8,6 +8,7 @@
 import type { AgentId } from '../agents/types.js';
 import { stripAnsi } from './ansi.js';
 import { debugLog } from './debug.js';
+import { StringDecoder } from 'node:string_decoder';
 
 const PEEK_TOOL_SUMMARY_MAX_LENGTH = 200;
 
@@ -271,9 +272,86 @@ function extractPeekEventsFromParsedEvent(
 }
 
 
+/** peek 與 liveness 共用的串流分行／NDJSON 解碼，保留半行與跨 chunk 的 UTF-8。 */
+class AgentEventDecoder {
+  private pending = '';
+  private utf8 = new StringDecoder('utf8');
+
+  constructor(private agent: AgentId) {}
+
+  push(chunk: Buffer | string): any[] {
+    const text = typeof chunk === 'string' ? chunk : this.utf8.write(chunk);
+    const lines = `${this.pending}${text}`.split(/\r?\n/);
+    this.pending = lines.pop() || '';
+    return this.decodeLines(lines);
+  }
+
+  flush(): any[] {
+    const line = this.pending + this.utf8.end();
+    this.pending = '';
+    return this.decodeLines([line]);
+  }
+
+  private decodeLines(lines: string[]): any[] {
+    const events: any[] = [];
+    for (const line of lines) {
+      if (this.agent === 'antigravity') {
+        const text = stripAnsi(line).trim();
+        if (text) events.push({ type: 'text', text });
+      } else if (line.trim()) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) events.push(parsed);
+        } catch {
+          debugLog(`[Debug] Skipping invalid agent JSON line: ${line}`);
+        }
+      }
+    }
+    return events;
+  }
+}
+
+/** 一個有意義的輸出事件算一次；不把空行、壞 JSON 或半行算成進展。 */
+export class LivenessEventExtractor {
+  private decoder: AgentEventDecoder;
+
+  constructor(private agent: AgentId) {
+    this.decoder = new AgentEventDecoder(agent);
+  }
+
+  push(chunk: Buffer | string): string[] {
+    return this.summaries(this.decoder.push(chunk));
+  }
+
+  flush(): string[] {
+    return this.summaries(this.decoder.flush());
+  }
+
+  private summaries(events: any[]): string[] {
+    return events.flatMap((event) => {
+      if (this.agent === 'antigravity') return [oneLine(event.text).slice(0, 80)];
+      if (typeof event.type !== 'string' || !event.type.trim()) return [];
+      let summary = oneLine(event.type);
+      const text = (value: unknown) => typeof value === 'string' ? oneLine(value) : '';
+      if (this.agent === 'codex') {
+        const item = event.item ?? event.msg;
+        if (typeof item?.type === 'string') summary += ` ${oneLine(item.type)}`;
+        const detail = (text(item?.command) || text(item?.text) || text(item?.message) || text(item?.tool)).slice(0, 80);
+        if (detail) summary += `: ${detail}`;
+      } else if (this.agent === 'claude') {
+        const content = event.message?.content;
+        const tool = Array.isArray(content) ? [...content].reverse().find((block: any) => block?.type === 'tool_use') : null;
+        if (tool) summary += ` tool_use ${text(tool.name)}`;
+        else if (event.type === 'tool_use') summary += ` ${text(event.name)}`;
+      }
+      return [summary.slice(0, 120)];
+    });
+  }
+}
+
 export class PeekEventExtractor {
   private agent: AgentId;
-  private pending = '';
+  private decoder: AgentEventDecoder;
   private includeToolCalls: boolean;
   private toolMemory = new Map<string, RememberedTool>();
 
@@ -282,56 +360,36 @@ export class PeekEventExtractor {
   // 「看起來有作用、其實沒人讀」的死狀態。
   constructor(agent: AgentId, options: { includeToolCalls?: boolean } = {}) {
     this.agent = agent;
+    this.decoder = new AgentEventDecoder(agent);
     this.includeToolCalls = options.includeToolCalls === true;
   }
 
-  push(chunk: string, observedAt: string = new Date().toISOString()): PeekEvent[] {
-    if (!chunk) return [];
-    const lines = `${this.pending}${chunk}`.split(/\r?\n/);
-    this.pending = lines.pop() || '';
-    return this.extractLines(lines, observedAt);
+  push(chunk: Buffer | string, observedAt: string = new Date().toISOString()): PeekEvent[] {
+    return this.extractEvents(this.decoder.push(chunk), observedAt);
   }
 
   flush(observedAt: string = new Date().toISOString()): PeekEvent[] {
-    const events: PeekEvent[] = [];
-    if (this.pending) {
-      const line = this.pending;
-      this.pending = '';
-      events.push(...this.extractLines([line], observedAt));
-    }
-    return events;
+    return this.extractEvents(this.decoder.flush(), observedAt);
   }
 
-  private extractLines(lines: string[], observedAt: string): PeekEvent[] {
+  private extractEvents(parsedEvents: any[], observedAt: string): PeekEvent[] {
     if (this.agent === 'antigravity') {
-      return this.extractPlainTextLines(lines, observedAt);
+      return parsedEvents.map(({ text }) => ({ kind: 'message', ts: observedAt, text }));
     }
     const events: PeekEvent[] = [];
-    for (const line of lines) {
-      if (!line.trim()) continue;
+    for (const parsed of parsedEvents) {
       try {
         events.push(
           ...extractPeekEventsFromParsedEvent(
             this.agent,
-            JSON.parse(line),
+            parsed,
             observedAt,
             this.includeToolCalls,
             this.toolMemory
           )
         );
       } catch {
-        debugLog(`[Debug] Skipping invalid peek JSON line: ${line}`);
-      }
-    }
-    return events;
-  }
-
-  private extractPlainTextLines(lines: string[], observedAt: string): PeekEvent[] {
-    const events: PeekEvent[] = [];
-    for (const line of lines) {
-      const text = stripAnsi(line).trim();
-      if (text) {
-        events.push({ kind: 'message', ts: observedAt, text });
+        debugLog('[Debug] Skipping invalid peek event shape');
       }
     }
     return events;

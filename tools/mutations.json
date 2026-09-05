@@ -261,5 +261,53 @@
     "from": "      if (effective && !acceptsConfiguredEffort(support, effective)) return rest;\n",
     "to": "",
     "expect": "重指到 claude 時 ultra 不送出也不回報"
+  },
+  {
+    "name": "MCP wait 逾時退回 throw（等待端把沉默當失敗）",
+    "file": "src/core/process-service.ts",
+    "script": "verify-liveness.mjs",
+    "from": "const timeoutPromise = new Promise<void>((resolve) => {\n      timeoutHandle = setTimeout(() => {\n        timedOut = true;\n        resolve();",
+    "to": "const timeoutPromise = new Promise<void>((resolve, reject) => {\n      timeoutHandle = setTimeout(() => {\n        reject(new Error(`Timed out after ${timeoutSeconds} seconds waiting for processes`));",
+    "expect": "MCP timeout is not an error"
+  },
+  {
+    "name": "File wait 逾時退回 throw（跨 CLI 輪詢失敗）",
+    "file": "src/core/file-process-service.ts",
+    "script": "verify-liveness.mjs",
+    "from": "        const results = await Promise.all(pids.map((pid) => this.getProcessResult(pid, verbose)));\n        for (const result of results) {\n          if (result.status === 'running') result.timedOut = true;\n        }\n        return results;",
+    "to": "        throw new Error(`Timed out after ${timeoutSeconds} seconds waiting for processes`);",
+    "expect": "File timeout is not an error"
+  },
+  {
+    "name": "File liveness.alive 寫死 true（程序消失仍叫人等）",
+    "file": "src/core/file-process-service.ts",
+    "script": "verify-liveness.mjs",
+    "from": "return buildLiveness(proc, proc.startTime, isProcessRunning(proc.pid) && !this.readExitStatus(proc));",
+    "to": "return buildLiveness(proc, proc.startTime, true);",
+    "expect": "File disappeared process alive is false"
+  },
+  {
+    "name": "MCP lastOutputAt 不更新（有輸出仍回 null）",
+    "file": "src/core/process-service.ts",
+    "script": "verify-liveness.mjs",
+    "from": "entry.lastOutputAt = new Date().toISOString();",
+    "to": "entry.lastOutputAt = null;",
+    "expect": "MCP wait sinceLastOutputSec is numeric"
+  },
+  {
+    "name": "File lastOutputAt 不更新（檔案有輸出仍回 null）",
+    "file": "src/core/file-process-service.ts",
+    "script": "verify-liveness.mjs",
+    "from": "proc.lastOutputAt = outputTimes.length ? new Date(Math.max(...outputTimes)).toISOString() : null;",
+    "to": "proc.lastOutputAt = null;",
+    "expect": "File wait sinceLastOutputSec is numeric"
+  },
+  {
+    "name": "共用 liveness.alive 寫死 true（忽略生命週期）",
+    "file": "src/core/liveness.ts",
+    "script": "verify-liveness.mjs",
+    "from": "    alive,\n    elapsedSec,",
+    "to": "    alive: true,\n    elapsedSec,",
+    "expect": "liveness preserves false"
   }
 ]

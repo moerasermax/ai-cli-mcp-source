@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+### 新增（程序存活資訊）
+- MCP 與 CLI 的 running 結果新增統一 `liveness`：存活狀態、啟動與最後輸出秒數、stdout/stderr bytes、事件摘要、事件數與英文等待提示；`list_processes` / `ps` 同時提供時間摘要。Codex 推理期間可能零輸出，等待端需要區分沉默與程序消失，避免把 wait 逾時錯誤當成失敗而遺棄 pid。（@codex-gpt-6-astra，moerasermax 指示）
+- `verify-liveness.mjs` 與慢速 Codex stub 納入 `npm test`，覆蓋兩條路徑、跨 CLI 行程、消失程序的 false/lost 對照與突變測試，確保「逾時不是失敗」及存活提示真的受到斷言保護。（@codex-gpt-6-astra，moerasermax 指示）
+- 這批 liveness 改動由 @codex-gpt-6-astra（codex-ultra，max）實作、@gemini-3.1-pro 獨立審查（未發現確信問題）；
+  Claude 逐項驗證：build 零錯誤、`npm test` 全綠（liveness 97 條）、6 個新突變加上既有第 16 案共 7 個全部 KILLED。
+  起因是實際踩到：透過 `wait` 等 codex-ultra 實作時，每 100 秒就收到一次「Timed out」錯誤，而 codex 其實還在跑。
+  實測 codex 慢的主因是模型端推理（trivial 回答 5–7 秒，高 effort 可達數分鐘），載入使用者 codex 設定的
+  4 個 MCP servers 只多 1–2 秒。（Claude，moerasermax 指示）
+- 順手修正既有突變第 16 案「getModelsPayload 退回每個 alias 各讀一次」的替換片段：payload 那段在同一批
+  改動裡改寫過（見下方 `acceptsConfiguredEffort`），舊片段已對不上而讓完整突變測試 ERROR。（Claude）
+
+### 變更（wait 輪詢契約）
+- `wait` 逾時改回目前結果陣列，僅仍 running 的項目附 `timedOut: true`，已結束的項目不附 liveness；未知 pid 仍丟錯。CLI 逾時印 JSON 並 exit 3（0 = 全部結束，1 = 錯誤）。同步 MCP 描述、CLI help 與 README，建議以 ≤ 90 秒反覆 wait 並搭配 peek，避免呼叫端把 InternalError 當任務失敗而遺棄 pid；同時移除每輪等待留下的 listener。（@codex-gpt-6-astra，moerasermax 指示）
+- Windows detached wrapper 改經 `cmd.exe` 啟動 npm `.cmd` shim，並使用新版 wrapper 檔名，讓 CLI file 路徑確實能啟動並回報 liveness；原本直接 spawn `.cmd` 會被 Node 拒絕，無法完成慢速 stub 驗證。（@codex-gpt-6-astra，moerasermax 指示）
+
 ### 新增（GPT-6 Astra 與 codex 的 max / ultra effort）
 - **`gpt-6-astra`（GPT-6-Astra）加入 codex 目錄，排在清單最前。** 名稱與能力抄自 codex-cli 的
   `~/.codex/models_cache.json`（2026-09-05）：priority 1、text + image、reasoning 六級

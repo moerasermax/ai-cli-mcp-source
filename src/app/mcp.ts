@@ -148,13 +148,13 @@ ${getSupportedModelsDescription()}
         {
           name: 'list_processes',
           description:
-            'List all running and completed AI agent processes. Returns a simple list with PID, agent type, and status for each process.',
+            'List tracked AI agent processes with PID, agent and status. Running items include liveness (alive, elapsedSec, sinceLastOutputSec, stdoutBytes, stderrBytes, lastEvent, eventCount, hint), plus elapsedSec, sinceLastOutputSec and lastEvent at the item level. Terminal items include elapsedSec when the end time is known and have no liveness.',
           inputSchema: { type: 'object', properties: {} },
         },
         {
           name: 'get_result',
           description:
-            'Get the current output and status of an AI agent process by PID. Defaults to a compact result shape; set verbose to true for full metadata and detailed parsed output.',
+            'Get the current output and status of an AI agent process by PID. Running results include liveness: alive, elapsedSec, sinceLastOutputSec, stdoutBytes, stderrBytes, lastEvent, eventCount and an English hint. Codex/Claude can emit nothing while reasoning; while liveness.alive is true, keep waiting or use peek for live events. Terminal results have no liveness. Defaults to a compact result shape; set verbose to true for full metadata and detailed parsed output.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -171,7 +171,7 @@ ${getSupportedModelsDescription()}
         {
           name: 'wait',
           description:
-            'Wait for multiple AI agent processes to complete and return their results. Defaults to compact result items; set verbose to true for full metadata and detailed parsed output.',
+            'Wait for AI agent processes and return an array of current results. Timeout is NOT an error: still-running items include timedOut: true and liveness (alive, elapsedSec, sinceLastOutputSec, stdoutBytes, stderrBytes, lastEvent, eventCount, hint). Use timeout <= 90 seconds and call repeatedly; do not abandon a PID while liveness.alive is true. Codex/Claude emit nothing while reasoning. Use peek to observe live messages and tool events. Terminal items have neither liveness nor timedOut. Unknown PIDs still cause an error. Defaults to compact result items; set verbose to true for full metadata and detailed parsed output.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -182,7 +182,7 @@ ${getSupportedModelsDescription()}
               },
               timeout: {
                 type: 'number',
-                description: 'Optional: Maximum time to wait in seconds. Defaults to 180 (3 minutes).',
+                description: 'Optional: Maximum wait in seconds; default 180. Recommended <= 90 for repeated polling. Timeout returns current status and liveness, not an error.',
               },
               verbose: {
                 type: 'boolean',

@@ -17,10 +17,10 @@ export const CLI_HELP_TEXT = `Usage: ai-cli <command> [options]
 
 Commands:
   run       Start an AI CLI process in the background
-  wait      Wait for one or more pids
+  wait      Wait for pids; timeout returns JSON + liveness (exit 3)
   peek      Observe new agent events for a short window
-  ps        List tracked processes
-  result    Get the current result for a pid
+  ps        List tracked processes with elapsed time and running liveness
+  result    Get the current result and running liveness for a pid
   kill      Terminate a tracked pid
   cleanup   Remove completed and failed tracked processes
   doctor    Check supported AI CLI binaries
@@ -55,9 +55,13 @@ export const WAIT_HELP_TEXT = `Usage: ai-cli wait <pid...> [options]
 
 Wait for one or more tracked processes to finish.
 By default each result uses the compact shape; set --verbose to include full metadata and detailed parsed output.
+Timeout returns the current JSON array; still-running items have timedOut: true and liveness.
+Exit codes: 0 = all terminal, 3 = timed out with processes still running, 1 = error (including unknown pid).
+Poll with --timeout 90 or less. While liveness.alive is true, keep waiting; use peek for live events.
+Codex/Claude can emit nothing while reasoning.
 
 Options:
-  --timeout <seconds>          Maximum wait time in seconds
+  --timeout <seconds>          Maximum wait time (default 180; recommended <= 90 for polling)
   --verbose                    Return full metadata and detailed parsed output
   --help, -h                   Show this help message
 `;
@@ -65,6 +69,7 @@ Options:
 export const RESULT_HELP_TEXT = `Usage: ai-cli result <pid> [options]
 
 Get the current output and status of a tracked process. By default this returns a compact result shape; set --verbose to include full metadata and detailed parsed output.
+Running results include liveness: alive, elapsedSec, sinceLastOutputSec, stdoutBytes, stderrBytes, lastEvent, eventCount, hint.
 
 Options:
   --verbose                    Return full metadata and detailed parsed output
@@ -102,6 +107,8 @@ Options:
 export const PS_HELP_TEXT = `Usage: ai-cli ps
 
 List tracked processes.
+Running items include liveness plus elapsedSec, sinceLastOutputSec and lastEvent.
+Terminal items include elapsedSec when the end time is known; they have no liveness.
 
 Options:
   --help, -h                   Show this help message
@@ -386,8 +393,9 @@ export async function runCli(argv: string[], deps: Partial<CliDeps> = {}): Promi
       stdout(CLI_HELP_TEXT);
       return 1;
     }
-    writeJson(stdout, await waitForProcesses(pids as number[], timeout, 'verbose' in flags));
-    return 0;
+    const results = await waitForProcesses(pids as number[], timeout, 'verbose' in flags);
+    writeJson(stdout, results);
+    return Array.isArray(results) && results.some((result) => result.status === 'running' && result.timedOut === true) ? 3 : 0;
   }
 
   if (command === 'peek') {
