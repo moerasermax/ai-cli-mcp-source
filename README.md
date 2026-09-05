@@ -37,7 +37,8 @@ src/
 │   ├─ peek.ts / peek-extractor.ts / process-result.ts / reasoning.ts / ansi.ts / debug.ts
 │   └─ doctor.ts              # doctor + 解析所有 CLI 路徑
 ├─ models/
-│   └─ catalog.ts         # model 清單 / alias / models payload
+│   ├─ catalog.ts         # model 清單 / alias / 同步 models payload
+│   └─ catalog-v2.ts      # 出處 / 時間 / 非同步查詢與磁碟快取
 ├─ plugins/
 │   ├─ usage.ts           # 查額度外掛橋接（路徑由環境變數設定）
 │   └─ usage-service.ts   # query_usage 工具的實作與快取
@@ -77,6 +78,8 @@ npm run typecheck  # 只型別檢查
 | `AI_CLI_STATE_DIR` | CLI detached job 的狀態目錄（預設 `~/.local/state/ai-cli`） |
 | `AI_CLI_USAGE_PLUGIN_BIN` | `ai-cli usage` 外掛的 .mjs 絕對路徑 |
 | `CLAUDE_CLI_NAME` / `CODEX_CLI_NAME` / `AGY_CLI_NAME` | 覆寫各 CLI 的指令名稱或絕對路徑 |
+| `AI_CLI_DISCOVER_TIMEOUT_MS` | 模型查詢逾時毫秒，預設 `15000`；測試可縮短，非正整數或超出計時器範圍則用預設值 |
+| `AI_CLI_CATALOG_CACHE_PATH` | 模型磁碟快取路徑，預設 `~/.local/share/ai-cli/catalog-cache.json`；測試一律指向暫存目錄 |
 | `AI_CLI_PROVIDERS_PATH` | direct-api providers.json 路徑（預設 `~/.local/share/ai-cli/providers.json`） |
 | `AI_CLI_BREAKER_DISABLED=true` | 停用 AI 啟動熔斷器（預設啟用） |
 | `AI_CLI_BREAKER_MODE` | `block`（預設，觸發即擋下並回報）或 `warn`（只警告不擋） |
@@ -85,6 +88,43 @@ npm run typecheck  # 只型別檢查
 | `AI_CLI_BREAKER_DUP_LIMIT` | 視窗內「同一 agent + 同一 prompt」最大次數，超過視為迴圈（預設 `6`） |
 | `AI_CLI_BREAKER_COOLDOWN_SEC` | 觸發後的開路冷卻秒數（預設 `120`） |
 | `AI_CLI_DEFAULT_REASONING_EFFORT` | 覆寫 `config.json` 的 reasoning 預設值（見下節） |
+
+## 模型目錄的出處與查詢時間
+
+`models` payload 保留既有各 agent 字串陣列與 aliases，詳細來源看 `catalogV2`。
+`catalogV2.entries[]` 保留 `id / agent / model / displayName / billingRoute / source / verifiedAt / routable`；
+`catalogV2.agents[]` 每列是 `{ agent, binaryFound, source, verifiedAt, discoveryNote }`。
+每列的 `verifiedAt` 與所屬 entries 一致，快取不會把原時間改成現在。
+
+| source | 意思 |
+|--------|------|
+| `vendor-cli` | 此 process 這一輪或先前真的問過 CLI 的成功值；`verifiedAt` 是當時問到的時間 |
+| `vendor-cli-cached` | 先前行程問到、存進磁碟的值，這一輪尚未確認；保留原 `verifiedAt` |
+| `builtin-fallback` | 原始碼的靜態參考值，未經 vendor 確認；`verifiedAt` 是本次讀取靜態值的時間 |
+
+**`agy models` 是網路呼叫，不是讀本機設定。** 2026-09-05 本機 agy 1.1.26 實測，
+它先對 `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` 做 eligibility check。
+八次暖機耗時為 **1739 / 1755 / 1762 / 1838 / 1906 / 2487 / 2729 / 3972 ms**，
+網路尾延遲可能超過 5 秒。舊實作每個 process 冷啟動與 60 秒快取到期後都以 `spawnSync`
+重查，連 MCP 工具描述也會卡住整個 server；5 秒逾時後又把整輪降成 fallback。
+
+現在 `buildCatalogV2()` 與 `getModelsPayload()` 維持同步，只讀記憶體／磁碟／靜態值，
+同步堆疊永不 spawn。找得到 CLI 卻沒有此 process 的成功值時，會排一輪背景
+`refreshCatalogV2()`，自己不等：**MCP `tools/list` 與 `set_config` 不等查詢；
+MCP `models` 與 CLI `ai-cli models` 會先 `await refreshCatalogV2()` 才回 payload。**
+
+`refreshCatalogV2({ force?: boolean })` 是非同步且在 process 內單飛：已有查詢就共用 Promise。
+預設記憶體成功值在 **10 分鐘**內不重查，`force: true` 可忽略新鮮度。失敗保留成功值，
+並在 `discoveryNote` 記下逾時、stderr 第一行非空文字或沒有模型 id 的原因。
+agent 的 `discoverModels` 現在必須回 Promise、有逾時且永不 reject；可回模型陣列／null，
+或 `{ models, note }`（失敗時 `models: null`）。`agy` 採後者提供診斷。
+
+磁碟檔為 `join(CONFIG_DIR, 'catalog-cache.json')`，每個 agent 一筆
+`{ models, verifiedAt, cliPath }`。寫入採同目錄 tmp + rename，讀取任何錯誤都忽略；
+只有 **CLI 路徑相同且時間不超過 30 天**的磁碟值會被使用。
+`vendor-cli-cached` 的 note 顯示「快取值：N 秒前問過 CLI；背景重新查詢中」，
+最近一次背景失敗時附原因。沒有有效快取時才回 `builtin-fallback` 並說明原因。
+`clearCatalogCache()` 只清記憶體，測試可用 `clearCatalogCache({ disk: true })` 一併刪磁碟檔。
 
 ## direct-api：自己接任何第三方 API
 

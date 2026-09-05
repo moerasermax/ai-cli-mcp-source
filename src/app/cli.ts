@@ -9,6 +9,7 @@ import { runMcpServer } from './mcp.js';
 import { FileProcessService, type FileStartOptions } from '../core/file-process-service.js';
 import { getCliDoctorStatus } from '../core/doctor.js';
 import { getModelsPayload } from '../models/catalog.js';
+import { refreshCatalogV2 } from '../models/catalog-v2.js';
 import { runExec } from './exec.js';
 import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
 import { runUsagePlugin } from '../plugins/usage.js';
@@ -477,6 +478,7 @@ export async function runCli(argv: string[], deps: Partial<CliDeps> = {}): Promi
       stdout(MODELS_HELP_TEXT);
       return 0;
     }
+    await refreshCatalogV2();
     writeJson(stdout, getModelsPayload());
     return 0;
   }

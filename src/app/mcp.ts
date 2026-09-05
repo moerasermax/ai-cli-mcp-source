@@ -25,6 +25,7 @@ import {
   isKnownModelTarget,
   listKnownModels,
 } from '../models/catalog.js';
+import { refreshCatalogV2 } from '../models/catalog-v2.js';
 import { ALLOWED_REASONING_EFFORTS } from '../core/reasoning.js';
 import { updateUserConfig } from '../core/user-config.js';
 import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
@@ -87,6 +88,7 @@ export class AiCliMcpServer {
   }
 
   private setupToolHandlers(): void {
+    // 工具描述只同步讀目錄／快取；不可 await vendor 查詢，避免重連卡住 tools/list。
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
@@ -328,6 +330,7 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
         case 'doctor':
           return this.jsonResult(getCliDoctorStatus());
         case 'models':
+          await refreshCatalogV2();
           return this.jsonResult(getModelsPayload());
         case 'set_config':
           return this.handleSetConfig(toolArguments);
@@ -488,6 +491,7 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
 
     // 直接回報「剛剛寫進去的那一份」。重新讀一次的話，中間有別的 writer 介入時，
     // 回傳的 payload 描述的就不是本次寫入的結果了（而且會多一次讀檔）。
+    // set_config 也只讀同步目錄，不能等背景 vendor 查詢。
     return this.jsonResult(getModelsPayload(written));
   }
 

@@ -309,5 +309,69 @@
     "from": "    alive,\n    elapsedSec,",
     "to": "    alive: true,\n    elapsedSec,",
     "expect": "liveness preserves false"
+  },
+  {
+    "name": "同步目錄退回 spawnSync 等 agy 網路查詢（阻塞）",
+    "file": "src/models/catalog-v2.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "  void refreshCatalogV2().catch(() => {});",
+    "to": "  process.getBuiltinModule('node:child_process').spawnSync(path, ['models'], { shell: process.platform === 'win32', windowsHide: true, timeout: 3000 });\n  void refreshCatalogV2().catch(() => {});",
+    "expect": "同步 buildCatalogV2 不阻塞（<200 ms）"
+  },
+  {
+    "name": "查詢失敗清掉成功快取（fallback 蓋掉舊值）",
+    "file": "src/models/catalog-v2.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "          failures.set(agent.id, { cliPath: path, note: detailed?.note || '查詢模型清單失敗（回 null 或沒有模型 id）' });",
+    "to": "          cache.delete(agent.id);\n          try { unlinkSync(pathOnStart); } catch {}\n          failures.set(agent.id, { cliPath: path, note: detailed?.note || '查詢模型清單失敗（回 null 或沒有模型 id）' });",
+    "expect": "查詢失敗保留磁碟快取與失敗原因"
+  },
+  {
+    "name": "磁碟快取冒充本輪 vendor-cli",
+    "file": "src/models/catalog-v2.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "      source: 'vendor-cli-cached',",
+    "to": "      source: 'vendor-cli',",
+    "expect": "磁碟快取必須標 vendor-cli-cached（不是 vendor-cli）"
+  },
+  {
+    "name": "agy 逾時不 kill 子程序",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "        killDiscovery(child);",
+    "to": "        // mutated: child keeps running",
+    "expect": "逾時必須 kill 子程序（不能留到它印出模型）"
+  },
+  {
+    "name": "agy 逾時回成功清單而非 null",
+    "file": "src/agents/antigravity.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "        finish(null, `\\`agy models\\` 逾時（>${timeoutMs} ms）`);",
+    "to": "        finish(['gemini-3.7-flash-high'], `\\`agy models\\` 逾時（>${timeoutMs} ms）`);",
+    "expect": "真實 discover 逾時回 null 與逾時原因"
+  },
+  {
+    "name": "MCP tools/list 等待 refresh（冷啟動被網路卡住）",
+    "file": "src/app/mcp.ts",
+    "script": "verify-mcp.mjs",
+    "from": "this.server.setRequestHandler(ListToolsRequestSchema, async () => ({",
+    "to": "this.server.setRequestHandler(ListToolsRequestSchema, async () => (await refreshCatalogV2(), {",
+    "expect": "冷啟動 tools/list < 1 秒"
+  },
+  {
+    "name": "MCP models 忘記等待 refresh",
+    "file": "src/app/mcp.ts",
+    "script": "verify-mcp.mjs",
+    "from": "          await refreshCatalogV2();",
+    "to": "          void refreshCatalogV2().catch(() => {});",
+    "expect": "models 等待 refresh 後回 vendor-cli"
+  },
+  {
+    "name": "CLI models 忘記等待 refresh",
+    "file": "src/app/cli.ts",
+    "script": "verify-catalog-source.mjs",
+    "from": "    await refreshCatalogV2();",
+    "to": "    void refreshCatalogV2().catch(() => {});",
+    "expect": "ai-cli models 等待 refresh 後回 payload"
   }
 ]

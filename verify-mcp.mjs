@@ -7,7 +7,9 @@
 // 路徑一律相對本檔解析，不要再寫死任何機器上的絕對路徑。
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const logs = [];
@@ -15,6 +17,18 @@ const log = (...a) => logs.push(a.join(' '));
 process.on('exit', () => writeFileSync('mcp-test-out.txt', logs.join('\n') + '\n'));
 
 const dist = (relative) => fileURLToPath(new URL(`./dist/${relative}`, import.meta.url));
+const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-mcp-smoke-'));
+const stub = fileURLToPath(new URL(`./tools/stubs/agy-models-slow.${process.platform === 'win32' ? 'cmd' : 'mjs'}`, import.meta.url));
+if (process.platform !== 'win32') chmodSync(stub, 0o755);
+let passed = 0;
+let failures = 0;
+function check(ok, name, detail = '') {
+  if (ok) passed++;
+  else failures++;
+  const line = `${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`;
+  log(line);
+  console.log(line);
+}
 
 /** 三個入口在對外行為上應完全等價。 */
 const ENTRIES = [
@@ -33,24 +47,38 @@ const EXPECTED_TOOLS = [
  * 還是加一層 timeout：突變測試會把這支腳本跑很多次，任何一次 hang 都會讓整個
  * harness 卡死，而不是回報一個乾淨的 FAIL。
  */
-const withTimeout = (promise, ms, label) =>
-  Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-      timer.unref?.();
-    }),
-  ]);
+async function withTimeout(promise, ms, label) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 
 async function checkEntry(entry) {
   log(`\n=== 入口：${entry.name} ===`);
-  const transport = new StdioClientTransport({ command: 'node', args: entry.args });
+  const index = ENTRIES.indexOf(entry);
+  const trace = join(TEMP, `${index}-trace.jsonl`);
+  const transport = new StdioClientTransport({ command: process.execPath, args: entry.args, env: {
+    ...process.env,
+    AGY_CLI_NAME: stub,
+    AI_CLI_CATALOG_CACHE_PATH: join(TEMP, `${index}-cache.json`),
+    AI_CLI_DISCOVER_TIMEOUT_MS: '15000',
+    AGY_STUB_DELAY_MS: '2000',
+    AGY_STUB_EMPTY: 'false',
+    AGY_STUB_TRACE_PATH: trace,
+  } });
   const client = new Client({ name: 'smoke-test', version: '1.0.0' }, { capabilities: {} });
 
+  try {
   await withTimeout(client.connect(transport), 20000, `${entry.name} connect`);
   log('connected & initialized');
 
-  const tools = await client.listTools();
+  const listStarted = performance.now();
+  const tools = await withTimeout(client.listTools(), 10000, `${entry.name} tools/list`);
+  const elapsed = performance.now() - listStarted;
+  check(elapsed < 1000, `${entry.name} 冷啟動 tools/list < 1 秒`, `${elapsed.toFixed(1)} ms`);
   const names = tools.tools.map((t) => t.name);
   log(`list_tools (${names.length}): ${names.join(', ')}`);
 
@@ -58,10 +86,16 @@ async function checkEntry(entry) {
   if (missing.length) throw new Error(`MISSING TOOLS: ${missing.join(', ')}`);
   log(`all ${EXPECTED_TOOLS.length} expected tools present`);
 
-  const models = await client.callTool({ name: 'models', arguments: {} });
+  const models = await withTimeout(client.callTool({ name: 'models', arguments: {} }), 10000, 'models');
   const modelsPayload = JSON.parse(models.content[0].text);
   log(`models agents = ${Object.keys(modelsPayload).filter((k) => Array.isArray(modelsPayload[k])).join(', ')}`);
   if (!modelsPayload.antigravity) throw new Error('antigravity missing!');
+  check(modelsPayload.catalogV2.agents.find((a) => a.agent === 'antigravity')?.source === 'vendor-cli',
+    `${entry.name} models 等待 refresh 後回 vendor-cli`);
+  await client.callTool({ name: 'models', arguments: {} });
+  const events = existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n').map(JSON.parse) : [];
+  check(events.filter((e) => e.event === 'started').length === 1,
+    `${entry.name} tools/list 背景與 models 單飛且 TTL 內不重查`);
   if (modelsPayload.gemini) throw new Error('gemini should NOT be present!');
   // 5.0.0 移除：kiro / forge 不得再出現在 models payload 或 alias 清單裡。
   for (const gone of ['kiro', 'forge']) {
@@ -80,27 +114,28 @@ async function checkEntry(entry) {
   const list = await client.callTool({ name: 'list_processes', arguments: {} });
   log(`list_processes: ${list.content[0].text.trim()}`);
 
-  await client.close();
   log(`--- ${entry.name} OK ---`);
+  check(true, `入口 ${entry.name} 的 MCP handshake 與工具呼叫`);
+  } finally {
+    await client.close();
+  }
 }
 
-let failures = 0;
+try {
 for (const entry of ENTRIES) {
   try {
     await checkEntry(entry);
   } catch (error) {
-    failures++;
     log(`!!! ${entry.name} FAILED: ${error.message}`);
     // 這一行必須進 stdout（而不是只進 mcp-test-out.txt）：tools/mutation-test.mjs
     // 是靠掃 stdout 裡含 "FAIL " 的行、再比對 mutations.json 的 expect 字串，
     // 才能判斷突變是「被我們指定的那條斷言殺掉」還是被別的斷言誤殺。
-    console.log(`  FAIL 入口 ${entry.name} 的 MCP handshake 與工具呼叫 — ${error.message}`);
+    check(false, `入口 ${entry.name} 的 MCP handshake 與工具呼叫`, error.message);
   }
 }
-
-if (failures) {
-  log(`\n=== MCP smoke test FAILED（${failures}/${ENTRIES.length} 個入口壞掉）===`);
-  process.exit(1);
+} finally {
+  rmSync(TEMP, { recursive: true, force: true });
 }
-log(`\n=== MCP smoke test PASSED（${ENTRIES.length} 個入口全部通過）===`);
-process.exit(0);
+console.log(`PASS: ${passed} passed, ${failures} failed`);
+log(`PASS: ${passed} passed, ${failures} failed`);
+process.exitCode = failures ? 1 : 0;

@@ -13,6 +13,7 @@
  * 而是保證**清單永遠說得出自己是怎麼來的**：
  *
  *   source: 'vendor-cli'        這一輪真的問過 CLI，verifiedAt 是問到的時間
+ *   source: 'vendor-cli-cached'  先前行程問到並存下的值，保留原 verifiedAt
  *   source: 'builtin-fallback'  原始碼裡的靜態值，**未經確認**
  *
  * 消費端可以自己決定要不要信 fallback，但**不會再誤以為那是事實**。
@@ -22,9 +23,13 @@
  * 有現成的消費者。直接改會破壞它們。v2 以**新欄位**加上去，舊欄位不動。
  */
 
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { listAgents } from '../agents/registry.js';
 import type { AgentDefinition, AgentId, BillingRoute, ModelListSource } from '../agents/types.js';
 import { inspectCliBinary } from '../core/binary-resolver.js';
+import { CONFIG_DIR } from '../core/user-config.js';
 
 export interface CatalogEntry {
   /** 穩定識別：`{agent}/{model}`。消費端該存這個，不是顯示名。 */
@@ -62,7 +67,9 @@ export interface CatalogV2 {
     agent: AgentId;
     binaryFound: boolean;
     source: ModelListSource;
-    /** 有 discoverModels 卻回 null 時的說明。沒有查詢能力就是 null。 */
+    /** 該列來源的時間；磁碟快取保留原值，fallback 是讀到靜態值的時間。 */
+    verifiedAt: string;
+    /** 快取／失敗原因。沒有查詢能力就是 null。 */
     discoveryNote: string | null;
   }>;
   generatedAt: string;
@@ -76,28 +83,72 @@ const VENDOR_LABEL: Record<AgentId, string> = {
   'direct-api': 'DirectAPI',
 };
 
-/**
- * 查詢結果的行程內快取。
- *
- * `models --json` 可能被頻繁呼叫（MCP 工具描述會用到），而每次都
- * spawn 一輪 vendor CLI 是不必要的成本。TTL 內重用，並**照實回報
- * 當初問到的 verifiedAt**——不是回報「現在」，那會讓一份五分鐘前的
- * 答案看起來像剛剛確認過的。
- */
-const CACHE_TTL_MS = 60_000;
+/** 成功值在行程內保留；只有明確 refresh 才依 10 分鐘新鮮度重查。 */
+export const FRESH_TTL_MS = 10 * 60_000;
+const DISK_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 interface CacheRow {
   models: readonly string[];
-  source: ModelListSource;
   verifiedAt: string;
+  cliPath: string;
+}
+interface AgentRow extends CacheRow {
+  source: ModelListSource;
   binaryFound: boolean;
   discoveryNote: string | null;
-  cachedAtMs: number;
 }
 const cache = new Map<AgentId, CacheRow>();
+const failures = new Map<AgentId, { cliPath: string; note: string }>();
+let inFlight: Promise<CatalogV2> | null = null;
+let generation = 0;
 
-/** 測試用：清掉快取，讓下一次呼叫真的去問。 */
-export function clearCatalogCache(): void {
+const cachePath = (): string => process.env.AI_CLI_CATALOG_CACHE_PATH || join(CONFIG_DIR, 'catalog-cache.json');
+
+/** 壞 JSON、錯形狀、讀取錯誤都當成沒有快取，不能卡住模型描述。 */
+function readDiskCache(path: string): Partial<Record<AgentId, CacheRow>> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const rows: Partial<Record<AgentId, CacheRow>> = {};
+    for (const { id } of listAgents()) {
+      const row = (parsed as Record<string, CacheRow>)[id];
+      if (row && Array.isArray(row.models) && row.models.length > 0
+        && row.models.every((model) => typeof model === 'string' && model.trim().length > 0)
+        && typeof row.cliPath === 'string' && typeof row.verifiedAt === 'string'
+        && Number.isFinite(Date.parse(row.verifiedAt))) {
+        rows[id] = { models: row.models, verifiedAt: row.verifiedAt, cliPath: row.cliPath };
+      }
+    }
+    return rows;
+  } catch {
+    return {};
+  }
+}
+
+/** 同目錄 tmp + rename，寫入失敗不影響已查到的記憶體值。 */
+function writeDiskCache(path: string, agent: AgentId, row: CacheRow): void {
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const rows = readDiskCache(path);
+    rows[agent] = row;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(tmp, `${JSON.stringify(rows, null, 2)}\n`);
+    renameSync(tmp, path);
+  } catch {
+    // 持久化是盡力而為，不把已成功的網路查詢降級。
+  } finally {
+    try { unlinkSync(tmp); } catch { /* rename 後 tmp 本來就不存在。 */ }
+  }
+}
+
+/** 測試用：預設只清記憶體；disk: true 一併刪除指定的磁碟快取。 */
+export function clearCatalogCache(options: { disk?: boolean } = {}): void {
+  generation++;
   cache.clear();
+  failures.clear();
+  // 不取消單飛中的程序，但舊世代的結果不得在 clear 之後重新寫回。
+  if (options.disk) {
+    try { unlinkSync(cachePath()); } catch { /* 沒有／讀不到都視為無快取。 */ }
+  }
 }
 
 function resolveFor(agent: AgentDefinition): { path: string | null; found: boolean } {
@@ -111,17 +162,14 @@ function resolveFor(agent: AgentDefinition): { path: string | null; found: boole
   }
 }
 
-function loadAgent(agent: AgentDefinition, nowMs: number): CacheRow {
-  const cached = cache.get(agent.id);
-  if (cached && nowMs - cached.cachedAtMs < CACHE_TTL_MS) return cached;
-
-  const fallback = (discoveryNote: string | null, binaryFound: boolean): CacheRow => ({
+function loadAgent(agent: AgentDefinition, nowMs: number, disk: Partial<Record<AgentId, CacheRow>>): AgentRow {
+  const fallback = (discoveryNote: string | null, binaryFound: boolean): AgentRow => ({
     models: agent.models,
     source: 'builtin-fallback',
     verifiedAt: new Date(nowMs).toISOString(),
     binaryFound,
     discoveryNote,
-    cachedAtMs: nowMs,
+    cliPath: '',
   });
 
   if (typeof agent.discoverModels !== 'function') {
@@ -134,35 +182,86 @@ function loadAgent(agent: AgentDefinition, nowMs: number): CacheRow {
     return fallback('找不到這個 agent 的 CLI 二進位檔，無法向它查詢模型清單。', false);
   }
 
-  const discovered = agent.discoverModels(path);
-  if (discovered === null || discovered.length === 0) {
-    return fallback('已找到 CLI 但查詢模型清單失敗（逾時／非零退出／空輸出）。', true);
+  const failure = failures.get(agent.id);
+  const note = failure?.cliPath === path ? `最近一次查詢失敗：${failure.note}` : null;
+  const memory = cache.get(agent.id);
+  if (memory?.cliPath === path) {
+    return { ...memory, source: 'vendor-cli', binaryFound: true, discoveryNote: note };
   }
 
-  const row: CacheRow = {
-    models: discovered,
-    source: 'vendor-cli',
-    verifiedAt: new Date(nowMs).toISOString(),
-    binaryFound: true,
-    discoveryNote: null,
-    cachedAtMs: nowMs,
-  };
-  cache.set(agent.id, row);
-  return row;
+  // refresh 會先讓出同步堆疊再查詢；此處永不 spawn、永不等網路。
+  void refreshCatalogV2().catch(() => {});
+  const saved = disk[agent.id];
+  const ageMs = saved ? nowMs - Date.parse(saved.verifiedAt) : Infinity;
+  if (saved?.cliPath === path && ageMs >= 0 && ageMs <= DISK_MAX_AGE_MS) {
+    return {
+      ...saved,
+      source: 'vendor-cli-cached',
+      binaryFound: true,
+      discoveryNote: `快取值：${Math.floor(ageMs / 1000)} 秒前問過 CLI；背景重新查詢中${note ? `；${note}` : ''}`,
+    };
+  }
+  const reason = note ?? (saved?.cliPath && saved.cliPath !== path
+    ? '快取 CLI 路徑與目前不同'
+    : saved ? '快取時間無效或已超過 30 天' : '尚未查過');
+  return fallback(`${reason}；背景查詢中`, true);
+}
+
+/**
+ * 唯一會呼叫 discoverModels 的路徑；整個行程單飛，成功值才寫入快取。
+ * Promise.then 刻意延後工作，buildCatalogV2 的同步堆疊連 spawn 都不會執行。
+ */
+export function refreshCatalogV2(options: { force?: boolean } = {}): Promise<CatalogV2> {
+  if (inFlight) return inFlight;
+  const startedGeneration = generation;
+  const pathOnStart = cachePath();
+  inFlight = Promise.resolve().then(async () => {
+    for (const agent of listAgents()) {
+      if (!agent.discoverModels) continue;
+      const { path, found } = resolveFor(agent);
+      if (!found || path === null) continue;
+      const memory = cache.get(agent.id);
+      const ageMs = memory ? Date.now() - Date.parse(memory.verifiedAt) : Infinity;
+      if (!options.force && memory?.cliPath === path && ageMs >= 0 && ageMs < FRESH_TTL_MS) continue;
+      try {
+        const result = await agent.discoverModels(path);
+        const detailed = result && 'models' in result ? result : null;
+        const models = detailed ? detailed.models : result as readonly string[] | null;
+        if (startedGeneration !== generation) continue;
+        if (models && models.length > 0) {
+          const row: CacheRow = { models: [...models], verifiedAt: new Date(Date.now()).toISOString(), cliPath: path };
+          cache.set(agent.id, row);
+          failures.delete(agent.id);
+          writeDiskCache(pathOnStart, agent.id, row);
+        } else {
+          failures.set(agent.id, { cliPath: path, note: detailed?.note || '查詢模型清單失敗（回 null 或沒有模型 id）' });
+        }
+      } catch (error) {
+        // 契約雖要求永不 reject，第三方 agent 違約也不能毀掉既有成功值。
+        if (startedGeneration === generation) {
+          failures.set(agent.id, { cliPath: path, note: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
+    // 建立回傳值時仍持有 inFlight，失敗不會遞迴排出永不停歇的重試。
+    return buildCatalogV2();
+  }).finally(() => { inFlight = null; });
+  return inFlight;
 }
 
 export function buildCatalogV2(): CatalogV2 {
   const nowMs = Date.now();
   const entries: CatalogEntry[] = [];
   const agents: CatalogV2['agents'] = [];
+  const disk = readDiskCache(cachePath());
 
   for (const agent of listAgents()) {
-    const row = loadAgent(agent, nowMs);
-    cache.set(agent.id, row);
+    const row = loadAgent(agent, nowMs, disk);
     agents.push({
       agent: agent.id,
       binaryFound: row.binaryFound,
       source: row.source,
+      verifiedAt: row.verifiedAt,
       discoveryNote: row.discoveryNote,
     });
     for (const model of row.models) {

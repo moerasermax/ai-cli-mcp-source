@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+### 修正（agy 模型查詢常態逾時）
+- 修正把 `agy models` 誤當本機讀設定的假設：agy 1.1.26 會先做網路 eligibility check，八次暖機實測 1739–3972 ms，舊的 5 秒同步查詢加 60 秒記憶體快取使重連與到期後的 MCP 請求卡住。改成 `spawn` 非同步、有計時與逾時殺子程序樹；同步目錄只讀快取，`tools/list`／`set_config` 不等網路，明確 `models` 才等待；失敗保留成功值並附診斷。（@codex-gpt-6-astra，moerasermax 指示）
+- 這批改動由 @codex-gpt-6-astra（codex-ultra，max）實作、@gemini-3.1-pro 獨立審查（未發現確信問題；註記多 process
+  同時寫快取時後寫者會蓋掉前者對其他 agent 的新值，目前只有 agy 有快取，先接受）；Claude 逐項驗證：build 零錯誤、
+  `npm test` 八支全綠（catalog-source 74、mcp 12、liveness 97）、8 個新突變全部由指定斷言 KILLED。
+  根因蒐證：把 proxy 指到不存在的位址時 `agy models` 238 ms 內失敗並印出 loadCodeAssist 的連線錯誤，
+  證明它每次都先打網路；`tools/list` 的描述字串每次請求重算，等於每次重連都同步打一次。（Claude，moerasermax 指示）
+
+### 變更（模型目錄出處）
+- `AgentDefinition.discoverModels` 改回 Promise，接受模型陣列／null 或 `{ models, note }`；新增 `ModelListSource` 的 `vendor-cli-cached`，與此 process 問到的 `vendor-cli`、靜態 `builtin-fallback` 分開；`catalogV2.agents[]` 新增 `verifiedAt`，既有 payload 與同步 `getModelsPayload()` 簽章保留。（@codex-gpt-6-astra，moerasermax 指示）
+
+### 新增（模型查詢快取與驗證）
+- 新增 `CONFIG_DIR/catalog-cache.json`（每 agent 的 models／verifiedAt／cliPath、tmp + rename、同路徑且不超過 30 天才採用），`refreshCatalogV2({ force? })` 的單飛與 10 分鐘新鮮度、`clearCatalogCache({ disk: true })`，以及 `AI_CLI_CATALOG_CACHE_PATH`／`AI_CLI_DISCOVER_TIMEOUT_MS`（預設 15000 ms）覆寫。（@codex-gpt-6-astra，moerasermax 指示）
+- 擴充既有 catalog-source 與三入口 MCP 測試；新增慢速／eligibility 錯誤 agy stub、alias 測試與突變 harness 的暫存快取隔離，以及同步阻塞、失敗蓋掉快取、錯報 source、逾時不 kill／不回 null、MCP／CLI 等待規則的突變，維持八支 `npm test` 腳本且不連真實 vendor。（@codex-gpt-6-astra，moerasermax 指示）
+
 ### 新增（程序存活資訊）
 - MCP 與 CLI 的 running 結果新增統一 `liveness`：存活狀態、啟動與最後輸出秒數、stdout/stderr bytes、事件摘要、事件數與英文等待提示；`list_processes` / `ps` 同時提供時間摘要。Codex 推理期間可能零輸出，等待端需要區分沉默與程序消失，避免把 wait 逾時錯誤當成失敗而遺棄 pid。（@codex-gpt-6-astra，moerasermax 指示）
 - `verify-liveness.mjs` 與慢速 Codex stub 納入 `npm test`，覆蓋兩條路徑、跨 CLI 行程、消失程序的 false/lost 對照與突變測試，確保「逾時不是失敗」及存活提示真的受到斷言保護。（@codex-gpt-6-astra，moerasermax 指示）

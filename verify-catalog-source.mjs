@@ -10,9 +10,10 @@
  * 這一支守的就是那個標示：
  *
  *   1. 每一筆目錄項目都必須有 source / verifiedAt / billingRoute
- *   2. 查不到 vendor 時**必須降級成 builtin-fallback**，不得靜默沿用
- *      舊值卻宣稱是 vendor-cli
+ *   2. 沒快取且查不到 vendor 才降級；磁碟舊值必須標 vendor-cli-cached
  *   3. doctor 不得再輸出「看起來像答案的非答案」
+ *   4. 同步路徑不 spawn、不等網路；refresh 單飛、TTL、錯誤及 kill 用本機 stub 驗證
+ * 全程使用暫存快取與 CLI stub，不呼叫真實 vendor。
  *
  * 用法：node verify-catalog-source.mjs
  */
@@ -20,24 +21,56 @@
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-catalog-source-'));
+const CACHE = join(TEMP, 'catalog-cache.json');
+const envKeys = ['AI_CLI_CATALOG_CACHE_PATH', 'AGY_CLI_NAME', 'AI_CLI_DISCOVER_TIMEOUT_MS',
+  'AGY_STUB_DELAY_MS', 'AGY_STUB_EMPTY', 'AGY_STUB_TRACE_PATH'];
+const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+process.env.AI_CLI_CATALOG_CACHE_PATH = CACHE;
+const stub = (name) => {
+  const path = join(ROOT, 'tools/stubs', `${name}.${process.platform === 'win32' ? 'cmd' : 'mjs'}`);
+  if (process.platform !== 'win32') chmodSync(path, 0o755);
+  return path;
+};
+const slowStub = stub('agy-models-slow');
+const errorStub = stub('agy-models-error');
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const rowOf = (catalog) => catalog.agents.find((a) => a.agent === 'antigravity');
+const modelsOf = (catalog) => catalog.entries.filter((e) => e.agent === 'antigravity').map((e) => e.model);
+const fixture = ['gemini-3.7-flash-high', 'gemini-3.1-pro-high', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'];
 const results = [];
 function check(ok, name, detail = '') {
   results.push([ok, name, detail]);
   // 格式與其他 verify 腳本一致：tools/mutation-test.mjs 靠「含 `FAIL ` 的行」
   // 判定突變有沒有被對應斷言殺掉。印成 `[FAIL]` 會讓它一條都對不上。
-  console.log(`  ${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
 const load = (rel) => import(pathToFileURL(join(ROOT, 'dist', rel)).href);
 
 console.log('== 模型目錄的出處標示 ==');
 
-const { buildCatalogV2, clearCatalogCache } = await load('models/catalog-v2.js');
+const { buildCatalogV2, clearCatalogCache, refreshCatalogV2, FRESH_TTL_MS } = await load('models/catalog-v2.js');
 const { getModelsPayload } = await load('models/catalog.js');
 const registry = await load('agents/registry.js');
-const { buildDoctorStatus } = await load('core/binary-resolver.js');
+const { buildDoctorStatus, inspectCliBinary } = await load('core/binary-resolver.js');
+const agy = registry.getAgent('antigravity');
+const realDiscover = agy.discoverModels;
+const hadAgy = inspectCliBinary(agy.binary).available;
+process.env.AGY_CLI_NAME = slowStub;
+process.env.AGY_STUB_DELAY_MS = '0';
+process.env.AI_CLI_DISCOVER_TIMEOUT_MS = '15000';
+delete process.env.AGY_STUB_EMPTY;
+delete process.env.AGY_STUB_TRACE_PATH;
+agy.discoverModels = async () => null;
+
+try {
 
 // ── 1. 每一筆都要說得出出處 ───────────────────────────────────
 {
@@ -48,7 +81,7 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
     (e) =>
       !e.id ||
       !e.displayName ||
-      !['vendor-cli', 'builtin-fallback'].includes(e.source) ||
+      !['vendor-cli', 'vendor-cli-cached', 'builtin-fallback'].includes(e.source) ||
       !['subscription-cli', 'metered-api'].includes(e.billingRoute) ||
       typeof e.verifiedAt !== 'string' ||
       Number.isNaN(Date.parse(e.verifiedAt))
@@ -70,6 +103,9 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
     'agents 摘要與每一筆 entry 的 source 一致',
     inconsistent.length ? inconsistent[0].id : ''
   );
+  check(catalog.agents.every((a) => Number.isFinite(Date.parse(a.verifiedAt))
+    && catalog.entries.filter((e) => e.agent === a.agent).every((e) => e.verifiedAt === a.verifiedAt)),
+  'agents[].verifiedAt 是有效時間且與 entries 一致');
 }
 
 // ── 2. 計費路徑必須分得出來 ───────────────────────────────────
@@ -89,27 +125,69 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
   );
 }
 
-// ── 3. ★ 查不到就必須降級，不得靜默沿用舊值 ───────────────────
+// ── 3. 同步讀取、單飛 refresh、磁碟快取與真實 discover 的錯誤路徑 ──
 {
-  const agy = registry.getAgent('antigravity');
-  const realDiscover = agy.discoverModels;
   check(typeof realDiscover === 'function', 'antigravity 有 discoverModels（動態查詢能力）');
+  await refreshCatalogV2(); // 收掉前兩節已排出的背景查詢，才換 stub。
+  let calls = 0;
+  process.env.AGY_STUB_DELAY_MS = '1500'; // 若同步路徑退化成直接 spawnSync，仍要抓得到阻塞。
+  agy.discoverModels = async () => { calls++; await delay(1500); return fixture; };
+  clearCatalogCache({ disk: true });
+  const started = performance.now();
+  const cold = buildCatalogV2();
+  const elapsed = performance.now() - started;
+  check(elapsed < 200, '同步 buildCatalogV2 不阻塞（<200 ms）', `${elapsed.toFixed(1)} ms`);
+  check(calls === 0, '同步 buildCatalogV2 不呼叫 discoverModels／spawn');
+  check(rowOf(cold).source === 'builtin-fallback' && rowOf(cold).discoveryNote.includes('查詢中'),
+    '冷啟動尚無快取 → builtin-fallback 並說明查詢中');
+  const flight = refreshCatalogV2();
+  check(flight === refreshCatalogV2({ force: true }), '背景與明確 refresh 共用同一個 Promise（單飛）');
+  const fresh = await flight;
+  process.env.AGY_STUB_DELAY_MS = '0';
+  check(calls === 1 && rowOf(fresh).source === 'vendor-cli', 'refresh 成功 → vendor-cli 且只查一次');
+  check(rowOf(buildCatalogV2()).source === 'vendor-cli', '隨後同步讀到記憶體 vendor-cli');
+  const verifiedAt = rowOf(fresh).verifiedAt;
+  check(rowOf(buildCatalogV2()).verifiedAt === verifiedAt, '記憶體 verifiedAt 不假裝是現在');
+  const persisted = JSON.parse(readFileSync(CACHE, 'utf8')).antigravity;
+  check(JSON.stringify(persisted.models) === JSON.stringify(fixture)
+    && persisted.verifiedAt === verifiedAt && persisted.cliPath === slowStub,
+  '磁碟每個 agent 儲存 models / verifiedAt / cliPath');
+  await refreshCatalogV2();
+  check(calls === 1, '10 分鐘內 refresh 不重查');
+  agy.discoverModels = async () => { calls++; return fixture; };
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + FRESH_TTL_MS + 1;
+    await refreshCatalogV2();
+    check(calls === 2, '記憶體超過 10 分鐘 refresh 會重查');
+  } finally { Date.now = realNow; }
+  await refreshCatalogV2({ force: true });
+  check(calls === 3, 'force:true 忽略記憶體 TTL');
 
-  // 先拿一次真實結果當基準
+  // 模擬新 process：留下步驟 2 的磁碟原值，只清記憶體。失敗不能蓋掉它。
+  writeFileSync(CACHE, JSON.stringify({ antigravity: persisted }));
+  agy.discoverModels = async () => null;
   clearCatalogCache();
-  const before = buildCatalogV2();
-  const agyBefore = before.agents.find((a) => a.agent === 'antigravity');
+  const cached = buildCatalogV2();
+  check(rowOf(cached).source === 'vendor-cli-cached', '磁碟快取必須標 vendor-cli-cached（不是 vendor-cli）');
+  check(rowOf(cached).verifiedAt === verifiedAt && rowOf(cached).discoveryNote.includes('快取'),
+    '新 process 保留原 verifiedAt 並說明快取');
+  const failedCached = await refreshCatalogV2({ force: true });
+  check(rowOf(failedCached).source === 'vendor-cli-cached'
+    && JSON.stringify(modelsOf(failedCached)) === JSON.stringify(fixture)
+    && rowOf(failedCached).discoveryNote.includes('查詢失敗'),
+  '查詢失敗保留磁碟快取與失敗原因', rowOf(failedCached).discoveryNote);
+  check(JSON.stringify(JSON.parse(readFileSync(CACHE, 'utf8')).antigravity) === JSON.stringify(persisted),
+    '失敗不覆寫磁碟 models 或 verifiedAt');
 
-  // 讓查詢失敗（模擬 CLI 換版、輸出格式改變、逾時）
-  agy.discoverModels = () => null;
-  clearCatalogCache();
-  const after = buildCatalogV2();
+  clearCatalogCache({ disk: true });
+  const after = await refreshCatalogV2({ force: true });
   const agyAfter = after.agents.find((a) => a.agent === 'antigravity');
   const entriesAfter = after.entries.filter((e) => e.agent === 'antigravity');
 
   check(
     agyAfter.source === 'builtin-fallback',
-    '★ 查不到 vendor → 降級成 builtin-fallback（不得繼續宣稱 vendor-cli）',
+    '★ 沒有快取且查不到 vendor → 降級成 builtin-fallback（不得繼續宣稱 vendor-cli）',
     agyAfter.source
   );
   check(
@@ -123,22 +201,101 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
     agyAfter.discoveryNote ?? '(null)'
   );
 
+  for (const [name, changed] of [
+    ['cliPath 改變不用舊快取', { ...persisted, cliPath: `${slowStub}.old` }],
+    ['30 天以上的快取不用', { ...persisted, verifiedAt: new Date(Date.now() - 31 * 86400000).toISOString() }],
+    ['未來時間的快取不用', { ...persisted, verifiedAt: new Date(Date.now() + 86400000).toISOString() }],
+  ]) {
+    clearCatalogCache();
+    writeFileSync(CACHE, JSON.stringify({ antigravity: changed }));
+    check(rowOf(buildCatalogV2()).source === 'builtin-fallback', name);
+    await refreshCatalogV2();
+  }
+  for (const invalid of ['{bad json', '[]', '{"antigravity":{"models":[3]}}']) {
+    clearCatalogCache();
+    writeFileSync(CACHE, invalid);
+    check(rowOf(buildCatalogV2()).source === 'builtin-fallback', `壞快取忽略：${invalid}`);
+    await refreshCatalogV2();
+  }
+  clearCatalogCache();
+  writeFileSync(CACHE, JSON.stringify({ antigravity: persisted }));
+  process.env.AGY_CLI_NAME = join(TEMP, 'missing-agy');
+  const missing = rowOf(buildCatalogV2());
+  check(missing.source === 'builtin-fallback' && !missing.binaryFound && missing.discoveryNote.includes('找不到'),
+    'CLI 不存在時不沿用快取且說明原因');
+  process.env.AGY_CLI_NAME = slowStub;
+
+  agy.discoverModels = async () => fixture;
+  await refreshCatalogV2({ force: true });
+  const memoryTime = rowOf(buildCatalogV2()).verifiedAt;
+  agy.discoverModels = async () => { throw new Error('injected rejection'); };
+  const failedMemory = rowOf(await refreshCatalogV2({ force: true }));
+  check(failedMemory.source === 'vendor-cli' && failedMemory.verifiedAt === memoryTime
+    && failedMemory.discoveryNote.includes('injected rejection'), '失敗／reject 保留記憶體成功值與原因');
+
+  // 不替換 discoverModels：用 AGY_CLI_NAME 經過真實 spawn + 計時 + kill + parser。
   agy.discoverModels = realDiscover;
+  process.env.AGY_STUB_DELAY_MS = '2000';
+  process.env.AI_CLI_DISCOVER_TIMEOUT_MS = '500';
+  const trace = join(TEMP, 'timeout-trace.jsonl');
+  process.env.AGY_STUB_TRACE_PATH = trace;
+  const timeoutStarted = performance.now();
+  const timeoutResult = await realDiscover(inspectCliBinary(agy.binary).resolvedPath);
+  check(timeoutResult.models === null && timeoutResult.note?.includes('逾時') && timeoutResult.note.includes('500'),
+    '真實 discover 逾時回 null 與逾時原因', JSON.stringify(timeoutResult));
+  check(performance.now() - timeoutStarted < 1400, '逾時結果不等 2 秒 stub 結束');
+  await delay(Math.max(0, 2300 - (performance.now() - timeoutStarted)));
+  const events = existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n').map(JSON.parse) : [];
+  const pid = events.find((e) => e.event === 'started')?.pid;
+  let alive = false;
+  try { if (pid) { process.kill(pid, 0); alive = true; } } catch { /* 已終止 */ }
+  check(Boolean(pid) && !alive && !events.some((e) => e.event === 'completed'),
+    '逾時必須 kill 子程序（不能留到它印出模型）', JSON.stringify(events));
+  delete process.env.AGY_STUB_TRACE_PATH;
+  clearCatalogCache({ disk: true });
+  check(rowOf(await refreshCatalogV2({ force: true })).discoveryNote.includes('逾時'),
+    '真實逾時原因進 catalog.discoveryNote');
+  process.env.AGY_CLI_NAME = errorStub;
+  clearCatalogCache({ disk: true });
+  const errorResult = await realDiscover(inspectCliBinary(agy.binary).resolvedPath);
+  check(errorResult.models === null && errorResult.note === 'Error: Eligibility check failed: stub network unavailable',
+    '真實 discover 非零退出取 stderr 第一行非空文字', JSON.stringify(errorResult));
+  check(rowOf(await refreshCatalogV2({ force: true })).discoveryNote.includes('Eligibility check failed'),
+    'Eligibility check failed 進 catalog.discoveryNote');
+  const missingResult = await realDiscover(join(TEMP, 'missing-agy'));
+  check(missingResult.models === null && Boolean(missingResult.note), '真實 spawn error 永不 reject');
+  process.env.AGY_CLI_NAME = slowStub;
+  process.env.AGY_STUB_DELAY_MS = '0';
+  process.env.AI_CLI_DISCOVER_TIMEOUT_MS = '15000';
+  process.env.AGY_STUB_EMPTY = 'true';
+  const emptyResult = await realDiscover(slowStub);
+  check(emptyResult.models === null && emptyResult.note === '輸出裡沒有模型 id', '真實空輸出回 null 與原因');
+  delete process.env.AGY_STUB_EMPTY;
   clearCatalogCache();
 
-  // 只在機器上真的有 agy 時才斷言「有問到」——沒有 agy 的機器上
-  // 這個環境本來就給不出 vendor-cli，硬斷言會是假紅燈。
-  if (agyBefore.binaryFound) {
+  // 保留有 agy / 沒有 agy 的分支；可重現測試仍把實際執行路徑指向本機 stub。
+  // 真實 discover 不替換，trace 證明真的帶 models 參數啟動 CLI，絕不連 vendor。
+  if (hadAgy) {
+    const successTrace = join(TEMP, 'success-trace.jsonl');
+    process.env.AGY_STUB_TRACE_PATH = successTrace;
+    const agyBefore = rowOf(await refreshCatalogV2({ force: true }));
+    const invoked = existsSync(successTrace) && readFileSync(successTrace, 'utf8').includes('"args":["models"]');
     check(
-      agyBefore.source === 'vendor-cli',
+      agyBefore.source === 'vendor-cli' && invoked,
       '★ 有 agy 時真的去問了 CLI（不是照抄靜態清單）',
       agyBefore.source
     );
     const restored = buildCatalogV2().agents.find((a) => a.agent === 'antigravity');
     check(restored.source === 'vendor-cli', '還原後回到 vendor-cli', restored.source);
+    delete process.env.AGY_STUB_TRACE_PATH;
   } else {
     console.log('  [SKIP] 這台機器沒有 agy，跳過「真的問到 vendor」的斷言');
   }
+
+  const cli = await promisify(execFile)(process.execPath, [join(ROOT, 'dist/bin/ai-cli.js'), 'models'], {
+    env: { ...process.env, AI_CLI_CATALOG_CACHE_PATH: join(TEMP, 'cli-cache.json') }, timeout: 10000,
+  });
+  check(rowOf(JSON.parse(cli.stdout).catalogV2).source === 'vendor-cli', 'ai-cli models 等待 refresh 後回 payload');
 }
 
 // ── 3b. ★ 加了 --model 之後，既有 alias 不得因此壞掉 ──────────
@@ -232,7 +389,7 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
 
   // 取捨不在 discoverModels（那一層說實話），而在目錄層的 routable 標記。
   clearCatalogCache();
-  const catalog = buildCatalogV2();
+  const catalog = await refreshCatalogV2({ force: true });
   const agyEntries = catalog.entries.filter((e) => e.agent === 'antigravity');
   const agyRow = catalog.agents.find((a) => a.agent === 'antigravity');
 
@@ -317,9 +474,20 @@ const { buildDoctorStatus } = await load('core/binary-resolver.js');
   );
 }
 
-const passed = results.filter(([ok]) => ok).length;
-console.log(`\n=== ${passed}/${results.length} passed ===`);
-if (passed !== results.length) {
-  for (const [ok, name] of results) if (!ok) console.log(`  FAILED: ${name}`);
-  process.exitCode = 1;
+} catch (error) {
+  check(false, 'catalog 測試流程不得拋例外', error.stack ?? String(error));
+} finally {
+  // 先收掉背景單飛再清除，避免下一輪或 exit 後才回寫暫存目錄。
+  await refreshCatalogV2();
+  clearCatalogCache({ disk: true });
+  agy.discoverModels = realDiscover;
+  for (const key of envKeys) {
+    if (previousEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = previousEnv[key];
+  }
+  rmSync(TEMP, { recursive: true, force: true });
 }
+const passed = results.filter(([ok]) => ok).length;
+const failed = results.length - passed;
+console.log(`PASS: ${passed} passed, ${failed} failed`);
+process.exitCode = failed ? 1 : 0;

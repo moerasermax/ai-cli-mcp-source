@@ -102,12 +102,19 @@ export interface ReasoningSupport {
  *   是硬編的**，讀的人就沒有理由懷疑它。
  *
  *   `vendor-cli` = 這一輪真的去問過 vendor CLI。
+ *   `vendor-cli-cached` = 先前行程問到並存到磁碟的值，這一輪尚未確認。
  *   `builtin-fallback` = 原始碼裡的靜態清單，**未經確認**，可能已過時。
  *
  *   消費端必須把 `builtin-fallback` 當成「參考值」而不是事實。
  *   這比「記得更新註解」可靠，因為它不依賴任何人的記性。
  */
-export type ModelListSource = 'vendor-cli' | 'builtin-fallback';
+export type ModelListSource = 'vendor-cli' | 'vendor-cli-cached' | 'builtin-fallback';
+
+/** 查詢可附診斷；models 為 null 代表失敗，note 交給 catalog 的 discoveryNote。 */
+export interface ModelDiscoveryResult {
+  models: readonly string[] | null;
+  note: string | null;
+}
 
 /**
  * 計費路徑。**不同的錢，不能混在同一組沒有區別的選項裡。**
@@ -136,12 +143,12 @@ export interface AgentDefinition {
   billingRoute?: BillingRoute;
 
   /**
-   * 向 vendor CLI 問它**現在**支援哪些模型。
+   * 非同步向 vendor CLI 問它**現在**支援哪些模型，不得同步阻塞呼叫端。
    *
-   * 實作必須：有逾時、**永不拋例外**（問不到就回 null）。
-   * 回 null 不是錯誤，是「這一輪沒問到」——呼叫端據此降級並照實標示。
+   * 實作必須：有逾時、**永不拋例外／reject**（問不到就回 null，或 models: null）。
+   * 可回 { models, note } 說明失敗原因。失敗時呼叫端保留既有成功值並照實標示。
    */
-  discoverModels?(cliPath: string): readonly string[] | null;
+  discoverModels?(cliPath: string): Promise<readonly string[] | null | ModelDiscoveryResult>;
 
   /**
    * 判斷一個（已解析 alias 後的）model 是否屬於此 agent。

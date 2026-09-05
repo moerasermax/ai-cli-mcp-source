@@ -23,6 +23,7 @@
  * （自帶 try/finally 還原），所以這支腳本不能與其他會動該檔的東西並行。
  */
 
+import './stubs/catalog-test-env.mjs';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';

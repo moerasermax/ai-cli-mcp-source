@@ -21,6 +21,8 @@
 - 改完一定要能編譯：`npm run build`（或 `npm run typecheck`）必須零錯誤。
 - 有對應的驗證腳本（`verify-*.mjs`）時，跑過確認通過；新功能盡量補一支。
 - `npm test` 串起八支驗證腳本（breaker / rate / direct-api / alias-config / catalog-source / exec-contract / mcp / liveness），都不會打真實 AI 供應商。
+- `verify-catalog-source.mjs` 涵蓋非同步查詢、單飛、10 分鐘 TTL、30 天磁碟快取及 agy 的逾時／stderr／kill；`verify-mcp.mjs` 對三個入口驗冷啟動 `tools/list < 1 秒` 與 `models` 等待規則。兩支自建暫存快取並使用 `tools/stubs/agy-models-*`，不連真實 vendor。
+- `npm test` 的 alias-config 入口以 `--import ./tools/stubs/catalog-test-env.mjs` 隔離背景模型查詢；突變 harness 也載入它，確保既有 payload 測試不碰使用者的 `catalog-cache.json`。單跑 alias-config 時請同樣加上此 `--import`。
 - `verify-liveness.mjs` 用 `tools/stubs/slow-agent` 驗證 MCP / file 跨行程 liveness、wait 逾時回傳、CLI exit 3 與 lost 對照組；暫存檔放 repo 的 `dist/`。
 - **修完 bug 請順手加一個突變**到 `tools/mutations.json`：把修補改壞、確認對應斷言真的會 FAIL。
   這個專案已經吃過三次假綠燈的虧（測試看起來在測、其實測不到）。用法見 `tools/mutation-test.mjs` 檔頭。

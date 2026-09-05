@@ -14,10 +14,10 @@
  * + process-service.js _startAntigravityPty。
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentDefinition, BuildCommandInput, BuiltCommand } from './types.js';
+import type { AgentDefinition, BuildCommandInput, BuiltCommand, ModelDiscoveryResult } from './types.js';
 
 /**
  * 靜態後備清單。**只有在問不到 `agy models` 時才會被用到。**
@@ -38,8 +38,35 @@ const ANTIGRAVITY_FALLBACK_MODELS = [
   'gemini-3.5-flash-high',
 ] as const;
 
-/** `agy models` 的逾時。它是本機讀設定，正常遠低於此。 */
-const DISCOVER_TIMEOUT_MS = 5_000;
+/**
+ * `agy models` 是網路呼叫，會先做 loadCodeAssist eligibility check。
+ * 2026-09-05 agy 1.1.26 暖機八次：1739 / 1755 / 1762 / 1838 / 1906 /
+ * 2487 / 2729 / 3972 ms；網路尾延遲可能超過舊的 5 秒上限，並非本機讀設定。
+ * 非同步 + 快取才是避免卡住 MCP 的解法；15 秒只限制背景／明確查詢的等待。
+ */
+const DISCOVER_TIMEOUT_MS = 15_000;
+
+/** Windows 的 .cmd 有 shell 子層，必須連子程序一起終止。 */
+function killDiscovery(child: ChildProcess): void {
+  if (!child.pid) return;
+  const killParent = (): void => {
+    try { child.kill('SIGKILL'); } catch { /* 已退出或 OS 拒絕；不可讓計時器拋例外。 */ }
+  };
+  try {
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      killer.on('error', killParent);
+      killer.on('exit', (code) => { if (code !== 0) killParent(); });
+    } else {
+      process.kill(-child.pid, 'SIGKILL');
+    }
+  } catch {
+    killParent();
+  }
+}
 
 /** agy 的模型 id：小寫英數開頭，只含小寫英數、點與連字號。與 normalizeAgyModel 同一套。 */
 const AGY_MODEL_ID = /^[a-z0-9][a-z0-9.-]*$/;
@@ -72,33 +99,69 @@ export function parseAgyModelsOutput(stdout: string): readonly string[] | null {
 /**
  * 問 agy 現在支援哪些模型。
  *
- * 失敗一律回 null（CLI 不在、逾時、非零退出、輸出空）——
+ * 失敗一律回 models: null（CLI 不在、逾時、非零退出、輸出空）與原因——
  * **不得回半套清單**，那會讓呼叫端以為問到了。
  */
-function discoverModels(cliPath: string): readonly string[] | null {
-  try {
-    const result = spawnSync(cliPath, ['models'], {
-      encoding: 'utf-8',
-      timeout: DISCOVER_TIMEOUT_MS,
-      windowsHide: true,
-    });
-    if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return null;
-    /*
-      **agy 說什麼就回報什麼**，不在這裡過濾。
+function discoverModels(cliPath: string): Promise<ModelDiscoveryResult> {
+  return new Promise((resolve) => {
+    const configured = Number(process.env.AI_CLI_DISCOVER_TIMEOUT_MS);
+    const timeoutMs = Number.isInteger(configured) && configured > 0 && configured <= 2_147_483_647
+      ? configured : DISCOVER_TIMEOUT_MS;
+    let child: ChildProcess;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (models: readonly string[] | null, note: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ models, note });
+    };
+    try {
+      const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cliPath);
+      child = spawn(needsShell ? (process.env.ComSpec || 'cmd.exe') : cliPath,
+        needsShell ? ['/d', '/s', '/c', `""${cliPath}" models"`] : ['models'], {
+          windowsHide: true,
+          windowsVerbatimArguments: needsShell,
+          detached: process.platform !== 'win32',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      let stdout = '';
+      let stderr = '';
+      child.stdout!.setEncoding('utf8');
+      child.stderr!.setEncoding('utf8');
+      child.stdout!.on('data', (data: string) => { if (!settled) stdout += data; });
+      child.stderr!.on('data', (data: string) => { if (!settled) stderr += data; });
+      child.on('error', (error) => finish(null, error.message));
+      timer = setTimeout(() => {
+        killDiscovery(child);
+        finish(null, `\`agy models\` 逾時（>${timeoutMs} ms）`);
+      }, timeoutMs);
+      child.on('close', (code) => {
+        if (settled) return;
+        if (code !== 0) {
+          finish(null, stderr.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+            ?? `\`agy models\` 非零退出（${code}）`);
+          return;
+        }
+        /*
+          **agy 說什麼就回報什麼**，不在這裡過濾。
 
-      2026-08-22 的第一版把「本框架路由不到的名字」（agy 代理的 `claude-sonnet-4-6`、
-      `claude-opus-4-6-thinking`、`gpt-oss-120b-medium`）在這裡就濾掉了。動機沒錯
-      ——照單全收會讓 `run` 的候選名單多出「列得出來、選了卻被 claude 的 catch-all
-      接走」的選項——但做法錯了：目錄標著 `vendor-cli`（意思是「這一輪問過 CLI」），
-      實際上卻默默少三筆，而「少了」這件事在輸出裡完全看不見。
-      那正是 catalog-v2 這一層存在的理由所要防的病，只是換了個位置發作。
+          2026-08-22 的第一版把「本框架路由不到的名字」（agy 代理的 `claude-sonnet-4-6`、
+          `claude-opus-4-6-thinking`、`gpt-oss-120b-medium`）在這裡就濾掉了。動機沒錯
+          ——照單全收會讓 `run` 的候選名單多出「列得出來、選了卻被 claude 的 catch-all
+          接走」的選項——但做法錯了：目錄標著 `vendor-cli`（意思是「這一輪問過 CLI」），
+          實際上卻默默少三筆，而「少了」這件事在輸出裡完全看不見。
+          那正是 catalog-v2 這一層存在的理由所要防的病，只是換了個位置發作。
 
-      現在改成：這一層說實話，「能不能派工」由目錄層的 `routable` 標記表達。
-    */
-    return parseAgyModelsOutput(result.stdout);
-  } catch {
-    return null;
-  }
+          現在改成：這一層說實話，「能不能派工」由目錄層的 `routable` 標記表達。
+        */
+        const models = parseAgyModelsOutput(stdout);
+        finish(models, models === null ? '輸出裡沒有模型 id' : null);
+      });
+    } catch (error) {
+      finish(null, error instanceof Error ? error.message : String(error));
+    }
+  });
 }
 
 /**
@@ -228,7 +291,7 @@ function resolveAntigravityLocalPath(): string {
  *   `antigravity/claude-sonnet-4-6`」。實查沒有這回事——selectAgentForModel
  *   只拿整個字串問 matchesModel，沒有任何地方會拆 `<agent>/<model>`。
  *   那個寫法只是目錄的顯示 id。要真的支援得先實作路由，在那之前不要
- *   把它寫成用法。discoverModels 也因此不把這些名字列進清單。
+ *   把它寫成 run 的用法。discoverModels 仍照列這些名字，由 catalog 標成 routable: false。
  */
 export function matchesAgyModel(model: string): boolean {
   return (
