@@ -1,6 +1,6 @@
 /**
  * `ai-cli` 指令列介面。對應 dist/app/cli.js。
- * 子指令：run, wait, peek, ps, result, kill, cleanup, doctor, models, mcp, usage, help。
+ * 子指令：run, wait, peek, ps, result, kill, cleanup, doctor, models, mcp, update, usage, help。
  *
  * usage 改為透過環境變數 AI_CLI_USAGE_PLUGIN_BIN 設定外部 plugin（見 plugins/usage.ts）。
  */
@@ -13,6 +13,7 @@ import { refreshCatalogV2 } from '../models/catalog-v2.js';
 import { runExec } from './exec.js';
 import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
 import { runUsagePlugin } from '../plugins/usage.js';
+import { runUpdateCli } from '../core/updater.js';
 
 export const CLI_HELP_TEXT = `Usage: ai-cli <command> [options]
 
@@ -25,6 +26,7 @@ Commands:
   kill      Terminate a tracked pid
   cleanup   Remove completed and failed tracked processes
   doctor    Check supported AI CLI binaries
+  update    Check/apply updates (update [--check] [--json])
   exec      Run an agent in the foreground (NDJSON frames, caller owns the process)
   models    List supported models and aliases
   mcp       Start the MCP server
@@ -303,6 +305,8 @@ export async function runCli(argv: string[], deps: Partial<CliDeps> = {}): Promi
     await startMcpServer();
     return 0;
   }
+
+  if (command === 'update') return runUpdateCli(argv.slice(1), { stdout });
 
   if (command === 'usage') {
     const { flags } = parseArgs(argv.slice(1));

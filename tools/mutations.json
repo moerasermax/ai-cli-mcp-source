@@ -373,5 +373,45 @@
     "from": "    await refreshCatalogV2();",
     "to": "    void refreshCatalogV2().catch(() => {});",
     "expect": "ai-cli models 等待 refresh 後回 payload"
+  },
+  {
+    "name": "更新失敗不 reset 回舊 HEAD",
+    "file": "src/core/updater.ts",
+    "script": "verify-update.mjs",
+    "from": "    const reset = await run('git', ['reset', '--hard', prev], MINUTE);",
+    "to": "    const reset = { ok: true };",
+    "expect": "build 失敗回滾並重新 build"
+  },
+  {
+    "name": "更新略過未 commit 追蹤檔守門",
+    "file": "src/core/updater.ts",
+    "script": "verify-update.mjs",
+    "from": "      if (dirty) return '有未 commit 的追蹤檔改動，拒絕更新';",
+    "to": "      if (false) return '有未 commit 的追蹤檔改動，拒絕更新';",
+    "expect": "髒樹未 commit 拒絕且完全不動"
+  },
+  {
+    "name": "更新檢查不節流每次 fetch",
+    "file": "src/core/updater.ts",
+    "script": "verify-update.mjs",
+    "from": "  if (!options.force && status.checkedAt && Date.now() - Date.parse(status.checkedAt) < updateCheckIntervalMs()) return status;",
+    "to": "  if (false) return status;",
+    "expect": "節流不 fetch 且回原狀態"
+  },
+  {
+    "name": "更新允許 HEAD 不是遠端祖先",
+    "file": "src/core/updater.ts",
+    "script": "verify-update.mjs",
+    "from": "      if (!ancestor.ok) return '本機含非遠端祖先的 commit，無法 fast-forward，拒絕更新';",
+    "to": "      if (false) return '本機含非遠端祖先的 commit，無法 fast-forward，拒絕更新';",
+    "expect": "非祖先在 pull 前拒絕且不回滾"
+  },
+  {
+    "name": "更新成功不寫 notice",
+    "file": "src/core/updater.ts",
+    "script": "verify-update.mjs",
+    "from": "      notice,\n    };",
+    "to": "      notice: null,\n    };",
+    "expect": "成功 notice 持續存在並含版本重連網址標題"
   }
 ]

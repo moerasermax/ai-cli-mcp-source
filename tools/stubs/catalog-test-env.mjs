@@ -1,4 +1,4 @@
-/** alias 舊測試及突變 harness 的查詢隔離；不改使用者快取、不連真實 vendor。 */
+/** 驗證與突變測試共用：設定、狀態、快取全部隔離；禁止自動更新及 git 網路協定。 */
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,9 +7,15 @@ import { fileURLToPath } from 'node:url';
 // 不預先實體化 node:fs 的 ESM facade，保留 verify-alias-config 的讀取注入能力。
 const fs = createRequire(import.meta.url)('node:fs');
 const temp = fs.mkdtempSync(join(tmpdir(), 'ai-cli-catalog-tests-'));
+process.env.AI_CLI_AUTO_UPDATE = 'off';
+process.env.GIT_ALLOW_PROTOCOL = 'file';
+process.env.AI_CLI_CONFIG_DIR = join(temp, 'config');
+process.env.AI_CLI_STATE_DIR = join(temp, 'state');
+process.env.AI_CLI_PROVIDERS_PATH = join(temp, 'providers.json');
+fs.writeFileSync(process.env.AI_CLI_PROVIDERS_PATH, '{"providers":{}}');
 const stub = fileURLToPath(new URL(process.platform === 'win32'
   ? './agy-models-error.cmd' : './agy-models-error.mjs', import.meta.url));
 if (process.platform !== 'win32') fs.chmodSync(stub, 0o755);
 process.env.AI_CLI_CATALOG_CACHE_PATH = join(temp, 'catalog-cache.json');
 process.env.AGY_CLI_NAME = stub;
-process.on('exit', () => fs.rmSync(temp, { recursive: true, force: true }));
+process.on('exit', () => { try { fs.rmSync(temp, { recursive: true, force: true }); } catch {} });

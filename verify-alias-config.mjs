@@ -7,18 +7,18 @@
  *   2. 端到端：起一個真的 MCP server（stdio JSON-RPC），驗 set_config 的驗證、寫入、
  *      unset、未知欄位保留，以及「同一個 process 內改設定，組出的指令立刻跟著變」。
  *
- * 會暫時改寫 ~/.local/share/ai-cli/config.json，結束時還原。
+ * 設定、狀態、快取都由 test-env 指向暫存目錄，不碰真實使用者檔案。
  * 用法：node verify-alias-config.mjs
  */
 
+import './tools/stubs/catalog-test-env.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const CONFIG = join(homedir(), '.local', 'share', 'ai-cli', 'config.json');
+const CONFIG = join(process.env.AI_CLI_CONFIG_DIR, 'config.json');
 
 /**
  * fs 刻意走 createRequire 而**不是** `import ... from 'node:fs'`。
@@ -76,7 +76,7 @@ const writeConfig = (obj) => {
   writeFileSync(CONFIG, `${JSON.stringify(obj, null, 2)}\n`);
 };
 
-/** 這支測試會改寫使用者真實的 config.json，還原必須無條件發生（含拋例外的路徑）。 */
+/** 暫存 config 也要無條件還原，避免一個注入情境影響後面的斷言。 */
 function restoreConfig(hadConfig) {
   // 測試中途會把 config.json 換成「同名目錄」來製造讀取錯誤。如果那段沒清乾淨就跳出來，
   // 這裡的 copyFileSync 會拿到 EISDIR 而拋錯 —— 還原失敗，使用者的設定就只剩備份檔了。
@@ -630,12 +630,12 @@ async function mcpChecks() {
 }
 
 // 備份與還原包在 try/finally 外層：任何一步拋例外（import 失敗、spawn 失敗、
-// JSON parse 失敗）都不能把使用者的 config.json 留在測試中途的狀態。
+// JSON parse 失敗）都不能把暫存 config.json 留在測試中途的狀態。
 const hadConfig = existsSync(CONFIG);
 if (hadConfig) copyFileSync(CONFIG, BACKUP);
 const baseConfig = hadConfig ? JSON.parse(readFileSync(CONFIG, 'utf-8')) : {};
 
-// finally 對 Ctrl-C 沒有保護力。這支測試動的是使用者真實的設定檔，
+// finally 對 Ctrl-C 沒有保護力。這支測試動的是隔離的暫存設定檔，
 // 被中斷時至少要把它還原回去再走。
 let restored = false;
 const restoreOnce = () => {

@@ -5,6 +5,7 @@
 // 但這支腳本當時硬編 `C:\Users\Moera\...\dist\server.js`，只測得到其中一個入口，
 // 於是那個 bug 從框架初版活到 4.1.1 都沒被抓到。典型的假綠燈。
 // 路徑一律相對本檔解析，不要再寫死任何機器上的絕對路徑。
+import './tools/stubs/catalog-test-env.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -62,6 +63,7 @@ async function checkEntry(entry) {
   const trace = join(TEMP, `${index}-trace.jsonl`);
   const transport = new StdioClientTransport({ command: process.execPath, args: entry.args, env: {
     ...process.env,
+    AI_CLI_AUTO_UPDATE: 'off',
     AGY_CLI_NAME: stub,
     AI_CLI_CATALOG_CACHE_PATH: join(TEMP, `${index}-cache.json`),
     AI_CLI_DISCOVER_TIMEOUT_MS: '15000',

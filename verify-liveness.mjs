@@ -1,18 +1,18 @@
 /**
  * 不打真實 vendor：用慢速 NDJSON stub 驗證 MCP stdio JSON-RPC、file 跨行程讀取及 CLI exit code。
- * 所有暫存檔都在 repo/dist；config.json 暫時清空以隔離使用者 alias，finally / signal 原樣還原。
+ * job 暫存檔在 repo/dist；設定與更新狀態由 test-env 隔離，完全不碰使用者目錄。
  * 失敗必須印 stdout 的 `FAIL <名稱>`，供 tools/mutation-test.mjs 指認對應斷言。
  */
+import './tools/stubs/catalog-test-env.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync, utimesSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const TEMP = mkdtempSync(join(ROOT, 'dist', 'verify-liveness-'));
-const CONFIG = join(homedir(), '.local', 'share', 'ai-cli', 'config.json');
+const CONFIG = join(process.env.AI_CLI_CONFIG_DIR, 'config.json');
 const backup = existsSync(CONFIG) ? readFileSync(CONFIG) : null;
 if (backup) writeFileSync(join(TEMP, 'config.backup'), backup);
 const stub = join(ROOT, 'tools', 'stubs', process.platform === 'win32' ? 'slow-agent.cmd' : 'slow-agent.mjs');
@@ -20,6 +20,7 @@ if (process.platform !== 'win32') chmodSync(stub, 0o755);
 const providers = join(TEMP, 'providers.json');
 writeFileSync(providers, '{"providers":{}}');
 const envOverrides = {
+  AI_CLI_AUTO_UPDATE: 'off',
   CODEX_CLI_NAME: stub, CLAUDE_CLI_NAME: stub, AGY_CLI_NAME: stub,
   SLOW_AGENT_TOTAL_SEC: '6', AI_CLI_BREAKER_DISABLED: 'true', AI_CLI_PROVIDERS_PATH: providers,
 };

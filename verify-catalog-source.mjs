@@ -18,6 +18,7 @@
  * 用法：node verify-catalog-source.mjs
  */
 
+import './tools/stubs/catalog-test-env.mjs';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -293,7 +294,7 @@ try {
   }
 
   const cli = await promisify(execFile)(process.execPath, [join(ROOT, 'dist/bin/ai-cli.js'), 'models'], {
-    env: { ...process.env, AI_CLI_CATALOG_CACHE_PATH: join(TEMP, 'cli-cache.json') }, timeout: 10000,
+    env: { ...process.env, AI_CLI_AUTO_UPDATE: 'off', AI_CLI_CATALOG_CACHE_PATH: join(TEMP, 'cli-cache.json') }, timeout: 10000,
   });
   check(rowOf(JSON.parse(cli.stdout).catalogV2).source === 'vendor-cli', 'ai-cli models 等待 refresh 後回 payload');
 }

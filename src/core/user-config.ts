@@ -37,7 +37,7 @@ export interface UserConfig {
   aliasModel?: Record<string, string>;
 }
 
-export const CONFIG_DIR = join(homedir(), '.local', 'share', 'ai-cli');
+export const CONFIG_DIR = process.env.AI_CLI_CONFIG_DIR || join(homedir(), '.local', 'share', 'ai-cli');
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 
 /** 設定檔不存在時的內建行為（1:1 沿用原本 dist 的 ultra alias 預設）。 */

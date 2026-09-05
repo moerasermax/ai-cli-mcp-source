@@ -32,6 +32,7 @@ import { validatePeekPids, validatePeekTimeSec } from '../core/peek.js';
 import { ProcessService } from '../core/process-service.js';
 import { CircuitBreakerError } from '../core/circuit-breaker.js';
 import { UsageService } from '../plugins/usage-service.js';
+import { consumeNotice, scheduleBackgroundUpdates } from '../core/updater.js';
 
 const require = createRequire(import.meta.url);
 const SERVER_VERSION = (require('../../package.json') as { version: string }).version;
@@ -45,6 +46,7 @@ export class AiCliMcpServer {
   private usageService: UsageService;
   private sigintHandler?: () => Promise<void>;
   private closed: Promise<void>;
+  private stopUpdates?: () => void;
 
   constructor() {
     const cliPaths = resolveAllCliPaths();
@@ -58,7 +60,7 @@ export class AiCliMcpServer {
 
     this.server = new Server(
       { name: 'ai_cli_mcp', version: SERVER_VERSION },
-      { capabilities: { tools: {} } }
+      { capabilities: { tools: {}, logging: {} } }
     );
 
     this.setupToolHandlers();
@@ -67,7 +69,7 @@ export class AiCliMcpServer {
     // Protocol.connect() 只覆寫 transport.onclose（它再轉呼叫 this.server.onclose），
     // 不會蓋掉這一行。
     this.closed = new Promise<void>((resolve) => {
-      this.server.onclose = () => resolve();
+      this.server.onclose = () => { this.stopUpdates?.(); resolve(); };
     });
     this.sigintHandler = async () => {
       await this.server.close();
@@ -513,7 +515,7 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
         session_id: toolArguments.session_id as string | undefined,
         reasoning_effort: toolArguments.reasoning_effort as string | undefined,
       });
-      return this.jsonResult(result);
+      return this.jsonResult({ ...result, updateNotice: consumeNotice() });
     } catch (error) {
       // 熔斷器攔截：回傳清楚的錯誤，讓呼叫端知道是框架迴圈防護而非一般失敗。
       if (error instanceof CircuitBreakerError) {
@@ -620,6 +622,14 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('AI CLI MCP server running on stdio');
+    this.stopUpdates = scheduleBackgroundUpdates(async (message) => {
+      console.error(message.replace(/\r?\n/g, ' | '));
+      // MCP 的 logging 是 server capability；client 沒有標準 logging capability。
+      // 初始化後透過 SDK 發送，並遵守 client 的 logging/setLevel。
+      if (this.server.getClientCapabilities()) {
+        await this.server.sendLoggingMessage({ level: 'warning', logger: 'ai-cli.updater', data: message });
+      }
+    });
   }
 
   /**
@@ -641,6 +651,7 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
   }
 
   async cleanup(): Promise<void> {
+    this.stopUpdates?.();
     if (this.sigintHandler) {
       process.removeListener('SIGINT', this.sigintHandler);
     }

@@ -17,6 +17,7 @@
  * 用法：node verify-exec-contract.mjs
  */
 
+import './tools/stubs/catalog-test-env.mjs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';

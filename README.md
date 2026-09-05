@@ -17,6 +17,67 @@ claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 自動跑 `npm run build`，正常情況下不需要另外手動 build。
 需要 Node `^20.19.0 || >=22.12.0`。細節與 PowerShell 版指令見下方「掛到 Claude Code」。
 
+## 自動更新
+
+三個 MCP 入口都在 transport 連線後正常服務，**3 秒後背景檢查 → 子程序背景套用 → 下次啟動生效**。
+預設每小時檢查一次 `origin`；其他機器 push 新 commit 後，這台機器會在下一輪檢查發現。
+更新不阻塞 MCP 啟動，也不自動終止目前的 server 或 agent job。
+
+成功後 stderr 與 MCP `notifications/message`（warning）會提示：
+
+```text
+ai-cli 已更新至最新版（1234567 → abcdef0，2 個 commit），請重新啟動 MCP（Claude Code：/mcp 重連）。更新內容請至 https://github.com/moerasermax/ai-cli-mcp-source/blob/master/CHANGELOG.md 查看
+abcdef0 fix: 最新修正標題
+7654321 feat: 另一個改動標題
+```
+
+`doctor.update` 包含 `policy / checkedAt / local / remote / behind / available / lastApplied / notice`；
+MCP `run` 啟動回傳與 `models` payload 另有 `updateNotice`（沒有提示為 `null`）。
+讀取不會清除提示；新版啟動時，若 `lastApplied.to` 等於本次啟動的 HEAD，才清除 `notice`，
+並在 stderr 印 `ai-cli 已是最新版 <sha7>`。MCP logging 由 server 宣告能力，通知遵守 client 的 `logging/setLevel`。
+
+| `AI_CLI_AUTO_UPDATE` | 行為 |
+|---|---|
+| `on`（預設） | 背景檢查，發現新版後自動套用 |
+| `check` | 只檢查並提示有新版，不套用 |
+| `off` | 更新器完全不碰網路，仍可讀取既有狀態與提示 |
+
+可在 MCP 的 `env` 中設定 policy、`AI_CLI_UPDATE_CHECK_INTERVAL_SEC`（預設 `3600`）與
+`AI_CLI_UPDATE_BRANCH`。分支優先序為環境變數 → 目前分支 upstream 的分支名稱 → `master`，
+實際 fetch/pull 的 remote 都是 `origin`。
+
+狀態目錄為 `AI_CLI_STATE_DIR` 或預設 `~/.local/state/ai-cli`：
+
+- `update.json`：`{ checkedAt, branch, local, remote, behind, available, lastApplied, notice }`。
+  `lastApplied` 為 `null` 或 `{ at, from, to, ok, commits: [{ sha, subject }], message }`。
+  時間用 ISO 8601，SHA 保存完整值；寫入採同目錄 tmp + rename，壞檔當空。
+- `update.lock`：pid、時間與鎖識別碼。避免多個 server 同時套用；pid 不存在或超過 30 分鐘可回收。
+
+以下情況不會自動套用：安裝不是含 `.git` 與 `package.json` 的 clone、追蹤檔有未 commit 改動、
+目前分支不符、HEAD 不是遠端祖先（不能 fast-forward），或另一個更新程序持鎖。
+未追蹤檔不影響髒樹判定，git 自身仍會拒絕覆蓋衝突檔案。
+更新採 `pull --ff-only`；套件檔變動時執行 `npm install --no-audit --no-fund`（prepare 建置），
+其他變動只執行 `npm run build`，最後以 `node dist/bin/ai-cli.js doctor` exit 0 做煙霧測試。
+失敗會 reset 回原 HEAD 並重新 build；回滾失敗會明確回報，詳細指令結果在手動更新的 JSON `log`。
+Windows 若其他 server 鎖住 `node-pty` 原生模組而出現 EPERM／EBUSY，會回滾並提示
+「其他 ai-cli server 仍在執行，鎖住原生模組；關閉後再更新」，後續檢查會重試。
+回滾只恢復原始碼與建置，不還原 `node_modules` 的完整安裝快照。
+
+手動操作（尚未加入 PATH 時，以 `node dist/bin/ai-cli.js` 代替 `ai-cli`）：
+
+```bash
+ai-cli update --check          # 強制檢查，略過節流，不套用
+ai-cli update                 # 強制檢查並套用；仍遵守 on/check/off
+ai-cli update --json           # 結構化結果與指令 log
+ai-cli doctor                 # 本機診斷與已保存的 update 區塊，不連更新網路
+```
+
+`check`／`off` 模式要手動套用時，先將 `AI_CLI_AUTO_UPDATE` 改為 `on`。
+更新內容網址優先取 `package.json.homepage`，否則由 GitHub origin 推導該分支的 `CHANGELOG.md`。
+
+**安全提醒：這是 public repo，協作者都有 push 權限。push 到 master 等於部署到所有啟用自動更新的機器，
+push 前必須確認 `npm test` 全綠。**
+
 ## 架構
 
 ```
@@ -33,6 +94,7 @@ src/
 │   ├─ pty-runner.ts          # ConPTY（agy 等需要真實 TTY 的 CLI）
 │   ├─ binary-resolver.ts     # CLI 二進位解析
 │   ├─ user-config.ts        # ~/.local/share/ai-cli/config.json 讀寫（依內容快取）
+│   ├─ updater.ts            # 背景檢查／子程序更新、鎖、回滾與重啟提示
 │   ├─ circuit-breaker.ts    # AI 啟動熔斷器
 │   ├─ peek.ts / peek-extractor.ts / process-result.ts / reasoning.ts / ansi.ts / debug.ts
 │   └─ doctor.ts              # doctor + 解析所有 CLI 路徑
@@ -75,7 +137,11 @@ npm run typecheck  # 只型別檢查
 | 變數 | 用途 |
 |------|------|
 | `MCP_CLAUDE_DEBUG=true` | 開啟 debug 日誌到 stderr |
-| `AI_CLI_STATE_DIR` | CLI detached job 的狀態目錄（預設 `~/.local/state/ai-cli`） |
+| `AI_CLI_STATE_DIR` | CLI detached job 與更新狀態目錄（預設 `~/.local/state/ai-cli`） |
+| `AI_CLI_CONFIG_DIR` | 使用者設定目錄（預設 `~/.local/share/ai-cli`）；測試以此隔離 config.json |
+| `AI_CLI_AUTO_UPDATE` | `on`（預設）／`check`／`off`，見「自動更新」 |
+| `AI_CLI_UPDATE_CHECK_INTERVAL_SEC` | 更新檢查間隔秒數，預設 `3600`；無效值使用預設 |
+| `AI_CLI_UPDATE_BRANCH` | 覆寫更新分支；未設時依 upstream 或 master |
 | `AI_CLI_USAGE_PLUGIN_BIN` | `ai-cli usage` 外掛的 .mjs 絕對路徑 |
 | `CLAUDE_CLI_NAME` / `CODEX_CLI_NAME` / `AGY_CLI_NAME` | 覆寫各 CLI 的指令名稱或絕對路徑 |
 | `AI_CLI_DISCOVER_TIMEOUT_MS` | 模型查詢逾時毫秒，預設 `15000`；測試可縮短，非正整數或超出計時器範圍則用預設值 |

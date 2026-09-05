@@ -10,6 +10,8 @@
  *   # 建 node_modules junction（Windows）：
  *   #   New-Item -ItemType Junction -Path <某處>\mut\node_modules -Target <repo>\node_modules
  *   node tools/mutation-test.mjs <某處>/mut
+ *   node tools/mutation-test.mjs <某處>/mut --script verify-update.mjs
+ *   # 收尾先移除 node_modules junction 本身，再移除 worktree 目錄。
  *
  * 突變清單在 tools/mutations.json。新增一項修補時，順手加一個對應突變 ——
  * 如果它 SURVIVED，代表你的測試沒有真的在保護那段程式碼。
@@ -19,24 +21,25 @@
  * 裡面要包含該突變 `expect` 的字串，否則會被判成 KILLED(其他斷言)。
  *
  * 在獨立的 git worktree 上跑，不碰主工作目錄。
- * 注意：verify-alias-config.mjs 會改寫真實的 ~/.local/share/ai-cli/config.json
- * （自帶 try/finally 還原），所以這支腳本不能與其他會動該檔的東西並行。
+ * test-env 與各 verify 腳本將設定、快取、狀態全部指向暫存目錄。
  */
 
 import './stubs/catalog-test-env.mjs';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const ROOT = process.argv[2];
 if (!ROOT) throw new Error('usage: node mutation-test.mjs <worktree-path>');
 
-const CONFIG = join(homedir(), '.local', 'share', 'ai-cli', 'config.json');
+const CONFIG = join(process.env.AI_CLI_CONFIG_DIR, 'config.json');
 const CONFIG_BAK = join(ROOT, '..', 'config.json.mutbak');
 
 /** 每個突變：改壞一處，期待某條斷言失敗。 */
-const MUTATIONS = JSON.parse(readFileSync(new URL('./mutations.json', import.meta.url), 'utf-8'));
+const selectedScript = process.argv.includes('--script') ? process.argv[process.argv.indexOf('--script') + 1] : undefined;
+const MUTATIONS = JSON.parse(readFileSync(new URL('./mutations.json', import.meta.url), 'utf-8'))
+  .filter((mutation) => !selectedScript || (mutation.script ?? 'verify-alias-config.mjs') === selectedScript);
+if (!MUTATIONS.length) throw new Error('沒有符合的突變，拒絕空跑');
 
 /**
  * 一律用 process.execPath 直接跑 .js/.mjs，**不要碰 npm.cmd**：

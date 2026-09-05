@@ -11,6 +11,7 @@ import { resolveDirectApiModel } from '../agents/direct-api.js';
 import { buildCatalogV2 } from './catalog-v2.js';
 import type { AgentId } from '../agents/types.js';
 import { acceptsConfiguredEffort } from '../core/reasoning.js';
+import { consumeNotice } from '../core/updater.js';
 import {
   describeUserConfig,
   loadUserConfigSnapshot,
@@ -272,6 +273,7 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
   // set_config 會把「剛寫入的那一份」直接傳進來，連寫完再讀一次都省掉。
   const { config } = snapshot;
   return {
+    updateNotice: consumeNotice(),
     aliases: getEffectiveAliasDetails(config).map((alias) => {
       // 只回報「真的會被送進 CLI」的 effort，規則與 command-builder 送出時共用同一個
       // acceptsConfiguredEffort：agent 不支援 reasoning（agy / direct-api），或值不在該 agent

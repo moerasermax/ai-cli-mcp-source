@@ -1,5 +1,6 @@
 // direct-api 基本驗證：mock fetch，不打真實 provider。
 // 執行前需先 npm run build。
+import './tools/stubs/catalog-test-env.mjs';
 import assert from 'node:assert';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

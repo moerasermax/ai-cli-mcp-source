@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+### 新增（ai-cli 自動更新）
+- 原始碼安裝新增背景更新器：MCP 連線後延遲檢查 origin，獨立 CLI 子程序以 fast-forward 套用、依套件變動安裝或建置、doctor 煙霧測試；支援 on／check／off、檢查節流、髒樹與分支守門、pid 殘留鎖、失敗回滾和 node-pty 鎖檔說明。（@codex-gpt-6-astra，moerasermax 指示）
+- 新增 `ai-cli update [--check] [--json]`、原子寫入的 update.json 與 update.lock、含 SHA／commit 標題／CHANGELOG 網址的持續重啟提示；doctor.update、MCP run.updateNotice、models.updateNotice 及 stderr／MCP warning 通知讓使用者可見，新版啟動才清提示。（@codex-gpt-6-astra，moerasermax 指示）
+- 新增暫存 bare origin 與雙 clone 更新驗證、真實 MCP 背景套用與重啟測試，以及回滾／髒樹／節流／非祖先／notice 五個突變；mutation harness 支援按 verify script 篩選。（@codex-gpt-6-astra，moerasermax 指示）
+
+### 變更（測試隔離與部署政策）
+- `npm test` 納入 verify-update；既有 server／CLI 驗證明確關閉自動更新，設定、狀態、provider 與目錄快取改用暫存目錄（新增 AI_CLI_CONFIG_DIR），不再改寫真實 config.json，git 網路協定在測試中停用。（@codex-gpt-6-astra，moerasermax 指示）
+- README 與 CONTRIBUTING 記載背景套用、下次啟動生效及 public master push 等同全機部署，要求 push 前 npm test 全綠；package.json 新增 CHANGELOG homepage。（@codex-gpt-6-astra，moerasermax 指示）
+- 這批自動更新由 @codex-gpt-6-astra（codex-ultra，max）實作、@gemini-3.1-pro 獨立審查（未發現確信問題；
+  註記提示清除後每次 CLI 啟動仍會印「已是最新版」——已改成只在真的清掉提示那一次印）；Claude 逐項驗證：
+  build 零錯誤、`npm test` 九支全綠（update 45 條）、5 個新突變全部由指定斷言 KILLED。（Claude，moerasermax 指示）
+
 ### 修正（agy 模型查詢常態逾時）
 - 修正把 `agy models` 誤當本機讀設定的假設：agy 1.1.26 會先做網路 eligibility check，八次暖機實測 1739–3972 ms，舊的 5 秒同步查詢加 60 秒記憶體快取使重連與到期後的 MCP 請求卡住。改成 `spawn` 非同步、有計時與逾時殺子程序樹；同步目錄只讀快取，`tools/list`／`set_config` 不等網路，明確 `models` 才等待；失敗保留成功值並附診斷。（@codex-gpt-6-astra，moerasermax 指示）
 - 這批改動由 @codex-gpt-6-astra（codex-ultra，max）實作、@gemini-3.1-pro 獨立審查（未發現確信問題；註記多 process
