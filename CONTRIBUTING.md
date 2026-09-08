@@ -29,6 +29,11 @@
   這個專案已經吃過三次假綠燈的虧（測試看起來在測、其實測不到）。用法見 `tools/mutation-test.mjs` 檔頭。
   新更新突變可用 `node tools/mutation-test.mjs <worktree> --script verify-update.mjs` 單獨執行，基準必須先全綠。
 - Windows 突變 worktree 收尾時，**先刪 `node_modules` junction 本身，再刪 worktree 目錄**；不可用 `git worktree remove --force` 穿過 junction，否則可能誤刪主 repo 的相依套件。
+  唯一可靠的刪法是 PowerShell 的 `(Get-Item <junction> -Force).Delete()`——它只解除連結。
+  **`Remove-Item -Recurse -Force` 與 `git worktree remove --force` 都會穿透**，
+  2026-09-08 連續踩了兩次，主 repo 的 `node_modules/.bin` 被清空、`tsc` 消失、`npm test` 當場失敗
+  （復原：`npm install --ignore-scripts --no-audit --no-fund`）。順序是：
+  `(Get-Item ...).Delete()` → `git worktree remove` → `git worktree prune`。
 - `verify-e2e.mjs` 會真的呼叫 claude / codex / agy 三家 CLI、消耗額度，**刻意不放進 `npm test`**，
   只在需要驗證端到端行為時手動跑。
 

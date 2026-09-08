@@ -658,7 +658,7 @@
     "name": "verificationFromAgentOutput 沒有 tools 時回 null（第七態：欄位缺席）",
     "file": "src/core/verification.ts",
     "from": "  if (!Array.isArray(tools)) {\n    return classifyVerification([], options);\n  }",
-    "to": "  if (!Array.isArray(tools)) {\n    return options.structured === false ? classifyVerification([], options) : null;\n  }",
+    "to": "  if (!Array.isArray(tools)) {\n    return (options.structured === false ? classifyVerification([], options) : null) as VerificationReport;\n  }",
     "expect": "verificationFromAgentOutput：一律回報，不回 null",
     "script": "verify-verification.mjs"
   },

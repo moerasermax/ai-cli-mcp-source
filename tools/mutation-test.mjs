@@ -164,6 +164,10 @@ for (const [i, mutation] of MUTATIONS.entries()) {
 // 一定要用 exec() 而不是 run()：run() 只吃一個參數陣列，
 // `run('git', [...])` 會把第二個參數整個丟掉、命令根本沒跑，
 // 然後印出空字串當成「worktree 乾淨」—— 這正是這支工具在抓的那種假綠燈。
+// 最後一個突變還原 src 之後，建置產物仍停在那個突變的狀態（例如
+// plugin/hooks/verification-core.mjs）。重建一次讓產物回到基準，否則下面的
+// 「worktree 應乾淨」會對著自己造成的差異報警。
+buildAll();
 const status = exec('git', ['status', '--short']);
 if (hadConfig) copyFileSync(CONFIG_BAK, CONFIG);
 else rmSync(CONFIG, { force: true });
