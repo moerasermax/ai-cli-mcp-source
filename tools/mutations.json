@@ -649,8 +649,8 @@
   {
     "name": "shell 改檔不套 projectRoot",
     "file": "src/core/verification.ts",
-    "from": "      pathTokens(command).some((token) => insideProject(token, projectRoot));",
-    "to": "      CODE_EXT.test(command);",
+    "from": "      (target) => looksLikeCodePath(target) && insideProject(target, projectRoot)",
+    "to": "      (target) => looksLikeCodePath(target)",
     "expect": "shell 改檔也要受 projectRoot 限制",
     "script": "verify-verification.mjs"
   },
@@ -711,11 +711,27 @@
     "script": "verify-verification.mjs"
   },
   {
-    "name": "重導向偵測不要求前綴（-> 被當成寫檔）",
+    "name": "shellWriteTargets 的重導向不要求前綴（-> 被當成寫檔）",
     "file": "src/core/verification.ts",
-    "from": "|(^|[\\s;&|)])\\d?>{1,2}\\s*[^\\s>|&]+|",
-    "to": "|>{1,2}\\s*[^\\s>|&]+|",
+    "from": "  for (const m of command.matchAll(/(?:^|[\\s;&|)])\\d?>{1,2}\\s*([^\\s>|&;]+)/g)) push(m[1]);",
+    "to": "  for (const m of command.matchAll(/>{1,2}\\s*([^\\s>|&;]+)/g)) push(m[1]);",
     "expect": "輸出訊息裡的 -> 不是重導向",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "寫入目標不排除 /dev/null（丟棄輸出被當成改檔）",
+    "file": "src/core/verification.ts",
+    "from": "    if (value && !NULL_SINK.test(value)) targets.push(value);",
+    "to": "    if (value) targets.push(value);",
+    "expect": "2>/dev/null 是丟棄輸出，不是寫檔",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "退回掃整串 token 而不是只看寫入目標",
+    "file": "src/core/verification.ts",
+    "from": "    const writesCode = shellWriteTargets(command).some(",
+    "to": "    const writesCode = (command.match(/[^\\s'\\\"<>|&;()]+/g) ?? []).some(",
+    "expect": "純讀取的 grep 不算改檔",
     "script": "verify-verification.mjs"
   }
 ]

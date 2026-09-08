@@ -434,9 +434,51 @@ ok('真正的重導向寫檔仍算 code_change', () => {
   assert.strictEqual(e.kind, 'code_change');
 });
 
-ok('fd 前綴的重導向也算', () => {
+ok('fd 前綴且真的寫到程式碼檔仍算', () => {
   const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'node b.js 2> src/err.ts' } });
   assert.strictEqual(e.kind, 'code_change');
+});
+
+// ★ 第二次誤擋自己時抓到：判斷的是「寫入目標是什麼」，不是「指令裡有沒有程式碼路徑」。
+ok('★ 2>/dev/null 是丟棄輸出，不是寫檔', () => {
+  const e = normalizeToolEvent({
+    tool: 'Bash',
+    input: { command: 'grep -rn "a" src/app/mcp.ts src/core/updater.ts 2>/dev/null' },
+  });
+  assert.strictEqual(e.kind, 'other', '讀取指令不該因為丟棄 stderr 就被當成改檔');
+});
+
+ok('★ 純讀取的 grep 不算改檔，即使指令裡有程式碼路徑', () => {
+  const e = normalizeToolEvent({
+    tool: 'Bash',
+    input: { command: 'grep -n "x" -A 25 src/core/updater.ts | head -10' },
+  });
+  assert.strictEqual(e.kind, 'other');
+});
+
+ok('> /dev/null 也不算寫檔', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'node src/a.ts > /dev/null' } });
+  assert.strictEqual(e.kind, 'other');
+});
+
+ok('Windows 的 NUL 也不算寫檔', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'node src/a.ts > NUL' } });
+  assert.strictEqual(e.kind, 'other');
+});
+
+ok('tee 寫到程式碼檔算 code_change', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'echo x | tee src/gen.ts' } });
+  assert.strictEqual(e.kind, 'code_change');
+});
+
+ok('cp 的目的地是程式碼檔算 code_change', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'cp template.txt src/new.ts' } });
+  assert.strictEqual(e.kind, 'code_change');
+});
+
+ok('cp 的目的地不是程式碼檔就不算', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'cp src/a.ts /tmp/backup.txt' } });
+  assert.strictEqual(e.kind, 'other', '來源是程式碼但寫入目標不是');
 });
 
 ok('shell 改專案內的相對路徑仍算 code_change', () => {

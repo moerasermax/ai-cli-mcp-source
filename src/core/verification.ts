@@ -64,18 +64,6 @@ function looksLikeCodePath(token: string): boolean {
  */
 const EDIT_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|edit_file|write_file|file_change)$/i;
 
-/**
- * shell 裡也能改程式碼：重導向、sed -i、tee、patch、mv/cp 到程式碼檔。
- *
- * 重導向的 `>` **必須前接行首、空白、`;&|)` 或 fd 數字**。
- * 舊版只寫 `>\s*[^\s>|&]+`，於是輸出訊息裡的 `->`、比較用的 `=>`、
- * 甚至 regex 字面值裡的 `>` 都會被當成寫檔（2026-09-08 閘門誤擋自己時抓到：
- * 一句 `echo "字數: $N -> readTime 應為 ..."` 就中了）。
- * 代價是 `cmd>file` 這種不留空白的寫法會漏掉——漏擋比誤擋便宜。
- */
-const SHELL_WRITE =
-  /(^|[\s;&|])(sed\s+(-[^\s]*\s+)*-i|patch\s|tee\s|dd\s+of=|install\s+-D)|(^|[\s;&|)])\d?>{1,2}\s*[^\s>|&]+|\b(mv|cp)\s+[^\s]+\s+[^\s]+/i;
-
 /** 跑得起來就算驗證的指令。跟 baseline 腳本用同一套，換掉要兩邊一起換。 */
 const VERIFY_CMD =
   /(npm\s+(run\s+)?(test|build|lint|typecheck)|yarn\s+(test|build|lint)|pnpm\s+(test|build|lint)|npx\s+(tsc|vitest|jest|eslint)|pytest|python\s+-m\s+pytest|cargo\s+(test|build|check|clippy)|go\s+(test|build|vet)|dotnet\s+(test|build)|mvn\s+(test|verify)|gradle\s+(test|build)|\btsc\b|vitest|jest|eslint|ruff|mypy|make\s+(test|check|build))/i;
@@ -154,9 +142,34 @@ function insideProject(target: string, projectRoot?: string | null): boolean {
   return file === root || file.startsWith(root + '/');
 }
 
-/** 從 shell 指令裡撈出看起來像檔案路徑的 token，用來判斷改的是不是專案內的檔案。 */
-function pathTokens(command: string): string[] {
-  return (command.match(/[^\s'"<>|&;()]+/g) ?? []).filter(looksLikeCodePath);
+/** 丟棄輸出的目標。寫到這裡不是改檔。 */
+const NULL_SINK = /^(\/dev\/null|nul|NUL|\/dev\/stdout|\/dev\/stderr|&\d)$/i;
+
+/**
+ * 撈出一個 shell 指令**實際寫入的目標**。
+ *
+ * 舊版是「指令裡有沒有寫檔動作」AND「指令裡有沒有程式碼路徑 token」分開判，
+ * 但那兩件事可能毫無關係：`grep x src/a.ts 2>/dev/null` 的寫入目標是 /dev/null，
+ * 跟 src/a.ts 無關，卻會被判成改了 src/a.ts（2026-09-08 第二次誤擋自己時抓到，
+ * 第一次是 `->` 被當成重導向）。
+ *
+ * 現在只看目標本身：重導向取 `>` 後面那個 token，tee / mv / cp 取它們的目的地，
+ * `sed -i` 則因為目標可能夾在多個旗標之間，退回掃整串 token。
+ */
+function shellWriteTargets(command: string): string[] {
+  const targets: string[] = [];
+  const push = (value: string | undefined) => {
+    if (value && !NULL_SINK.test(value)) targets.push(value);
+  };
+  for (const m of command.matchAll(/(?:^|[\s;&|)])\d?>{1,2}\s*([^\s>|&;]+)/g)) push(m[1]);
+  for (const m of command.matchAll(/\btee\s+(?:-\S+\s+)*([^\s>|&;]+)/gi)) push(m[1]);
+  for (const m of command.matchAll(/\b(?:mv|cp)\s+(?:-\S+\s+)*\S+\s+([^\s>|&;]+)/gi)) push(m[1]);
+  for (const m of command.matchAll(/\b(?:dd\s+of=|install\s+-D\s+)([^\s>|&;]+)/gi)) push(m[1]);
+  // sed -i / patch 的目標位置不固定，只好掃整串。
+  if (/(^|[\s;&|])(sed\s+(-\S*\s+)*-i|patch\s)/i.test(command)) {
+    for (const token of command.match(/[^\s'"<>|&;()]+/g) ?? []) push(token);
+  }
+  return targets;
 }
 
 /** 統一過的事件；不同 agent 的原始格式先正規化成這個形狀再判定。 */
@@ -225,9 +238,9 @@ export function normalizeToolEvent(entry: unknown, options: NormalizeOptions = {
       整體就會被判成 passed（假通過）。無法從單一事件知道兩者的先後，
       所以保守當成「有改檔、尚未驗證」：寧可多要求跑一次測試，也不要放過假通過。
     */
-    const writesCode =
-      SHELL_WRITE.test(command) &&
-      pathTokens(command).some((token) => insideProject(token, projectRoot));
+    const writesCode = shellWriteTargets(command).some(
+      (target) => looksLikeCodePath(target) && insideProject(target, projectRoot)
+    );
     if (writesCode) {
       return { kind: 'code_change', label: command.trim().slice(0, 160) };
     }
