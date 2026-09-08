@@ -144,6 +144,8 @@ npm run typecheck  # 只型別檢查
 | `AI_CLI_AUTO_UPDATE` | `on`（預設）／`check`／`off`，見「自動更新」 |
 | `AI_CLI_UPDATE_CHECK_INTERVAL_SEC` | 更新檢查間隔秒數，預設 `3600`；無效值使用預設 |
 | `AI_CLI_UPDATE_BRANCH` | 覆寫更新分支；未設時依 upstream 或 master |
+| `AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC` | 未啟用驗證閘門 plugin 時的提醒間隔秒數，預設 `259200`（3 天）；`0` 表示每次都提醒 |
+| `AI_CLI_CLAUDE_SETTINGS_PATH` | 覆寫 Claude Code `settings.json` 路徑（偵測 plugin 是否啟用用，測試以此隔離） |
 | `AI_CLI_USAGE_PLUGIN_BIN` | `ai-cli usage` 外掛的 .mjs 絕對路徑 |
 | `CLAUDE_CLI_NAME` / `CODEX_CLI_NAME` / `AGY_CLI_NAME` | 覆寫各 CLI 的指令名稱或絕對路徑 |
 | `AI_CLI_DISCOVER_TIMEOUT_MS` | 模型查詢逾時毫秒，預設 `15000`；測試可縮短，非正整數或超出計時器範圍則用預設值 |
@@ -504,6 +506,22 @@ gpt-6-astra medium 回一個字約 **5.7 秒**，gpt-5.4-mini low 約 **6.5 秒*
 **只算工作目錄底下的修改**：ai-cli 這側用派工的 `workFolder`，plugin 這側用 hook 事件的
 `cwd`。寫到暫存目錄的一次性分析腳本不會觸發閘門——那種腳本本來就沒有測試可跑。
 （相對路徑一律算在專案內，它本來就相對於工作目錄解析。）
+
+### 其他機器怎麼知道要裝
+
+自動更新只散布**程式碼**，不散布**啟用狀態**：plugin 的檔案會跟著 `git pull` 出現在每台機器，
+但 Claude Code 要不要載入它記在各機器自己的 `~/.claude/settings.json`。
+ai-cli 不去改那個檔——一個派工工具靜默改寫使用者的 Claude Code 設定是壞設計。
+
+所以 ai-cli 只負責**偵測並說出來**：
+
+- `doctor.plugin` 一律回報 `{ bundled, enabled, marketplaceAdded, version, reason, notice }`，
+  主動查才看得到，不吵。
+- `run` 的回傳多一個 `pluginNotice`，在「檔案在、這台機器沒啟用」時提醒，
+  **每 3 天最多一次**（`AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC` 可覆寫）。
+  只提醒一次不夠——新機器上第一次跳出來時多半在忙別的，錯過就永遠看不到；
+  每次 run 都喊又太吵。真的啟用後旗標會被清掉，日後若停用會重新開始提醒。
+- 讀不到或無法解析 `settings.json` 時只填 `reason`，**不提醒**——那可能根本不是 Claude Code 環境。
 
 判定結果會寫進 `AI_CLI_STATE_DIR/verification-gate.jsonl`，**兩層寫同一份檔案**，
 用 `source`（`ai-cli` / `hook`）區分。合起來才是這台機器完整的品質基線。

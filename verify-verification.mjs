@@ -311,5 +311,115 @@ ok('記錄：不同 pid 各記一筆', () => {
 
 rmSync(LOGDIR, { recursive: true, force: true });
 
+// ---------------- plugin 安裝偵測 ----------------
+// 自動更新散布程式碼，不散布「已啟用」。這一段守的是「其他機器怎麼知道要裝」。
+const { getPluginStatus, consumePluginNotice, PLUGIN_KEY } = await import(
+  './dist/core/plugin-status.js'
+);
+const { writeFileSync } = await import('node:fs');
+const PDIR = mkdtempSync(join('dist', 'verify-plugin-'));
+const settingsFile = join(PDIR, 'settings.json');
+process.env.AI_CLI_CLAUDE_SETTINGS_PATH = settingsFile;
+const setSettings = (obj) => writeFileSync(settingsFile, JSON.stringify(obj));
+const freshState = () => {
+  const d = mkdtempSync(join(PDIR, 'state-'));
+  process.env.AI_CLI_STATE_DIR = d;
+  return d;
+};
+
+ok('plugin：已啟用時不提示', () => {
+  setSettings({ enabledPlugins: { [PLUGIN_KEY]: true } });
+  const s = getPluginStatus();
+  assert.strictEqual(s.enabled, true);
+  assert.strictEqual(s.notice, null);
+});
+
+ok('★ plugin：檔案在但這台機器沒啟用 → 提示且給安裝指令', () => {
+  setSettings({ enabledPlugins: {} });
+  const s = getPluginStatus();
+  assert.strictEqual(s.bundled, true, 'plugin 檔案應隨安裝存在');
+  assert.strictEqual(s.enabled, false);
+  assert.match(s.notice ?? '', /plugin install/);
+  assert.match(s.notice ?? '', /marketplace add/, '沒加過 marketplace 時要一併給那一步');
+});
+
+ok('plugin：marketplace 已加、只差啟用 → 不重複叫人再 add 一次', () => {
+  setSettings({
+    enabledPlugins: {},
+    extraKnownMarketplaces: { 'ai-cli-mcp': { source: { source: 'github', repo: 'moerasermax/ai-cli-mcp-source' } } },
+  });
+  const s = getPluginStatus();
+  assert.strictEqual(s.marketplaceAdded, true);
+  assert.doesNotMatch(s.notice ?? '', /marketplace add/);
+  assert.match(s.notice ?? '', /plugin install/);
+});
+
+ok('★ plugin：讀不到 Claude Code 設定時不亂喊', () => {
+  process.env.AI_CLI_CLAUDE_SETTINGS_PATH = join(PDIR, 'nope.json');
+  const s = getPluginStatus();
+  assert.ok(s.reason, '要說明為什麼判斷不了');
+  assert.strictEqual(s.notice, null, '讀不到就不該催人安裝——可能根本不是 Claude Code 環境');
+  process.env.AI_CLI_CLAUDE_SETTINGS_PATH = settingsFile;
+});
+
+ok('plugin：設定檔壞掉時不亂喊', () => {
+  writeFileSync(settingsFile, '{ 這不是 JSON');
+  const s = getPluginStatus();
+  assert.ok(s.reason);
+  assert.strictEqual(s.notice, null);
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+
+ok('★ plugin：提示不會每次 run 都跳（間隔內只跳一次）', () => {
+  freshState();
+  setSettings({ enabledPlugins: {} });
+  const t0 = Date.parse('2026-09-08T00:00:00Z');
+  assert.ok(consumePluginNotice(t0), '第一次要提示');
+  assert.strictEqual(consumePluginNotice(t0), null, '同一時間不能再吵');
+  assert.strictEqual(consumePluginNotice(t0 + 2 * DAY), null, '第 2 天還在間隔內');
+});
+
+ok('★ plugin：滿 3 天後會再提醒一次（不是提醒一次就永遠沉默）', () => {
+  freshState();
+  setSettings({ enabledPlugins: {} });
+  const t0 = Date.parse('2026-09-08T00:00:00Z');
+  assert.ok(consumePluginNotice(t0));
+  assert.ok(consumePluginNotice(t0 + 3 * DAY + 1000), '滿 3 天要再提醒');
+  assert.strictEqual(consumePluginNotice(t0 + 3 * DAY + 2000), null, '提醒完又進入下一個間隔');
+  assert.ok(consumePluginNotice(t0 + 6 * DAY + 3000), '再滿 3 天再提醒');
+});
+
+ok('plugin：間隔可由環境變數覆寫', () => {
+  freshState();
+  setSettings({ enabledPlugins: {} });
+  process.env.AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC = '60';
+  const t0 = Date.parse('2026-09-08T00:00:00Z');
+  assert.ok(consumePluginNotice(t0));
+  assert.strictEqual(consumePluginNotice(t0 + 30_000), null);
+  assert.ok(consumePluginNotice(t0 + 61_000), '60 秒間隔到了要再提醒');
+  delete process.env.AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC;
+});
+
+ok('plugin：旗標壞掉時當成沒提醒過（寧可多提也不要永遠沉默）', () => {
+  const dir = freshState();
+  setSettings({ enabledPlugins: {} });
+  writeFileSync(join(dir, 'plugin-notice.json'), '{ 壞掉的 JSON');
+  assert.ok(consumePluginNotice(), '讀不懂旗標就該重新提醒');
+});
+
+ok('plugin：已啟用時清掉旗標（日後若停用會重新開始提醒）', () => {
+  freshState();
+  setSettings({ enabledPlugins: {} });
+  const t0 = Date.parse('2026-09-08T00:00:00Z');
+  assert.ok(consumePluginNotice(t0));
+  setSettings({ enabledPlugins: { [PLUGIN_KEY]: true } });
+  assert.strictEqual(consumePluginNotice(t0 + 1000), null, '已啟用不提示');
+  setSettings({ enabledPlugins: {} });
+  assert.ok(consumePluginNotice(t0 + 2000), '停用後不必等滿 3 天，立刻重新開始提醒');
+});
+
+rmSync(PDIR, { recursive: true, force: true });
+
 console.log(failures === 0 ? '\n全部通過 ✅' : `\n有 ${failures} 項失敗 ❌`);
 process.exit(failures === 0 ? 0 : 1);

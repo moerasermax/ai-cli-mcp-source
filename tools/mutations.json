@@ -533,5 +533,53 @@
     "to": "  if (false) return;",
     "expect": "記錄：同一個 pid 只記一次",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "plugin 提示不看間隔（每次 run 都催安裝）",
+    "file": "src/core/plugin-status.ts",
+    "from": "    if (Number.isFinite(last) && now - last < noticeIntervalMs()) return null;",
+    "to": "    if (false) return null;",
+    "expect": "plugin：提示不會每次 run 都跳",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "讀不到 Claude Code 設定時仍催人安裝",
+    "file": "src/core/plugin-status.ts",
+    "from": "  if (bundled && !enabled && reason === null) {",
+    "to": "  if (bundled && !enabled) {",
+    "expect": "plugin：讀不到 Claude Code 設定時不亂喊",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "marketplace 已加仍叫人再 add 一次",
+    "file": "src/core/plugin-status.ts",
+    "from": "      ? `啟用：/plugin install ${PLUGIN_KEY}`",
+    "to": "      ? `啟用：/plugin marketplace add ${REPO_SLUG} 然後 /plugin install ${PLUGIN_KEY}`",
+    "expect": "plugin：marketplace 已加、只差啟用",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "已啟用時不清提示旗標（日後停用就再也不會提醒）",
+    "file": "src/core/plugin-status.ts",
+    "from": "      rmSync(flag, { force: true });",
+    "to": "      void flag;",
+    "expect": "plugin：已啟用時清掉旗標",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "plugin 提示的間隔判斷方向相反（提醒一次就永遠沉默）",
+    "file": "src/core/plugin-status.ts",
+    "from": "    if (Number.isFinite(last) && now - last < noticeIntervalMs()) return null;",
+    "to": "    if (Number.isFinite(last)) return null;",
+    "expect": "plugin：滿 3 天後會再提醒一次",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "plugin 提示間隔忽略環境變數覆寫",
+    "file": "src/core/plugin-status.ts",
+    "from": "  const seconds = Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_NOTICE_INTERVAL_SEC;",
+    "to": "  const seconds = DEFAULT_NOTICE_INTERVAL_SEC;",
+    "expect": "plugin：間隔可由環境變數覆寫",
+    "script": "verify-verification.mjs"
   }
 ]

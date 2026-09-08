@@ -12,14 +12,15 @@ import {
 } from './binary-resolver.js';
 import type { CliPaths } from './process-service.js';
 import { getUpdateStatus, type UpdateResult } from './updater.js';
+import { getPluginStatus, type PluginStatus } from './plugin-status.js';
 
 /** doctor：所有 agent 的二進位可用性。 */
-export function getCliDoctorStatus(): { [key: string]: CliDoctorStatus[string] | UpdateResult; checks: CliDoctorStatus['checks']; update: UpdateResult } {
+export function getCliDoctorStatus(): { [key: string]: CliDoctorStatus[string] | UpdateResult | PluginStatus; checks: CliDoctorStatus['checks']; update: UpdateResult; plugin: PluginStatus } {
   return { ...buildDoctorStatus(
     listAgents()
       .filter((a) => a.binary)
       .map((a) => ({ id: a.id, config: a.binary! }))
-  ), update: getUpdateStatus() };
+  ), update: getUpdateStatus(), plugin: getPluginStatus() };
 }
 
 /** 解析每個 agent 的 CLI 路徑，組成 ProcessService 需要的 CliPaths。 */

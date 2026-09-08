@@ -163,6 +163,26 @@ jobs, the hook event's `cwd` for your own turns. A throwaway analysis script wri
 to a temp directory will not trip the gate; it has no tests to run in the first place.
 (Relative paths always count, since they resolve against that same directory.)
 
+### How other machines learn to install it
+
+Auto-update ships **code**, not **enablement**. The plugin files arrive on every
+machine via `git pull`, but whether Claude Code loads them lives in each machine's own
+`~/.claude/settings.json`. ai-cli does not touch that file — a dispatch tool silently
+rewriting your Claude Code settings is bad design.
+
+So ai-cli only detects and says so:
+
+- `doctor.plugin` always reports `{ bundled, enabled, marketplaceAdded, version, reason, notice }`.
+  You have to ask, so it is never noisy.
+- `run` results carry a `pluginNotice` when the files are present but this machine has
+  not enabled them — **at most once every 3 days**
+  (`AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC` overrides it). Once is not enough: the first
+  time it appears you are usually busy with something else, and then you never see it
+  again. Every run would be noise. Enabling it clears the flag; disabling later starts
+  the reminders over.
+- If `settings.json` is unreadable or unparseable, only `reason` is filled and nothing
+  is suggested — that may not be a Claude Code environment at all.
+
 Both layers append their verdicts to the same
 `AI_CLI_STATE_DIR/verification-gate.jsonl`, tagged with `source` (`ai-cli` or `hook`).
 Together they are one machine's quality baseline; split apart, neither number
