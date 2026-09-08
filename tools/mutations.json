@@ -751,11 +751,11 @@
     "script": "verify-gate-hook.mjs"
   },
   {
-    "name": "install marker 指向沒 build 過的目錄也照寫",
+    "name": "readInstallMarker 不驗證 dist 是否存在（指到沒 build 的目錄）",
     "file": "src/core/install-marker.ts",
-    "from": "    if (!existsSync(join(root, 'dist', 'core', 'verification.js'))) return;",
-    "to": "    if (false) return;",
-    "expect": "marker 指向不存在的路徑時退回自帶核心",
-    "script": "verify-gate-hook.mjs"
+    "from": "    return existsSync(join(root, 'dist', 'core', 'verification.js')) ? root : null;",
+    "to": "    return root;",
+    "expect": "install marker：指向沒有 dist 的目錄要回 null",
+    "script": "verify-verification.mjs"
   }
 ]

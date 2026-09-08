@@ -756,6 +756,36 @@ ok('plugin：已啟用時清掉旗標（日後若停用會重新開始提醒）'
   assert.ok(consumePluginNotice(t0 + 2000), '停用後不必等滿 3 天，立刻重新開始提醒');
 });
 
+// ---------------- install marker（讓 plugin 跟上 ai-cli 的指引）----------------
+const { readInstallMarker, writeInstallMarker } = await import('./dist/core/install-marker.js');
+
+ok('★ install marker：指向沒有 dist 的目錄要回 null', () => {
+  const dir = freshState();
+  writeFileSync(join(dir, 'install.json'), JSON.stringify({ repoRoot: join(PDIR, 'no-such-repo') }));
+  assert.strictEqual(readInstallMarker(), null, '沒有判定核心的路徑不能拿來用');
+});
+
+ok('install marker：指向真的安裝時回得出路徑', () => {
+  const dir = freshState();
+  writeFileSync(join(dir, 'install.json'), JSON.stringify({ repoRoot: process.cwd() }));
+  assert.strictEqual(readInstallMarker(), process.cwd());
+});
+
+ok('install marker：檔案壞掉或不存在時回 null，不拋錯', () => {
+  const dir = freshState();
+  assert.strictEqual(readInstallMarker(), null, '不存在');
+  writeFileSync(join(dir, 'install.json'), '{ 壞掉的 JSON');
+  assert.strictEqual(readInstallMarker(), null, '壞檔');
+  writeFileSync(join(dir, 'install.json'), JSON.stringify({ repoRoot: 123 }));
+  assert.strictEqual(readInstallMarker(), null, '型別不對');
+});
+
+ok('install marker：寫得出來也讀得回去', () => {
+  freshState();
+  writeInstallMarker();
+  assert.strictEqual(readInstallMarker(), process.cwd(), '應指向這份安裝');
+});
+
 rmSync(PDIR, { recursive: true, force: true });
 
 console.log(failures === 0 ? '\n全部通過 ✅' : `\n有 ${failures} 項失敗 ❌`);
