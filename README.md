@@ -152,6 +152,11 @@ the tests or state why you are not going to.
 /plugin install ai-cli-verification-gate@ai-cli-mcp
 ```
 
+> ⚠️ **Updating the plugin is also manual.** Installing copies `plugin/` into
+> `~/.claude/plugins/cache/`; a later `git pull` does not touch it, so a machine keeps
+> running whatever was copied at install time. `doctor.plugin`'s `upToDate` tells you
+> when that has drifted — reinstall with `/plugin uninstall <key>` then `/plugin install <key>`.
+
 Hard rules: always exit 0, never break the session; block at most once (the official
 `stop_hook_active` flag exists for exactly this, and the second pass is always let
 through and logged as `waived`); and when the situation cannot be judged reliably —

@@ -35,6 +35,11 @@ export interface PluginStatus {
   version: string | null;
   /** 已安裝的 scope（user / project…）。沒安裝或讀不到時是空陣列。 */
   scopes: string[];
+  /**
+   * 已安裝的那份判定核心是否與這份 repo 一致。
+   * `null` = 沒安裝或比對不了（例如讀不到 installPath）。
+   */
+  upToDate: boolean | null;
   /** 三個來源都讀不到時說明原因；判斷得出來就是 null。 */
   reason: string | null;
   /** 給人看的一段話，沒事為 null。 */
@@ -79,6 +84,29 @@ function readJson(path: string): any | null {
   }
 }
 
+/**
+ * 已安裝的判定核心是否與這份 repo 相同。
+ *
+ * **plugin 安裝之後不會跟著 repo 更新**——Claude Code 把 source 目錄複製到 cache，
+ * 之後 git pull 再怎麼前進，cache 裡那份都不會動。2026-09-08 實測踩到：閘門連續
+ * 修了兩次誤判、都 push 了，但本機仍用舊判定擋人，因為跑的是安裝當下複製的那份。
+ *
+ * 版本號比對靠不住（改邏輯不一定會 bump version），所以直接比內容。
+ * 讀不到就回 null——「比對不了」不是「過時」。
+ */
+function installedIsCurrent(installPath: unknown): boolean | null {
+  if (typeof installPath !== 'string' || !installPath) return null;
+  try {
+    const installed = readFileSync(join(installPath, 'hooks', 'verification-core.mjs'), 'utf8');
+    const current = readFileSync(
+      join(repoRoot(), 'plugin', 'hooks', 'verification-core.mjs'), 'utf8'
+    );
+    return installed === current;
+  } catch {
+    return null;
+  }
+}
+
 const noticeFlagPath = () => join(stateDir(), 'plugin-notice.json');
 
 export function getPluginStatus(): PluginStatus {
@@ -94,6 +122,7 @@ export function getPluginStatus(): PluginStatus {
   let enabled = false;
   let marketplaceAdded = false;
   let scopes: string[] = [];
+  let upToDate: boolean | null = null;
 
   const settings = existsSync(settingsFile) ? readJson(settingsFile) : null;
   const installed = existsSync(installedFile) ? readJson(installedFile) : null;
@@ -113,6 +142,11 @@ export function getPluginStatus(): PluginStatus {
     scopes = entries
       .map((e: any) => (typeof e?.scope === 'string' ? e.scope : 'unknown'))
       .filter((s: string, i: number, a: string[]) => a.indexOf(s) === i);
+    // 任何一份是舊的就算過時——跑起來的可能是其中任何一份。
+    const freshness = entries.map((e: any) => installedIsCurrent(e?.installPath));
+    upToDate = freshness.some((f) => f === false) ? false
+      : freshness.some((f) => f === true) ? true
+      : null;
   }
   if (settings?.enabledPlugins?.[PLUGIN_KEY] === true) enabled = true;
 
@@ -132,6 +166,14 @@ export function getPluginStatus(): PluginStatus {
   }
 
   let notice: string | null = null;
+  if (bundled && enabled && upToDate === false) {
+    notice =
+      `驗證閘門 plugin 已安裝，但跑的是舊版判定核心——plugin 安裝後不會跟著 repo 更新。
+` +
+      `重裝一次即可：/plugin uninstall ${PLUGIN_KEY} 然後 /plugin install ${PLUGIN_KEY}
+` +
+      `（沒重裝的話，已修好的誤判仍會繼續擋你。）`;
+  }
   if (bundled && !enabled && reason === null) {
     notice =
       `這台機器尚未啟用驗證閘門 plugin（${PLUGIN_KEY}）。` +
@@ -142,7 +184,7 @@ export function getPluginStatus(): PluginStatus {
       `\n作用：改了程式碼卻沒跑驗證就結束回應時擋一次。不想要可以不裝，這則提示每 3 天最多出現一次。`;
   }
 
-  return { bundled, enabled, marketplaceAdded, scopes, version, reason, notice };
+  return { bundled, enabled, marketplaceAdded, scopes, upToDate, version, reason, notice };
 }
 
 /** 提醒間隔，預設 3 天（使用者 2026-09-08 裁定）。測試用環境變數縮短。 */
@@ -171,7 +213,7 @@ export function consumePluginNotice(now = Date.now()): string | null {
     return null;
   }
   const flag = noticeFlagPath();
-  if (status.enabled || status.notice === null) {
+  if (status.notice === null) {
     try {
       rmSync(flag, { force: true });
     } catch {

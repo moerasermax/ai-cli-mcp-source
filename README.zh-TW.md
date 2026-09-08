@@ -491,6 +491,11 @@ gpt-6-astra medium 回一個字約 **5.7 秒**，gpt-5.4-mini low 約 **6.5 秒*
 /plugin install ai-cli-verification-gate@ai-cli-mcp
 ```
 
+> ⚠️ **plugin 更新也要手動。** 安裝時 Claude Code 把 `plugin/` 複製到
+> `~/.claude/plugins/cache/`，之後 `git pull` 不會動它——判定邏輯改了、push 了，
+> 那台機器仍跑安裝當下那份。`doctor.plugin` 的 `upToDate` 會告訴你，
+> 過時就重裝一次：`/plugin uninstall <key>` 然後 `/plugin install <key>`。
+
 硬性規則：**一律 exit 0**，絕不弄壞使用者的 session；**最多擋一次**（官方的
 `stop_hook_active` 旗標就是為此存在，第二次一律放行並記成 `waived`）；
 **無法可靠判定時不擋**（讀不到 transcript、找不到判定模組都直接放行）。

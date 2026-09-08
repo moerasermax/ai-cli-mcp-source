@@ -717,5 +717,21 @@
     "to": "    const writesCode = (command.match(/[^\\s'\\\"<>|&;()]+/g) ?? []).some(",
     "expect": "純讀取的 grep 不算改檔",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "不比對已安裝的判定核心（plugin 過時卻無聲）",
+    "file": "src/core/plugin-status.ts",
+    "from": "    const freshness = entries.map((e: any) => installedIsCurrent(e?.installPath));",
+    "to": "    const freshness = entries.map(() => null);",
+    "expect": "安裝的判定核心與 repo 不同時要報 upToDate=false",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "比對不了就當成過時（催人重裝沒必要的）",
+    "file": "src/core/plugin-status.ts",
+    "from": "function installedIsCurrent(installPath: unknown): boolean | null {\n  if (typeof installPath !== 'string' || !installPath) return null;",
+    "to": "function installedIsCurrent(installPath: unknown): boolean | null {\n  if (typeof installPath !== 'string' || !installPath) return false;",
+    "expect": "讀不到 installPath 時 upToDate 是 null",
+    "script": "verify-verification.mjs"
   }
 ]

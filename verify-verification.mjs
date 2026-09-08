@@ -608,6 +608,43 @@ ok('★ plugin：known_marketplaces.json 才是 marketplace 的權威來源', ()
   assert.doesNotMatch(s.notice ?? '', /marketplace add/, '加過就不該再叫人加一次');
 });
 
+// ★ 2026-09-08 第三次誤擋抓到：plugin 安裝後不會跟著 repo 更新，
+// 已修好的誤判仍會用舊判定核心繼續擋人，而且沒有任何跡象。
+ok('★ plugin：安裝的判定核心與 repo 不同時要報 upToDate=false 並提醒重裝', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  const stale = join(PDIR, 'stale-install');
+  mkdirSync(join(stale, 'hooks'), { recursive: true });
+  writeFileSync(join(stale, 'hooks', 'verification-core.mjs'), '// 舊版內容\n');
+  setInstalled({ version: 2, plugins: { [PLUGIN_KEY]: [{ scope: 'user', installPath: stale }] } });
+  const s = getPluginStatus();
+  assert.strictEqual(s.enabled, true);
+  assert.strictEqual(s.upToDate, false, '內容不同就是過時');
+  assert.match(s.notice ?? '', /plugin uninstall/, '要告訴使用者怎麼重裝');
+});
+
+ok('★ plugin：安裝的判定核心與 repo 相同時 upToDate=true 且不提醒', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  const fresh = join(PDIR, 'fresh-install');
+  mkdirSync(join(fresh, 'hooks'), { recursive: true });
+  const current = readFile(join('plugin', 'hooks', 'verification-core.mjs'), 'utf8');
+  writeFileSync(join(fresh, 'hooks', 'verification-core.mjs'), current);
+  setInstalled({ version: 2, plugins: { [PLUGIN_KEY]: [{ scope: 'user', installPath: fresh }] } });
+  const s = getPluginStatus();
+  assert.strictEqual(s.upToDate, true);
+  assert.strictEqual(s.notice, null);
+});
+
+ok('plugin：讀不到 installPath 時 upToDate 是 null，不當成過時', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  setInstalled({ version: 2, plugins: { [PLUGIN_KEY]: [{ scope: 'user' }] } });
+  const s = getPluginStatus();
+  assert.strictEqual(s.upToDate, null, '比對不了不是過時');
+  assert.strictEqual(s.notice, null, '不該因為比對不了就催人重裝');
+});
+
 ok('plugin：installed_plugins.json 存在但沒有我們的 plugin → 仍算沒裝', () => {
   clearPluginFiles();
   setSettings({ enabledPlugins: {} });
