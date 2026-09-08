@@ -581,5 +581,93 @@
     "to": "  const seconds = DEFAULT_NOTICE_INTERVAL_SEC;",
     "expect": "plugin：間隔可由環境變數覆寫",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "codex parser 不收 file_change（codex 改檔完全看不到）",
+    "file": "src/agents/codex.ts",
+    "from": "        } else if (parsed.type === 'item.completed' && parsed.item?.type === 'file_change') {",
+    "to": "        } else if (false) {",
+    "expect": "codex parser 會收 file_change",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "codex file_change 只收第一個檔案（多檔修改漏掉後面的）",
+    "file": "src/agents/codex.ts",
+    "from": "          for (const change of parsed.item.changes ?? []) {",
+    "to": "          for (const change of (parsed.item.changes ?? []).slice(0, 1)) {",
+    "expect": "codex parser 會收 file_change",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "EDIT_TOOL 不認得 codex 的 file_change",
+    "file": "src/core/verification.ts",
+    "from": "const EDIT_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|edit_file|write_file|file_change)$/i;",
+    "to": "const EDIT_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|edit_file|write_file)$/i;",
+    "expect": "正規化：codex 的 file_change 算 code_change",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "FAIL_TEXT 恢復比對裸 failed（0 failed 被誤判成失敗）",
+    "file": "src/core/verification.ts",
+    "from": "  /(\bFAIL\b|[1-9]\\d*\\s+(tests?\\s+)?(failed|failing|failures)|not ok|error TS\\d|AssertionError|exit code [1-9])/;",
+    "to": "  /(\bFAIL\b|\bfailed\b|not ok|error TS\\d|AssertionError|exit code [1-9])/i;",
+    "expect": "輸出含「0 failed」不得判成失敗",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "echo 出的指令被當成真的跑過驗證",
+    "file": "src/core/verification.ts",
+    "from": "    if (VERIFY_CMD.test(command) && !ECHOED.test(command)) {",
+    "to": "    if (VERIFY_CMD.test(command)) {",
+    "expect": "echo 出指令字串不算跑過驗證",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "驗證判定排在改檔之前（同一指令改檔+驗證時修改憑空消失）",
+    "file": "src/core/verification.ts",
+    "from": "    if (writesCode) {\n      return { kind: 'code_change', label: command.trim().slice(0, 160) };\n    }",
+    "to": "    if (false) {\n      return { kind: 'code_change', label: command.trim().slice(0, 160) };\n    }",
+    "expect": "同一指令同時改檔與驗證",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "canonical 不解析 .. （字面前綴相同就當專案內）",
+    "file": "src/core/verification.ts",
+    "from": "    if (segment === '..') {\n      if (segments.length > 0 && segments[segments.length - 1] !== '..') segments.pop();\n      else segments.push('..');\n      continue;\n    }",
+    "to": "    if (segment === '..') { segments.push('..'); continue; }",
+    "expect": "絕對路徑裡的 .. 要被正規化",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "相對路徑一律放行（../ 可逃逸專案根）",
+    "file": "src/core/verification.ts",
+    "from": "  const file = canonical(isAbsolutePath(target) ? target : `${projectRoot}/${target}`);",
+    "to": "  if (!isAbsolutePath(target)) return true;\n  const file = canonical(target);",
+    "expect": "相對路徑 ../ 不得逃逸專案根",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "shell 改檔不套 projectRoot",
+    "file": "src/core/verification.ts",
+    "from": "      pathTokens(command).some((token) => insideProject(token, projectRoot));",
+    "to": "      CODE_EXT.test(command);",
+    "expect": "shell 改檔也要受 projectRoot 限制",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "verificationFromAgentOutput 沒有 tools 時回 null（第七態：欄位缺席）",
+    "file": "src/core/verification.ts",
+    "from": "  if (!Array.isArray(tools)) {\n    return classifyVerification([], options);\n  }",
+    "to": "  if (!Array.isArray(tools)) {\n    return options.structured === false ? classifyVerification([], options) : null;\n  }",
+    "expect": "verificationFromAgentOutput：一律回報，不回 null",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "build 不同步 plugin 判定核心（marketplace 安裝後永久失效）",
+    "file": "package.json",
+    "from": "\"build\": \"tsc && node tools/sync-plugin-core.mjs\"",
+    "to": "\"build\": \"tsc\"",
+    "expect": "判定核心已同步到 plugin",
+    "script": "verify-verification.mjs"
   }
 ]

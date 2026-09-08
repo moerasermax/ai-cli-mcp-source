@@ -37,7 +37,6 @@ const recorded = new Set<number>();
 
 export function recordVerification(entry: VerificationLogEntry): void {
   if (recorded.has(entry.pid)) return;
-  recorded.add(entry.pid);
   try {
     const dir = stateDir();
     mkdirSync(dir, { recursive: true });
@@ -45,8 +44,14 @@ export function recordVerification(entry: VerificationLogEntry): void {
       join(dir, 'verification-gate.jsonl'),
       JSON.stringify({ at: new Date().toISOString(), source: 'ai-cli', ...entry }) + '\n'
     );
+    /*
+      去重標記放在**寫入成功之後**。先標記的話，第一次寫失敗（磁碟滿、權限、
+      狀態目錄還沒建起來）就永遠不會再重試，那筆紀錄靜靜消失
+      （2026-09-08 codex 稽核抓到）。
+    */
+    recorded.add(entry.pid);
   } catch {
-    /* 記錄失敗不影響工具回傳 */
+    /* 記錄失敗不影響工具回傳，下次呼叫會再試 */
   }
 }
 

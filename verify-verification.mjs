@@ -83,6 +83,65 @@ ok('正規化：MCP 呼叫不算 code_change 也不算 verification', () => {
   assert.strictEqual(normalizeToolEvent(codexMcp('knowledge_search')).kind, 'other');
 });
 
+// ★ 2026-09-08 端到端實測抓到：codex 改檔不走 shell，走 file_change。
+// 只收 command_execution 的話，codex 子 agent 改了程式碼也永遠判 not_applicable。
+ok('★ 正規化：codex 的 file_change 算 code_change', () => {
+  const e = normalizeToolEvent({ tool: 'file_change', input: { file_path: 'src/a.ts', kind: 'update' } });
+  assert.strictEqual(e.kind, 'code_change', 'codex 改檔走 file_change，不是 shell');
+});
+
+ok('正規化：file_change 刪除程式碼也算數', () => {
+  const e = normalizeToolEvent({ tool: 'file_change', input: { file_path: 'src/a.ts', kind: 'delete' } });
+  assert.strictEqual(e.kind, 'code_change', '刪掉程式碼一樣需要驗證');
+});
+
+ok('正規化：file_change 改到文件不算 code_change', () => {
+  const e = normalizeToolEvent({ tool: 'file_change', input: { file_path: 'README.md', kind: 'update' } });
+  assert.strictEqual(e.kind, 'other');
+});
+
+ok('★ codex parser 會收 file_change 並展開成每檔一筆', async () => {
+  const { codexAgent } = await import('./dist/agents/codex.js');
+  // 真實 codex NDJSON（2026-09-08 由 codex 0.153.4 實際輸出捕捉）
+  const ndjson = [
+    JSON.stringify({ type: 'thread.started', thread_id: 'th_1' }),
+    JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'i1', type: 'file_change', status: 'completed',
+        changes: [{ path: 'D:\\proj\\src\\a.ts', kind: 'update' }, { path: 'D:\\proj\\src\\b.ts', kind: 'add' }] },
+    }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'done' } }),
+  ].join('\n');
+  const parsed = codexAgent.parseOutput(ndjson, '', 0, { workFolder: 'D:\\proj', status: 'completed' });
+  const changes = (parsed.tools ?? []).filter((t) => t.tool === 'file_change');
+  assert.strictEqual(changes.length, 2, '一筆 file_change 帶兩個檔案，要展開成兩筆');
+  assert.strictEqual(changes[0].input.file_path, 'D:\\proj\\src\\a.ts');
+  assert.strictEqual(changes[1].input.kind, 'add');
+});
+
+ok('★ codex 端到端形狀：file_change + 之後跑 npm test → passed', async () => {
+  const { codexAgent } = await import('./dist/agents/codex.js');
+  const ndjson = [
+    JSON.stringify({ type: 'item.completed', item: { id: 'i1', type: 'file_change', changes: [{ path: 'D:\\proj\\src\\a.ts', kind: 'update' }] } }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'i2', type: 'command_execution', command: 'pwsh.exe -Command "npm test"', aggregated_output: 'ok', exit_code: 0 } }),
+  ].join('\n');
+  const parsed = codexAgent.parseOutput(ndjson, '', 0, { workFolder: 'D:\\proj', status: 'completed' });
+  const r = verificationFromAgentOutput(parsed, { projectRoot: 'D:\\proj' });
+  assert.strictEqual(r.status, 'passed', `實際 ${r.status}: ${r.reason}`);
+});
+
+ok('★ codex 端到端形狀：只有 file_change 沒驗證 → not_observed', async () => {
+  const { codexAgent } = await import('./dist/agents/codex.js');
+  const ndjson = JSON.stringify({
+    type: 'item.completed',
+    item: { id: 'i1', type: 'file_change', changes: [{ path: 'D:\\proj\\src\\a.ts', kind: 'update' }] },
+  });
+  const parsed = codexAgent.parseOutput(ndjson, '', 0, { workFolder: 'D:\\proj', status: 'completed' });
+  const r = verificationFromAgentOutput(parsed, { projectRoot: 'D:\\proj' });
+  assert.strictEqual(r.status, 'not_observed', `實際 ${r.status}`);
+  assert.match(r.evidence.lastCodeChange ?? '', /a\.ts/);
+});
+
 // ---------------- 專案範圍（projectRoot）----------------
 // 真實 transcript 實測抓到的誤報：寫到暫存目錄的一次性分析腳本被當成專案程式碼。
 const ROOT = 'C:\\Users\\Moera\\ai-cli-mcp-source';
@@ -226,8 +285,12 @@ ok('無結構化紀錄時不得回報 not_applicable', () => {
 });
 
 // ---------------- agentOutput 介面 ----------------
-ok('verificationFromAgentOutput：tools 不存在且 structured 時回 null', () => {
-  assert.strictEqual(verificationFromAgentOutput({ message: 'hi' }), null);
+// 舊版在這裡回 null，等於多出一個沒有名字的第七態「欄位缺席」，
+// 跟 process-result 宣稱的「一律回報」自相矛盾（codex 稽核抓到）。
+ok('★ verificationFromAgentOutput：一律回報，不回 null', () => {
+  const r = verificationFromAgentOutput({ message: 'hi' });
+  assert.notStrictEqual(r, null, '欄位缺席不是一種狀態');
+  assert.strictEqual(r.status, 'not_applicable', '有記錄能力但沒有工具事件 = 真的沒動到檔案');
 });
 
 ok('verificationFromAgentOutput：agy（structured=false）回 not_observed', () => {
@@ -271,9 +334,84 @@ ok('antigravity 的結果標成 not_observed 而不是 not_applicable', () => {
   assert.strictEqual(r.verification.status, 'not_observed');
 });
 
-ok('沒有 tools 的 claude 結果不硬掰驗證狀態', () => {
+ok('★ 沒有 tools 的 claude 結果也要有 verification（契約一致）', () => {
   const r = buildProcessResult(ctx(), { message: 'done' }, false);
-  assert.strictEqual(r.verification, undefined, '看不到工具紀錄時不應捏造狀態');
+  assert.ok(r.verification, 'verification 欄位不得缺席');
+  assert.strictEqual(r.verification.status, 'not_applicable');
+});
+
+// ---------------- codex 稽核驗證成立的問題 ----------------
+ok('★ 輸出含「0 failed」不得判成失敗（最常見的成功輸出）', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'npm test' }, output: '49 passed, 0 failed' });
+  assert.strictEqual(e.ok, true, '"0 failed" 是成功，不是失敗');
+});
+
+ok('輸出含「3 failed」仍要判成失敗', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'npm test' }, output: '46 passed, 3 failed' });
+  assert.strictEqual(e.ok, false);
+});
+
+ok('輸出含「all tests passed」不得判成失敗', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'npm test' }, output: 'all tests passed' });
+  assert.strictEqual(e.ok, true);
+});
+
+ok('★ echo 出指令字串不算跑過驗證（最廉價的偽造）', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'echo "npm test"' }, output: 'npm test' });
+  assert.notStrictEqual(e.kind, 'verification', 'echo 不是執行');
+});
+
+ok('★ 同一指令同時改檔與驗證 → 判成 code_change（不得假通過）', () => {
+  const events = [
+    normalizeToolEvent({ tool: 'Bash', input: { command: 'sed -i s/a/b/ src/a.ts && npm test' }, output: 'ok' }),
+  ];
+  assert.strictEqual(events[0].kind, 'code_change', '無法確定先後，保守當成未驗證');
+  assert.strictEqual(classifyVerification(events).status, 'not_observed');
+});
+
+ok('★ 前一次改檔已驗證，之後又用一行 shell 改檔 → 不得判 passed', () => {
+  const events = [
+    { tool: 'Edit', input: { file_path: 'src/a.ts' } },
+    { tool: 'Bash', input: { command: 'npm test' }, output: 'ok' },
+    { tool: 'Bash', input: { command: 'sed -i s/x/y/ src/b.ts && npm test' }, output: 'ok' },
+  ].map((e) => normalizeToolEvent(e));
+  assert.strictEqual(classifyVerification(events).status, 'not_observed', '後來那次修改不能被前面的驗證蓋過');
+});
+
+ok('★ 相對路徑 ../ 不得逃逸專案根', () => {
+  const e = normalizeToolEvent(claudeEdit('../outside/evil.ts'), { projectRoot: 'C:\\proj' });
+  assert.strictEqual(e.kind, 'other', '../ 指向專案外');
+});
+
+ok('★ 絕對路徑裡的 .. 要被正規化', () => {
+  const e = normalizeToolEvent(claudeEdit('C:\\proj\\..\\outside\\evil.ts'), { projectRoot: 'C:\\proj' });
+  assert.strictEqual(e.kind, 'other', '字面前綴相同不代表真的在專案內');
+});
+
+ok('★ shell 改檔也要受 projectRoot 限制', () => {
+  const e = normalizeToolEvent(
+    { tool: 'Bash', input: { command: 'sed -i s/a/b/ D:\\elsewhere\\evil.ts' } },
+    { projectRoot: 'C:\\proj' }
+  );
+  assert.strictEqual(e.kind, 'other', '改專案外的檔案不該要求本專案跑測試');
+});
+
+ok('shell 改專案內的相對路徑仍算 code_change', () => {
+  const e = normalizeToolEvent(
+    { tool: 'Bash', input: { command: 'sed -i s/a/b/ src/a.ts' } },
+    { projectRoot: 'C:\\proj' }
+  );
+  assert.strictEqual(e.kind, 'code_change');
+});
+
+ok('★ 判定核心已同步到 plugin（dist 不進版控，plugin 必須自足）', async () => {
+  const { readFileSync: rf, existsSync: ex } = await import('node:fs');
+  const target = 'plugin/hooks/verification-core.mjs';
+  assert.ok(ex(target), 'plugin 必須自帶判定核心，否則 marketplace 安裝後永久靜默失效');
+  const { bodyOf } = await import('./tools/sync-plugin-core.mjs');
+  const synced = bodyOf(rf(target, 'utf8'));
+  const compiled = rf('dist/core/verification.js', 'utf8');
+  assert.strictEqual(synced, compiled, '判定核心與 src 不一致——請重跑 npm run build');
 });
 
 // ---------------- 落地記錄（第 1 層與 hook 共用同一份檔案）----------------

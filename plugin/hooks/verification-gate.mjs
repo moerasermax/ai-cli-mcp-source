@@ -1,5 +1,5 @@
 /**
- * Stop hook：改了程式碼卻沒跑驗證就結束回應時，擋一次並要求補驗證。
+ * Stop hook：改了程式碼卻沒跑驗證（或驗證失敗）就結束回應時，擋一次。
  *
  * 為什麼需要：2026-09-08 掃 178 條 transcript 量到，有改到程式碼的工作段裡
  * 31.7% 完全沒跑任何 test/build，而且比例隨上下文長度上升（0-200k 5%、600-800k 59%）。
@@ -8,8 +8,7 @@
  *
  * 硬性規則（照 codex 稽核意見）：
  *   1. **一律 exit 0**。任何內部例外都靜默退出，絕不讓這支腳本弄壞使用者的 session。
- *   2. **最多擋一次**。官方輸入的 stop_hook_active 就是為了防無限迴圈；第二次一律放行
- *      並記成 waived，不可能永遠 block。
+ *   2. **最多擋一次**。官方輸入的 stop_hook_active 就是為了防無限迴圈；第二次一律放行。
  *   3. **判定用事件順序**。驗證必須發生在最後一次修改之後，否則「先跑測試再改程式碼」
  *      會假通過。
  *   4. **無法可靠判定時不擋**。讀不到 transcript、找不到判定模組，都直接放行。
@@ -114,27 +113,30 @@ function currentTurnEvents(transcriptPath) {
 function record(entry) {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    appendFileSync(LOG_PATH, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+    appendFileSync(
+      LOG_PATH,
+      JSON.stringify({ at: new Date().toISOString(), source: 'hook', ...entry }) + '\n'
+    );
   } catch {
     /* 記錄失敗不能影響判定 */
   }
 }
 
 async function loadClassifier() {
-  // plugin 與 ai-cli 同 repo，安裝時 prepare 會 build 出 dist。
-  // 找不到就放行——寧可不擋，也不要因為建置狀態擋住使用者。
-  const candidates = [
-    join(HERE, '..', '..', 'dist', 'core', 'verification.js'),
-    join(HERE, '..', '..', '..', 'dist', 'core', 'verification.js'),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return await import(pathToFileURL(candidate).href);
-    } catch {
-      /* 換下一個候選路徑 */
-    }
+  /*
+    只 import plugin 自己帶的那份，**不去猜 ai-cli 的安裝位置**。
+
+    舊版試著 import `../../dist/core/verification.js`，但 dist 不進版控——plugin 從
+    marketplace 安裝時拿到的只有版控裡的檔案，所以在正式安裝的機器上一定找不到，
+    而「找不到就放行」的設計會讓整個閘門永久靜默失效，且不留任何痕跡
+    （2026-09-08 codex 稽核抓到，實測 git ls-files dist 為 0）。
+    verification-core.mjs 由 npm run build 自動同步並進版控，跟 hook 同目錄，一定在。
+  */
+  try {
+    return await import(pathToFileURL(join(HERE, 'verification-core.mjs')).href);
+  } catch {
+    return null;
   }
-  return null;
 }
 
 async function main() {
@@ -168,19 +170,35 @@ async function main() {
     { structured: true }
   );
 
-  if (report.status !== 'not_observed' || !report.evidence.lastCodeChange) {
-    // 沒改程式碼、已驗證、或驗證失敗（失敗時模型自己就會看到，不需要再擋一次）
+  /*
+    該擋的兩種情況：改了程式碼卻沒驗證，或驗證跑了而且失敗。
+
+    舊版只擋前者，理由是「失敗時模型自己看得到」。但那正是完成閘門要防的事——
+    模型看得到失敗，仍然可能回一句「改好了」就結束（2026-09-08 codex 稽核指出
+    「這不是完成閘門」）。所以驗證失敗也擋一次。
+  */
+  const shouldBlock =
+    (report.status === 'not_observed' || report.status === 'failed') &&
+    !!report.evidence.lastCodeChange;
+
+  if (!shouldBlock) {
     if (report.evidence.lastCodeChange) {
       record({ session: event.session_id, status: report.status, gate: 'allow' });
     }
     return;
   }
 
-  // 第二次仍未驗證就放行，記成 waived。stop_hook_active 是官方用來防無限迴圈的旗標。
+  /*
+    第二次一律放行。stop_hook_active 是官方用來防無限迴圈的旗標。
+
+    這裡**不記成 waived**：waived 的定義是「有明確記錄的豁免理由」，而 hook 沒有
+    可靠的方法判斷模型是否真的寫了理由——照記 waived 會讓紀錄說謊
+    （2026-09-08 codex 稽核抓到）。誠實記下原狀態，只標明是擋過之後放行的。
+  */
   if (event.stop_hook_active) {
     record({
       session: event.session_id,
-      status: 'waived',
+      status: report.status,
       gate: 'allow-after-block',
       lastCodeChange: report.evidence.lastCodeChange,
     });
@@ -195,23 +213,31 @@ async function main() {
     stale: report.evidence.staleVerifications,
   });
 
+  const failedList = report.evidence.failedVerifications.map((v) => '  - ' + v).join('\n');
   const stale =
     report.evidence.staleVerifications > 0
-      ? `（有 ${report.evidence.staleVerifications} 次驗證跑在這次修改之前，不算數）`
+      ? '（有 ' + report.evidence.staleVerifications + ' 次驗證跑在這次修改之前，不算數）'
       : '';
-  process.stdout.write(
-    JSON.stringify({
-      decision: 'block',
-      reason:
-        `這個回合改到了程式碼（最後一次：${report.evidence.lastCodeChange}），` +
-        `但修改之後沒有跑過任何測試或建置${stale}。\n` +
-        `請擇一完成後再結束：\n` +
-        `1. 跑這個專案對應的驗證（測試 / 建置 / 型別檢查），並回報結果；\n` +
-        `2. 若這個改動確實無法驗證（例如專案沒有測試框架、或改的是無法自動驗證的部分），` +
-        `明確寫出一句「不驗證的理由」再結束。\n` +
-        `這個閘門只會擋一次，第二次一律放行。`,
-    })
-  );
+  const reason =
+    report.status === 'failed'
+      ? '這個回合改到了程式碼（最後一次：' + report.evidence.lastCodeChange + '），' +
+        '而修改之後跑的驗證失敗了：\n' + failedList + '\n' +
+        '請修到通過再結束，或明確寫出「為什麼這個失敗可以先不處理」。\n' +
+        '這個閘門只會擋一次，第二次一律放行。'
+      : '這個回合改到了程式碼（最後一次：' + report.evidence.lastCodeChange + '），' +
+        '但修改之後沒有跑過任何測試或建置' + stale + '。\n' +
+        '請擇一完成後再結束：\n' +
+        '1. 跑這個專案對應的驗證（測試 / 建置 / 型別檢查），並回報結果；\n' +
+        '2. 若這個改動確實無法驗證（例如專案沒有測試框架、或改的是無法自動驗證的部分），' +
+        '明確寫出一句「不驗證的理由」再結束。\n' +
+        '這個閘門只會擋一次，第二次一律放行。';
+
+  // 用 callback 等 stdout 真的寫出去再退出；立刻 process.exit 可能截斷輸出。
+  await new Promise((resolve) => {
+    process.stdout.write(JSON.stringify({ decision: 'block', reason }), () => resolve());
+  });
 }
 
-main().catch(() => {}).finally(() => process.exit(0));
+main()
+  .catch(() => {})
+  .finally(() => process.exit(0));

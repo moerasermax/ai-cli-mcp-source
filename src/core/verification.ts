@@ -44,8 +44,11 @@ export interface VerificationReport {
 const CODE_EXT =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|cs|cpp|cc|c|h|hpp|rb|php|swift|kt|kts|scala|sh|bash|ps1|sql|vue|svelte|dart|ex|exs|lua|m|mm|pl|r)$/i;
 
-/** 直接改檔的工具。 */
-const EDIT_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|edit_file|write_file)$/i;
+/**
+ * 直接改檔的工具。
+ * `file_change` 是 codex 的形狀（它改檔不走 shell），由 agents/codex.ts 展開成每檔一筆。
+ */
+const EDIT_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|edit_file|write_file|file_change)$/i;
 
 /** shell 裡也能改程式碼：重導向、sed -i、tee、patch、mv/cp 到程式碼檔。 */
 const SHELL_WRITE =
@@ -55,9 +58,24 @@ const SHELL_WRITE =
 const VERIFY_CMD =
   /(npm\s+(run\s+)?(test|build|lint|typecheck)|yarn\s+(test|build|lint)|pnpm\s+(test|build|lint)|npx\s+(tsc|vitest|jest|eslint)|pytest|python\s+-m\s+pytest|cargo\s+(test|build|check|clippy)|go\s+(test|build|vet)|dotnet\s+(test|build)|mvn\s+(test|verify)|gradle\s+(test|build)|\btsc\b|vitest|jest|eslint|ruff|mypy|make\s+(test|check|build))/i;
 
-/** 沒有 exit code 可用時，從輸出文字判失敗。寧可誤判成 failed 也不要誤判成 passed。 */
+/**
+ * 只是把指令字串印出來，不是真的跑。
+ * `echo "npm test"` 不能算驗證過——那是最廉價的偽造方式（codex 稽核抓到）。
+ */
+const ECHOED = /^\s*(echo|printf|print|cat|type|write-host|write-output)\b/i;
+
+/** 「零失敗」的說法。這些出現時，不可以因為字面有 failed 就判成失敗。 */
+const ZERO_FAIL = /\b0\s+(tests?\s+)?(failed|failing|failures|errors)\b|\ball tests? passed\b|\bno tests? failed\b/i;
+
+/**
+ * 沒有 exit code 可用時，從輸出文字判失敗。
+ *
+ * 刻意**不**比對裸的小寫 `failed`——`49 passed, 0 failed` 是最常見的成功輸出，
+ * 舊版會把它判成失敗（2026-09-08 codex 稽核抓到，實測成立）。改成只認
+ * 「非零個失敗」與明確的失敗標記。有 exit code 時一律以 exit code 為準。
+ */
 const FAIL_TEXT =
-  /(\bFAIL\b|\bfailed\b|\bfailing\b|not ok|error TS\d|\bError:|AssertionError|\d+ (test(s)? )?failed|exit code [1-9])/i;
+  /(\bFAIL\b|[1-9]\d*\s+(tests?\s+)?(failed|failing|failures)|not ok|error TS\d|AssertionError|exit code [1-9])/;
 
 /**
  * 判定選項。`projectRoot` 是這套判定唯一的「範圍」概念。
@@ -71,29 +89,52 @@ export interface NormalizeOptions {
   projectRoot?: string | null;
 }
 
-/** 路徑正規化到可比對的形式：統一斜線、去掉大小寫差異（Windows）。 */
-function canonical(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-}
-
 /** Windows 磁碟機、UNC 或 POSIX 絕對路徑。 */
 function isAbsolutePath(path: string): boolean {
   return /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
 }
 
 /**
+ * 路徑正規化：統一斜線、解析掉 `.` 與 `..`、Windows 上去掉大小寫差異。
+ *
+ * `..` 必須真的解析，不能只做字面比對——否則 `C:\proj\..\outside\evil.ts`
+ * 會因為字首是 `C:\proj` 而被當成專案內（2026-09-08 codex 稽核抓到）。
+ * POSIX 檔案系統大小寫敏感，只在 win32 折疊大小寫。
+ */
+function canonical(path: string): string {
+  const unified = path.replace(/\\/g, '/');
+  const leadingSlash = unified.startsWith('/');
+  const segments: string[] = [];
+  for (const segment of unified.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (segments.length > 0 && segments[segments.length - 1] !== '..') segments.pop();
+      else segments.push('..');
+      continue;
+    }
+    segments.push(segment);
+  }
+  const joined = (leadingSlash ? '/' : '') + segments.join('/');
+  return process.platform === 'win32' ? joined.toLowerCase() : joined;
+}
+
+/**
  * target 是否位於 projectRoot 底下。沒給 root 就一律算數（維持舊行為）。
  *
- * 相對路徑一律算在專案內——它本來就是相對於工作目錄解析的，
- * 拿它去跟絕對路徑的 root 比對只會全部落空。
+ * 相對路徑**接到 projectRoot 上再判斷**，不是一律放行——`../outside/evil.ts`
+ * 是相對路徑，但它指向專案外面。
  */
 function insideProject(target: string, projectRoot?: string | null): boolean {
   if (!projectRoot) return true;
-  if (!isAbsolutePath(target)) return true;
   const root = canonical(projectRoot);
-  const file = canonical(target);
   if (!root) return true;
+  const file = canonical(isAbsolutePath(target) ? target : `${projectRoot}/${target}`);
   return file === root || file.startsWith(root + '/');
+}
+
+/** 從 shell 指令裡撈出看起來像檔案路徑的 token，用來判斷改的是不是專案內的檔案。 */
+function pathTokens(command: string): string[] {
+  return (command.match(/[^\s'"<>|&;()]+/g) ?? []).filter((token) => CODE_EXT.test(token));
 }
 
 /** 統一過的事件；不同 agent 的原始格式先正規化成這個形狀再判定。 */
@@ -156,14 +197,26 @@ export function normalizeToolEvent(entry: unknown, options: NormalizeOptions = {
   }
 
   if (command) {
-    if (VERIFY_CMD.test(command)) {
-      const exitCode = record.exit_code ?? record.exitCode;
-      const ok =
-        typeof exitCode === 'number' ? exitCode === 0 : !FAIL_TEXT.test(outputText(record.output));
-      return { kind: 'verification', label: command.trim().slice(0, 160), ok };
-    }
-    if (SHELL_WRITE.test(command) && CODE_EXT.test(command)) {
+    /*
+      **改檔要先判**。一個指令可能同時做兩件事（`sed -i src/a.ts && npm test`），
+      舊版先認驗證就直接回傳，那次修改等於憑空消失——後續若再有一次驗證，
+      整體就會被判成 passed（假通過）。無法從單一事件知道兩者的先後，
+      所以保守當成「有改檔、尚未驗證」：寧可多要求跑一次測試，也不要放過假通過。
+    */
+    const writesCode =
+      SHELL_WRITE.test(command) &&
+      pathTokens(command).some((token) => insideProject(token, projectRoot));
+    if (writesCode) {
       return { kind: 'code_change', label: command.trim().slice(0, 160) };
+    }
+    if (VERIFY_CMD.test(command) && !ECHOED.test(command)) {
+      const exitCode = record.exit_code ?? record.exitCode;
+      const text = outputText(record.output);
+      const ok =
+        typeof exitCode === 'number'
+          ? exitCode === 0
+          : ZERO_FAIL.test(text) || !FAIL_TEXT.test(text);
+      return { kind: 'verification', label: command.trim().slice(0, 160), ok };
     }
   }
 
@@ -260,21 +313,24 @@ export function classifyVerification(
 }
 
 /**
- * 從 agent 的 `tools` 陣列直接產出報告。`tools` 為 undefined 代表 parser 沒抽到東西
- * （agy 一律如此），這跟「有紀錄但裡面沒有驗證」必須分開回報。
+ * 從 agent 的 `tools` 陣列產出報告。**一律回報，不回 null。**
+ *
+ * 舊版在「有結構化紀錄能力但這次沒有 tools」時回 null，等於多出一個沒有名字的
+ * 第七態「欄位缺席」，跟 process-result 宣稱的「一律回報」自相矛盾
+ * （2026-09-08 codex 稽核抓到）。現在分成兩種明確狀態：
+ *   - 有記錄能力、這次沒有工具事件 → `not_applicable`（真的沒動到檔案）
+ *   - 沒有記錄能力（agy） → `not_observed`（看不到，不是沒有）
  */
 export function verificationFromAgentOutput(
   agentOutput: unknown,
   options: { structured?: boolean; waivedReason?: string | null; projectRoot?: string | null } = {}
-): VerificationReport | null {
+): VerificationReport {
   const tools =
     agentOutput && typeof agentOutput === 'object'
       ? (agentOutput as Record<string, unknown>).tools
       : undefined;
   if (!Array.isArray(tools)) {
-    return options.structured === false
-      ? classifyVerification([], options)
-      : null;
+    return classifyVerification([], options);
   }
   // 注意不要寫成 tools.map(normalizeToolEvent)：map 會把 index 當第二參數傳進去。
   const projectRoot = options.projectRoot ?? null;

@@ -133,6 +133,23 @@ function parseOutput(stdout: string, stderr: string): unknown {
             output: parsed.item.aggregated_output,
             exit_code: parsed.item.exit_code,
           });
+        } else if (parsed.type === 'item.completed' && parsed.item?.type === 'file_change') {
+          /*
+            codex 改檔走 `file_change`，不是 shell。2026-09-08 端到端實測抓到：
+            只收 command_execution 與 mcp_tool_call 的話，codex 子 agent 改了程式碼
+            也完全看不到，驗證狀態會永遠停在 not_applicable——第 1 層等於對 codex 失效。
+
+            一筆 file_change 可帶多個 changes，這裡展開成每檔一筆，讓判定端
+            （core/verification.ts）沿用既有的 file_path 形狀，不必為 codex 特例。
+            kind 有 update / add / delete，刪掉程式碼一樣需要驗證，所以都收。
+          */
+          for (const change of parsed.item.changes ?? []) {
+            tools.push({
+              tool: 'file_change',
+              input: { file_path: change?.path, kind: change?.kind },
+              output: null,
+            });
+          }
         }
       } catch {
         debugLog(`[Debug] Skipping invalid JSON line: ${line}`);

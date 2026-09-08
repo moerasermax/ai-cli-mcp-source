@@ -120,17 +120,19 @@ test('改了程式碼且驗證通過 → 放行', async () => {
   check('驗證過就不擋', decisionOf(r.stdout) === null, r.stdout);
 });
 
-test('驗證失敗 → 不重複擋，但必須如實記成 failed', async () => {
+test('驗證失敗 → 也要擋一次，並如實記成 failed', async () => {
   // 輸出文字刻意不含任何失敗字樣：這樣 is_error 是判定失敗的**唯一**資訊來源。
-  // 若 hook 沒把 is_error 轉成 exit_code，這裡會被誤判成 passed——而兩者都不會擋，
-  // 所以光看「有沒有擋」是分不出來的，必須斷言記錄下來的狀態。
+  // 若 hook 沒把 is_error 轉成 exit_code，這裡會被誤判成 passed，於是不擋。
   const t = writeTranscript('failed', [
     userPrompt('幫我修一下'),
     assistantTools(edit('src/a.ts'), bash('npm test')),
     toolResults({ id: 't0' }, { id: 't1', content: 'done', is_error: true }),
   ]);
   const r = await runHook({ transcript_path: t, session_id: 's3' });
-  check('驗證失敗時不再擋一次', decisionOf(r.stdout) === null, r.stdout);
+  const d = decisionOf(r.stdout);
+  // 這是完成閘門，不是提醒：模型看得到測試失敗，仍可能回一句「改好了」就結束。
+  check('驗證失敗也要擋一次', d?.decision === 'block', r.stdout);
+  check('擋下時說明是驗證失敗', /失敗了/.test(d?.reason ?? ''), d?.reason);
   const entry = readLog().find((l) => l.session === 's3');
   check(
     '如實記成 failed 而不是 passed',
@@ -179,12 +181,18 @@ test('stop_hook_active → 一律放行（防無限迴圈）', async () => {
   ]);
   const r = await runHook({ transcript_path: t, session_id: 's7', stop_hook_active: true });
   check('第二次不再擋', decisionOf(r.stdout) === null, r.stdout);
-  const log = join(TEMP, 'state', 'verification-gate.jsonl');
-  const lines = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  const entry = readLog().find((l) => l.session === 's7');
+  // 不可記成 waived：waived 的定義是「有明確記錄的豁免理由」，而 hook 無法
+  // 可靠判斷模型是否真的寫了理由。照記 waived 會讓紀錄說謊。
   check(
-    '放行時記成 waived',
-    lines.some((l) => l.session === 's7' && l.status === 'waived'),
-    JSON.stringify(lines.slice(-3))
+    '放行時誠實記下原狀態，不謊稱 waived',
+    entry?.status === 'not_observed',
+    `實際記到 ${JSON.stringify(entry)}`
+  );
+  check(
+    '標明是擋過之後才放行的',
+    entry?.gate === 'allow-after-block',
+    `實際 gate=${entry?.gate}`
   );
 });
 

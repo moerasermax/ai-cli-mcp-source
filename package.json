@@ -11,7 +11,7 @@
     "ai-cli-mcp": "dist/bin/ai-cli-mcp.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node tools/sync-plugin-core.mjs",
     "prepare": "npm run build",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
