@@ -1,0 +1,18 @@
+{
+  "name": "ai-cli-mcp",
+  "owner": {
+    "name": "moerasermax",
+    "url": "https://github.com/moerasermax"
+  },
+  "metadata": {
+    "description": "ai-cli-mcp 的隨附 Claude Code plugin。",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "ai-cli-verification-gate",
+      "source": "./plugin",
+      "description": "程式碼修改完成閘門：改了 code 沒驗證就結束時擋一次。"
+    }
+  ]
+}

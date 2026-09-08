@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+### 新增（程式碼修改驗證閘門）
+- 新增 `src/core/verification.ts`：程式碼修改的驗證狀態五態判定（`not_applicable` / `not_observed` / `passed` / `failed` / `waived`，running 另回 `pending`）。**刻意不是布林值**——`verified: false` 沒辦法區分「沒改程式碼所以不用驗」「改了但看不到有沒有驗」「驗了而且失敗」這三件對呼叫端意義完全不同的事。判定依**事件順序**：驗證必須發生在最後一次修改之後，否則「先跑測試再改程式碼」會假通過。（Claude，moerasermax 指示）
+- `run` / `wait` / `get_result` 的回傳新增 `verification` 欄位，**compact 模式也不拿掉**。呼叫端是 AI，它只看得到工具回傳；回傳沒說「這次改了程式碼但沒驗證」，它就會把子 agent 的「我做完了」當成做完了。這與 2026-09-05「wait 逾時不丟錯、改回 liveness」同源：工具要對 AI 說實話。antigravity 沒有結構化工具紀錄，一律回 `not_observed`（看不到不等於沒改），不得回 `not_applicable`。（Claude，moerasermax 指示）
+- 新增隨附的 Claude Code plugin `ai-cli-verification-gate`（`plugin/`，附 `.claude-plugin/marketplace.json`）：Stop hook 在「本回合改了程式碼卻沒跑驗證」時擋一次，要求補驗證或寫明豁免理由。硬性規則為一律 exit 0、最多擋一次（靠官方 `stop_hook_active` 防無限迴圈，第二次一律放行並記為 waived）、無法可靠判定時不擋。與第 1 層共用同一個判定模組，不是另一套規則。（Claude，moerasermax 指示）
+- 新增 `verify-verification.mjs`（27 條）與 `verify-gate-hook.mjs`（18 條）並納入 `npm test`；新增 9 個突變（6 個判定邏輯、3 個 hook），涵蓋順序陷阱、compact 拿掉 verification、running 假稱結果、agy 誤判、豁免蓋過失敗、exit_code 被輸出文字蓋過。hook 的狀態目錄沿用 `AI_CLI_STATE_DIR` 隔離，測試不碰使用者目錄。（Claude，moerasermax 指示）
+- 動機是實測而非臆測：掃 2026-09-06 13:00 起 44 小時、178 條 Claude Code transcript、26,003 筆 usage 記錄後，有改到程式碼的工作段裡 **31.7% 完全沒跑任何 test/build**，且該比例隨上下文長度上升（峰值 0-200k 為 5%、600-800k 為 59%）；有驗證的工作段返工率 59.2%、平均 4.67 圈。同一份資料顯示首次驗證通過率在各上下文區間之間沒有趨勢（89/77/86/78/86%），亦即長上下文並未讓品質變差，只是同一件工作在 800k+ 要花 11.64M 額度、在 200k 以下只要 1.43M。（Claude，moerasermax 指示）
+- 這批由 Claude 實作、@codex-gpt-5.6-sol（high）分三輪獨立稽核並修正三個實錯：兩張統計表口徑不一致（效率差距 8.3 倍實為 2.7 倍）、首次通過率母體混入未改程式碼的工作段（91.4% 實為 81.7%）、`205:1965` 是不同單位不能當覆蓋率。設計上採納其三項意見：五態而非布林、驗證須在最後一次修改之後、以 companion plugin 散布而非改寫使用者的 `~/.claude/settings.json`。（Claude，moerasermax 指示）
+
 ### 新增（ai-cli 自動更新）
 - 原始碼安裝新增背景更新器：MCP 連線後延遲檢查 origin，獨立 CLI 子程序以 fast-forward 套用、依套件變動安裝或建置、doctor 煙霧測試；支援 on／check／off、檢查節流、髒樹與分支守門、pid 殘留鎖、失敗回滾和 node-pty 鎖檔說明。（@codex-gpt-6-astra，moerasermax 指示）
 - 新增 `ai-cli update [--check] [--json]`、原子寫入的 update.json 與 update.lock、含 SHA／commit 標題／CHANGELOG 網址的持續重啟提示；doctor.update、MCP run.updateNotice、models.updateNotice 及 stderr／MCP warning 通知讓使用者可見，新版啟動才清提示。（@codex-gpt-6-astra，moerasermax 指示）

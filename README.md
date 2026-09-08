@@ -112,6 +112,60 @@ This matters because Codex and Claude emit nothing at all while reasoning. Witho
 The file-backed path keeps a `lost` state: the PID is gone and no completion was
 recorded, so the outcome is genuinely unknown — which is not the same as failed.
 
+## Did the code actually get verified?
+
+Same idea as `liveness`, one layer up: the caller is an AI, and it only ever sees the
+tool result. If the result does not say "this job changed code and never ran a test",
+the caller treats the sub-agent's "done" as done.
+
+So `run`, `wait` and `get_result` all carry a `verification` field — **including in
+compact mode**, because a field that only exists under `verbose` is a field nobody
+reads.
+
+| Status | Meaning |
+|---|---|
+| `not_applicable` | No source file was modified. Nothing needed verifying. |
+| `not_observed` | Either code changed and no verification followed, or the agent emits no structured tool history at all (agy). "Can't see" is not "didn't happen". |
+| `passed` | A test/build/lint ran **after the last code change** and succeeded. |
+| `failed` | Such a run happened and failed. Do not treat the work as done. |
+| `waived` | Code changed without verification, with an explicit reason recorded. Never overrides `failed`. |
+| `pending` | Still running. Anything else would be a guess. |
+
+It is deliberately not a boolean. `verified: false` cannot tell apart "no code was
+touched", "code was touched but I can't see whether it was checked", and "it was
+checked and it broke" — three states that call for three different next moves.
+
+Ordering is the whole game: verification only counts if it ran **after** the last
+edit. Otherwise "run the tests, then change the code" reports a pass. The evidence
+object names the last code change, the verifications that followed it, and how many
+stale ones were ignored.
+
+### The companion plugin
+
+The same judgement runs on your own turns too, via a bundled Claude Code plugin
+(`plugin/`, published through `.claude-plugin/marketplace.json`). Its `Stop` hook
+blocks **once** when a turn changed code and never verified it, then asks you to run
+the tests or state why you are not going to.
+
+```bash
+/plugin marketplace add moerasermax/ai-cli-mcp-source
+/plugin install ai-cli-verification-gate@ai-cli-mcp
+```
+
+Hard rules: always exit 0, never break the session; block at most once (the official
+`stop_hook_active` flag exists for exactly this, and the second pass is always let
+through and logged as `waived`); and when the situation cannot be judged reliably —
+unreadable transcript, missing module — let it through. Missing a violation is
+cheaper than blocking work that was fine.
+
+Why it exists: scanning 178 transcripts over 44 hours (26,003 usage records), **31.7%
+of work segments that touched source code never ran a single test or build**, and that
+share climbs with context size — 5% below 200k tokens, 59% in the 600–800k band. Of
+the segments that did verify, 59.2% needed rework, averaging 4.67 rounds. First-pass
+rates showed no trend across context sizes (89/77/86/78/86%), so long context was not
+making the code worse — it was just making the same work cost 11.64M tokens instead
+of 1.43M.
+
 ## Auto-update
 
 All three entry points serve normally after the transport connects, then check in the

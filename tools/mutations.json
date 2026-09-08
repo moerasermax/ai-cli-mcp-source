@@ -413,5 +413,77 @@
     "from": "      notice,\n    };",
     "to": "      notice: null,\n    };",
     "expect": "成功 notice 持續存在並含版本重連網址標題"
+  },
+  {
+    "name": "驗證只看有沒有出現過，不看是否在最後一次修改之後（假通過）",
+    "file": "src/core/verification.ts",
+    "from": "    if (index < lastChangeIndex) {\n      evidence.staleVerifications++;\n      continue;\n    }",
+    "to": "    if (false) {\n      evidence.staleVerifications++;\n      continue;\n    }",
+    "expect": "順序陷阱：先跑測試再改程式碼",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "compact 回傳把 verification 一起拿掉",
+    "file": "src/core/process-result.ts",
+    "from": "  const verification = buildVerification(context, agentOutput);\n  if (verification) {",
+    "to": "  const verification = buildVerification(context, agentOutput);\n  if (verification && verbose) {",
+    "expect": "compact 回傳也必須帶 verification",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "還在跑就宣稱驗證結果",
+    "file": "src/core/process-result.ts",
+    "from": "  if (context.status === 'running') {\n    return {\n      status: 'pending',",
+    "to": "  if (false) {\n    return {\n      status: 'pending',",
+    "expect": "running 只能是 pending",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "antigravity 被當成有結構化工具紀錄",
+    "file": "src/core/process-result.ts",
+    "from": "  antigravity: false,",
+    "to": "  antigravity: true,",
+    "expect": "antigravity 的結果標成 not_observed",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "豁免理由蓋過真正失敗的驗證",
+    "file": "src/core/verification.ts",
+    "from": "  if (evidence.failedVerifications.length > 0) {",
+    "to": "  if (waivedReason) {\n    return { status: 'waived', reason: `waived: ${waivedReason}`, evidence };\n  }\n  if (evidence.failedVerifications.length > 0) {",
+    "expect": "waived 不能蓋過 failed",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "exit_code 被輸出文字蓋過",
+    "file": "src/core/verification.ts",
+    "from": "        typeof exitCode === 'number' ? exitCode === 0 : !FAIL_TEXT.test(outputText(record.output));",
+    "to": "        !FAIL_TEXT.test(outputText(record.output));",
+    "expect": "exit_code 非 0 判失敗",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "Stop hook 忽略 stop_hook_active（會無限擋）",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "  if (event.stop_hook_active) {",
+    "to": "  if (false) {",
+    "expect": "第二次不再擋",
+    "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "Stop hook 把 tool_result 誤當成回合起點",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "    if (isToolResult) continue;",
+    "to": "    if (false) continue;",
+    "expect": "擋下未驗證的程式碼修改",
+    "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "Stop hook 不理會驗證與修改的先後順序",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "        if (part.is_error === true) entry.exit_code = 1;",
+    "to": "        if (false) entry.exit_code = 1;",
+    "expect": "驗證失敗時不再擋一次",
+    "script": "verify-gate-hook.mjs"
   }
 ]
