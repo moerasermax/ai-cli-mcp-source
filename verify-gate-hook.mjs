@@ -319,6 +319,35 @@ test('★ 模擬 marketplace 安裝：複製到沒有 dist 的位置後仍要能
     decisionOf(r2.stdout) === null && r2.code === 0, r2.stdout);
 });
 
+test('★ marketplace/plugin manifest 必要欄位齊全（缺了會安裝靜默失敗）', async () => {
+  /*
+    2026-09-08 實際踩到：marketplace.json 少了 id，plugins[0] 少了 version，
+    `/plugin install` 完全沒有輸出也沒有安裝——不報錯、不提示，就是沒發生。
+    補齊欄位後才裝得起來。這條測試守住那些欄位，避免同樣的靜默失敗重演。
+  */
+  const mkt = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
+  for (const field of ['name', 'id', 'owner', 'plugins']) {
+    check(`marketplace.json 有 ${field}`, mkt[field] !== undefined, JSON.stringify(Object.keys(mkt)));
+  }
+  const entry = (mkt.plugins ?? [])[0];
+  for (const field of ['name', 'source', 'description', 'version']) {
+    check(`marketplace.json plugins[0] 有 ${field}`, entry?.[field] !== undefined,
+      JSON.stringify(Object.keys(entry ?? {})));
+  }
+
+  const manifest = JSON.parse(
+    readFileSync(join(ROOT, 'plugin', '.claude-plugin', 'plugin.json'), 'utf8')
+  );
+  for (const field of ['name', 'version', 'description']) {
+    check(`plugin.json 有 ${field}`, manifest[field] !== undefined, JSON.stringify(Object.keys(manifest)));
+  }
+  check('marketplace 與 plugin 的名稱一致', entry?.name === manifest.name,
+    `${entry?.name} vs ${manifest.name}`);
+  check('marketplace 與 plugin 的版本一致', entry?.version === manifest.version,
+    `${entry?.version} vs ${manifest.version}`);
+  check('source 指向 plugin 子目錄', entry?.source === './plugin', String(entry?.source));
+});
+
 const run = async () => {
   for (const [name, fn] of tests) {
     console.log(`\n${name}`);

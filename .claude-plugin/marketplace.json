@@ -12,7 +12,18 @@
     {
       "name": "ai-cli-verification-gate",
       "source": "./plugin",
-      "description": "程式碼修改完成閘門：改了 code 沒驗證就結束時擋一次。"
+      "description": "程式碼修改完成閘門：改了 code 沒驗證就結束時擋一次。",
+      "version": "1.0.0",
+      "author": {
+        "name": "moerasermax"
+      },
+      "category": "development",
+      "keywords": [
+        "quality-gate",
+        "verification",
+        "hooks"
+      ]
     }
-  ]
+  ],
+  "id": "ai-cli-mcp"
 }
