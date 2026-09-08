@@ -445,5 +445,45 @@
     "to": "  return { ...(perModel ?? {}), ...(base ?? {}) };",
     "expect": "model 專屬設定要覆蓋 provider 層，不是反過來",
     "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "4xx 也重試（送錯的東西重送四次，白等又燒額度）",
+    "file": "src/agents/direct-api.ts",
+    "from": "  return status === 429 || (status >= 500 && status < 600);",
+    "to": "  return true;",
+    "expect": "400/401 不可重試",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "429 不重試（把速率限制當成呼叫端的錯）",
+    "file": "src/agents/direct-api.ts",
+    "from": "  return status === 429 || (status >= 500 && status < 600);",
+    "to": "  return status >= 500 && status < 600;",
+    "expect": "429 是「等一下再來」，要重試",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "重試靜默進行（呼叫端分不出「很慢」與「卡住」）",
+    "file": "src/agents/direct-api.ts",
+    "from": "emitJsonLine(params.io.stdout, {\r\n    type: 'retry',",
+    "to": "if (false) emitJsonLine(params.io.stdout, {\r\n    type: 'retry',",
+    "expect": "每次重試都要發事件",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "max_retries 用真假判斷（0 是 falsy，會被當成沒設而退回預設）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    if (!Object.prototype.hasOwnProperty.call(record, key)) return fallback;",
+    "to": "    if (!record[key]) return fallback;",
+    "expect": "max_retries: 0 要真的關掉重試",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "重試次數超出設定值（設 3 次卻重試 5 次）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    if (!isRetryableStatus(response.status) || attempt >= maxRetries) {",
+    "to": "    if (!isRetryableStatus(response.status) || attempt >= maxRetries + 2) {",
+    "expect": "重試次數必須等於設定值，不能自己多送",
+    "script": "verify-extra-body.mjs"
   }
 ]

@@ -164,9 +164,31 @@ const RESERVED_EXTRA_BODY_KEYS = new Set([
   'tools',
 ]);
 
+export interface RetryConfig {
+  maxRetries: number;
+  initialDelayMs: number;
+}
+
+/**
+ * 預設重試 2 次、首次退避 1 秒（第二次 2 秒）。
+ *
+ * 為什麼預設就開：NVIDIA 的免費共享端點在尖峰會回 429/503，官方文件本身就建議
+ * 「短暫等待後重試、降低並發」。2026-09-09 實測 `nemotron-3-super-120b-a12b`，
+ * 同樣的請求間隔下不重試 8/10、退避重試 10/10（觸發 7 次、救回 5 次）。
+ * 放慢速率沒有讓它到 100%，重試有。
+ *
+ * 上限刻意低：重試是為了熬過幾秒的尖峰，不是為了硬撐一個已經壞掉的服務。
+ * 真的持續失敗時，讓呼叫端早點知道比讓它等下去有用。
+ */
+const DEFAULT_RETRY: RetryConfig = { maxRetries: 2, initialDelayMs: 1000 };
+const MAX_ALLOWED_RETRIES = 8;
+const MAX_INITIAL_DELAY_MS = 30_000;
+
 interface ProviderConfig {
   base_url: string;
   api_key: string;
+  /** 429/5xx 的重試設定；省略時用 DEFAULT_RETRY。 */
+  retry?: RetryConfig;
   /** 併進 /chat/completions request body 的額外欄位（provider 層預設）。 */
   extra_body?: Record<string, unknown>;
   /** 同上，但只套用在特定 model 上；與 provider 層合併時以這裡為準。 */
@@ -315,6 +337,42 @@ function normalizeExtraBody(
   return { ...record };
 }
 
+/**
+ * 解析 `retry`。不合法就丟錯——與 extra_body 同一個理由：
+ * 靜默退回預設值會讓「我設了 5 次重試」跟「我根本沒設」長得一模一樣。
+ *
+ * `max_retries: 0` 是合法的（明確要求關掉重試），所以判斷要用「有沒有這個欄位」
+ * 而不是值的真假——`0` 是 falsy。
+ */
+function normalizeRetryConfig(
+  providerName: string,
+  value: unknown,
+  targetPath: string
+): RetryConfig | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value);
+  if (!record) {
+    throw new Error(
+      `Invalid providers.json at ${targetPath}: provider "${providerName}" retry must be an object.`
+    );
+  }
+  const num = (key: string, fallback: number, max: number): number => {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) return fallback;
+    const raw = record[key];
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0 || raw > max) {
+      throw new Error(
+        `Invalid providers.json at ${targetPath}: provider "${providerName}" retry.${key} ` +
+          `must be an integer between 0 and ${max}.`
+      );
+    }
+    return raw;
+  };
+  return {
+    maxRetries: num('max_retries', DEFAULT_RETRY.maxRetries, MAX_ALLOWED_RETRIES),
+    initialDelayMs: num('initial_delay_ms', DEFAULT_RETRY.initialDelayMs, MAX_INITIAL_DELAY_MS),
+  };
+}
+
 function normalizeProviderConfig(
   providerName: string,
   value: unknown,
@@ -328,6 +386,7 @@ function normalizeProviderConfig(
   if (typeof baseUrl !== 'string' || !baseUrl.trim()) return null;
 
   const extraBody = normalizeExtraBody(providerName, 'extra_body', record.extra_body, targetPath);
+  const retry = normalizeRetryConfig(providerName, record.retry, targetPath);
 
   let modelExtraBody: Record<string, Record<string, unknown>> | undefined;
   if (record.model_extra_body !== undefined) {
@@ -353,6 +412,7 @@ function normalizeProviderConfig(
     base_url: baseUrl.trim().replace(/\/+$/, ''),
     api_key: apiKey.trim(),
   };
+  if (retry) config.retry = retry;
   if (extraBody) config.extra_body = extraBody;
   if (modelExtraBody) config.model_extra_body = modelExtraBody;
   return config;
@@ -532,6 +592,7 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
       baseUrl: provider.base_url,
       apiKey: provider.api_key,
       ...(extraBody ? { extraBody } : {}),
+      ...(provider.retry ? { retry: provider.retry } : {}),
     },
   };
 }
@@ -1216,6 +1277,130 @@ function parseToolArguments(toolCall: ChatToolCall): { ok: true; value: unknown 
   }
 }
 
+/**
+ * 值得重試的失敗：**服務端說「現在不行」，不是「你錯了」**。
+ *
+ * 429 是速率限制、5xx 是服務端問題（NVIDIA 的共享免費端點在尖峰會回
+ * 503 `Service temporarily overloaded`，也出現過 500）。這兩類重試才有意義。
+ *
+ * 其餘 4xx 是我們送錯了——model 名打錯、金鑰無效、參數不合法。重試只是把同一個
+ * 錯誤再送一次，白等而且多燒一次額度。
+ */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+/**
+ * 服務端說什麼時候可以再來，就聽它的。
+ *
+ * `Retry-After` 有兩種格式：秒數，或 HTTP-date。NVIDIA 目前**不送這個 header**
+ * （實測掃過 response headers，`Retry-After` 與 `X-RateLimit-*` 都沒有），
+ * 但 OpenRouter 之類的供應商會送，聽它的比自己猜準。
+ * 上限 60 秒：服務端叫我們等一小時的話，那該讓呼叫端知道，不是默默睡著。
+ */
+function retryAfterMs(response: Response): number | null {
+  const raw = response.headers.get('retry-after');
+  if (!raw) return null;
+  const seconds = Number(raw);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(raw) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.min(ms, 60_000);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    // 等待中被取消要立刻醒來——否則 kill 一個 job 之後還要等退避睡完。
+    function onAbort(): void {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * 送出請求，遇到「服務端現在不行」時退避重試。
+ *
+ * **重試只包住建立請求這一段。** 一旦回了 200 開始讀串流，就不能重試了——
+ * 那時候已經有內容經 `io.stdout` 送給呼叫端，重來會讓同一段回答出現兩次。
+ * 串流中斷仍然是失敗，這是刻意的範圍限制。
+ *
+ * 每次重試都發一個 `retry` 事件到 stdout：靜默重試會讓「這個 job 很慢」
+ * 跟「這個 job 卡住了」長得一模一樣，而呼叫端是 AI，它只看得到工具回傳。
+ */
+async function fetchWithRetry(
+  params: { url: string; apiKey: string; io: DirectRunIO; retry?: RetryConfig },
+  requestBody: Record<string, unknown>
+): Promise<Response> {
+  const { maxRetries, initialDelayMs } = params.retry ?? DEFAULT_RETRY;
+  let lastStatus = 0;
+  let lastErrorText = '';
+
+  for (let attempt = 0; ; attempt++) {
+    let response: Response;
+    try {
+      response = await fetch(params.url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${params.apiKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: params.io.signal,
+      });
+    } catch (error) {
+      // 呼叫端取消不是失敗，別把它重試成四次。
+      if ((error as Error).name === 'AbortError') throw error;
+      if (attempt >= maxRetries) throw error;
+      lastStatus = 0;
+      lastErrorText = (error as Error).message;
+      await backoff(params, attempt, initialDelayMs, null, lastStatus, lastErrorText);
+      continue;
+    }
+
+    if (response.ok) return response;
+
+    const errorText = redactApiKey(await response.text(), params.apiKey);
+    if (!isRetryableStatus(response.status) || attempt >= maxRetries) {
+      params.io.stderr(`[direct-api] HTTP ${response.status}: ${errorText}\n`);
+      throw new Error(`direct-api request failed with HTTP ${response.status}`);
+    }
+    lastStatus = response.status;
+    lastErrorText = errorText;
+    await backoff(params, attempt, initialDelayMs, retryAfterMs(response), lastStatus, lastErrorText);
+  }
+}
+
+async function backoff(
+  params: { io: DirectRunIO },
+  attempt: number,
+  initialDelayMs: number,
+  serverHintMs: number | null,
+  status: number,
+  errorText: string
+): Promise<void> {
+  // 指數退避加抖動。抖動是為了避免多個並行 job 撞在同一次重試上，
+  // 一起退避、一起回來，把剛恢復的服務再打掛一次。
+  const backoffMs = initialDelayMs * 2 ** attempt;
+  const jitter = Math.floor(Math.random() * initialDelayMs);
+  const delayMs = serverHintMs ?? backoffMs + jitter;
+  emitJsonLine(params.io.stdout, {
+    type: 'retry',
+    attempt: attempt + 1,
+    status: status || null,
+    delay_ms: delayMs,
+    from_retry_after: serverHintMs !== null,
+    error: errorText.slice(0, 200),
+  });
+  debugLog(`[Debug][direct-api] HTTP ${status || 'network'}，${delayMs}ms 後重試（第 ${attempt + 1} 次）`);
+  await sleep(delayMs, params.io.signal);
+}
+
 async function requestCompletion(params: {
   url: string;
   apiKey: string;
@@ -1225,6 +1410,7 @@ async function requestCompletion(params: {
   state: StreamState;
   io: DirectRunIO;
   extraBody?: Record<string, unknown>;
+  retry?: RetryConfig;
 }): Promise<CompletionTurn> {
   /*
     extra_body 先展開，框架自己的欄位**後**寫 —— 順序就是保護。
@@ -1245,22 +1431,7 @@ async function requestCompletion(params: {
     requestBody.tools = TOOL_DEFINITIONS;
   }
 
-  const response = await fetch(params.url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${params.apiKey}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
-    signal: params.io.signal,
-  });
-
-  if (!response.ok) {
-    const errorText = redactApiKey(await response.text(), params.apiKey);
-    params.io.stderr(`[direct-api] HTTP ${response.status}: ${errorText}\n`);
-    throw new Error(`direct-api request failed with HTTP ${response.status}`);
-  }
-
+  const response = await fetchWithRetry(params, requestBody);
   return consumeResponse(response, params.state, params.io);
 }
 
@@ -1307,6 +1478,7 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
       state,
       io,
       extraBody: config.extraBody,
+      retry: config.retry,
     });
     if (toolsEnabled && turn.finishReason !== 'tool_calls' && turn.toolCalls.length === 0 && turn.assistantText) {
       const xmlToolCalls = parseXmlToolCalls(turn.assistantText);

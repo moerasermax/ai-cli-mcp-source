@@ -63,6 +63,8 @@ export interface DirectApiCommandConfig {
    * 那些在載入設定時就被擋掉了。
    */
   extraBody?: Record<string, unknown>;
+  /** 429/5xx 的重試設定（providers.json 的 retry）；省略時用內建預設。 */
+  retry?: { maxRetries: number; initialDelayMs: number };
 }
 
 export interface DirectRunIO {

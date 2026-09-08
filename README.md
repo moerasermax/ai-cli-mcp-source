@@ -162,6 +162,32 @@ model, in `providers.json`:
 `model_extra_body` is keyed by the model name as sent to the provider (the part
 after the provider prefix) and overrides `extra_body` field by field.
 
+### retry
+
+Shared free endpoints throttle and shed load: NVIDIA's own troubleshooting docs say
+the hosted Nemotron endpoints may return 429 or 503 under high demand, and advise a
+short wait plus lower concurrency. So 429 and 5xx are retried with exponential
+backoff and jitter; every other 4xx is not — a request the server rejected as
+malformed is still malformed the second time.
+
+```json
+"nv": { "retry": { "max_retries": 3, "initial_delay_ms": 1000 } }
+```
+
+Defaults are 2 retries and a 1s initial delay. `max_retries: 0` turns retrying off.
+A `Retry-After` header wins over the computed backoff (capped at 60s). Each retry
+emits a `retry` event on stdout — a silent retry makes "slow" and "stuck"
+indistinguishable to the caller.
+
+Retrying covers **establishing** the request only. Once a 200 arrives and the stream
+starts, content has already reached the caller, so a mid-stream failure is not
+retried.
+
+Measured on `nvidia/nemotron-3-super-120b-a12b`, 10 two-round tool loops each:
+8/10 without retry, 10/10 with it. Slowing the request rate alone did not reach
+100%; retrying did.
+
+
 `model`, `messages`, `stream`, `stream_options` and `tools` are built by ai-cli
 and are **rejected** if either block tries to set them — overriding `stream`
 would hand the SSE reader a single JSON blob, and overriding `tools` would offer

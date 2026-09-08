@@ -7,6 +7,49 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（direct-api 的重試）
+
+- 新增 429／5xx 的退避重試。共享的免費端點在尖峰會限流與卸載——NVIDIA 自己的故障排除文件寫明
+  hosted Nemotron endpoint 在高需求時會回 **429 或 503**，並建議「短暫等待後重試、降低並發」。
+  原本 direct-api 收到任何非 200 就直接失敗，整個 job 結束。
+  現在 429 與 5xx 走指數退避加抖動重試，其餘 4xx 不重試——服務端說格式錯的請求，再送一次還是錯。
+  `src/agents/direct-api.ts`（`fetchWithRetry`）
+- 新增 `providers.json` 的 `retry` 設定：`{ max_retries, initial_delay_ms }`，預設 2 次／1 秒，
+  `max_retries: 0` 明確關閉。`max_retries` 的存在與否用 `hasOwnProperty` 判斷——`0` 是 falsy，
+  用值的真假會把「明確關閉」當成「沒設」而退回預設。`src/agents/direct-api.ts`
+- 新增 `retry` 事件（stdout）。靜默重試會讓「這個 job 很慢」跟「這個 job 卡住了」長得一模一樣，
+  而呼叫端是 AI，它只看得到工具回傳。事件帶 `attempt` / `status` / `delay_ms` / `from_retry_after`。
+- 服務端有送 `Retry-After` 就聽它的（上限 60 秒）。NVIDIA 實測不送這個 header，
+  但 OpenRouter 那類會送，聽服務端比自己猜準。
+- 退避途中被 kill 會立刻醒來，不會等睡完才反應。
+
+**重試只包住「建立請求」那一段。** 一旦回 200 開始讀串流，內容已經送到呼叫端，
+中途失敗不重試——重來會讓同一段回答出現兩次。這是刻意的範圍限制。
+
+**實測（`nvidia/nemotron-3-super-120b-a12b`，每組 10 輪完整兩輪工具迴圈）**
+
+| 條件 | 成功率 |
+|---|---|
+| 連發、不重試（約 66 RPM） | 4/10 |
+| 15 RPM、不重試 | 9/10 |
+| 10 RPM、不重試 | 8/10 |
+| **15 RPM + 退避重試** | **10/10** |
+
+**放慢速率沒有讓它到 100%，重試有。**
+同樣條件下 `openai/gpt-oss-20b`、`nvidia/nemotron-3.5-lightning-30b-a3b`、
+`meta/muse-glimmer-30b` 也都是 10/10。
+`moonshotai/kimi-k3` 是例外：10 輪觸發 24 次重試只救回 3 次、最終 3/10，
+它的 429 是額度爭用不是尖峰抖動，重試打不穿。
+
+### 測試（重試）
+
+- `verify-extra-body.mjs` 增至 42 項，新增 429/5xx 重試、400/401 不重試、
+  用完次數要放棄、`max_retries: 0` 真的關閉、重試事件不可靜默等斷言。
+- 新增 5 個突變（59 → 64），逐一實測全部 KILLED。其中「無限重試」那個突變原本會讓
+  harness **卡死而不是回報 FAIL**，改成「超出設定次數」這種會終止但仍然錯的形式；
+  另有一個突變的比對片段因手寫 `\n` 對不上 CRLF 原始碼而回報 ERROR——
+  那等於什麼都沒測，已照 CONTRIBUTING 的既有教訓改成從原始碼取出實際片段。
+
 ### 移除
 
 - **程式碼修改驗證閘門（兩層一起拔掉）。** 6.0.0 加的東西，上線第一天就被實測數字否決。
