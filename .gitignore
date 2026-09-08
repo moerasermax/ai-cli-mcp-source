@@ -9,7 +9,6 @@ dist/
 dist.bak-*/
 # codex 派工完成旗標
 .codexdone_*
-# 一次性測試輸出與臨時腳本
+# 一次性測試輸出
 mcp-test-out.txt
 e2e-out.txt
-run_usage.js
