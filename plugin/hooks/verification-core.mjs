@@ -106,7 +106,14 @@ function insideProject(target, projectRoot) {
     const file = canonical(isAbsolutePath(target) ? target : `${projectRoot}/${target}`);
     return file === root || file.startsWith(root + '/');
 }
-/** 丟棄輸出的目標。寫到這裡不是改檔。 */
+/**
+ * 丟棄輸出的目標。寫到這裡不是改檔。
+ *
+ * 這是**第二層**防護：主要保護是下面「目標必須看起來像程式碼檔」那一關，
+ * 而 `/dev/null`、`NUL` 本來就沒有程式碼副檔名。突變測試證實拿掉這一層也不會
+ * 讓任何斷言變紅——保留它是為了萬一 looksLikeCodePath 之後放寬，
+ * 但不要誤以為它是唯一擋住 `2>/dev/null` 的東西。
+ */
 const NULL_SINK = /^(\/dev\/null|nul|NUL|\/dev\/stdout|\/dev\/stderr|&\d)$/i;
 /**
  * 撈出一個 shell 指令**實際寫入的目標**。
@@ -118,6 +125,9 @@ const NULL_SINK = /^(\/dev\/null|nul|NUL|\/dev\/stdout|\/dev\/stderr|&\d)$/i;
  *
  * 現在只看目標本身：重導向取 `>` 後面那個 token，tee / mv / cp 取它們的目的地，
  * `sed -i` 則因為目標可能夾在多個旗標之間，退回掃整串 token。
+ *
+ * 重導向的 `>` 要求前接行首／空白／`;&|)`／fd 數字，同樣是第二層防護——
+ * 就算拿掉，`->` 抓到的目標 `readTime` 也不是程式碼檔而不會誤判。
  */
 function shellWriteTargets(command) {
     const targets = [];
