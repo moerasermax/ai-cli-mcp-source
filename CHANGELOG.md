@@ -7,6 +7,62 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 移除
+
+- **程式碼修改驗證閘門（兩層一起拔掉）。** 6.0.0 加的東西，上線第一天就被實測數字否決。
+  移除 `plugin/`、`.claude-plugin/`、`src/core/verification.ts`、`verification-log.ts`、
+  `install-marker.ts`、`plugin-status.ts`、`tools/sync-plugin-core.mjs`、
+  `verify-verification.mjs`、`verify-gate-hook.mjs`；連帶拿掉 `run`／`wait`／`get_result`
+  回傳的 `verification` 欄位、`doctor.plugin`、`run.pluginNotice`、`build` 的第二步。
+  `npm test` 12 支 → 10 支，突變 105 → 59。（claude）
+
+  **為什麼拔掉**——用它自己的記錄檔（`verification-gate.jsonl`，39 筆）判的：
+
+  | 指標 | 數字 |
+  |---|---|
+  | 第 2 層（會擋人的 plugin）當天擋人次數 | 19 |
+  | 其中最後真的確認到「驗證通過」 | **1** |
+  | 判定結果是 `not_observed`（＝看不出來）的比例 | **88%** |
+
+  它 88% 的時候在說「我看不出來有沒有驗證」，然後就擋。更糟的是判定本身可以被繞過：
+  `cd . && echo "npm test"` 會被判成**驗證通過**——因為防造假的規則只看指令開頭，
+  認驗證的規則卻掃整串，兩邊不對稱。誤擋只是煩，**假通過是危險**。
+  另外查到兩個假通過：工具輸出是陣列時文字比對整個失效（實測佔 12% 的工具回傳），
+  以及 `ZERO_FAIL` 對整份輸出比對，`FAIL\n0 errors` 會被判成通過。
+
+  > ### 其他機器要做什麼
+  >
+  > **自動更新帶得動程式碼，帶不動安裝。** `git pull` 只更新這個 repo；
+  > plugin 是 `/plugin install` 當時**複製**到 `~/.claude/plugins/` 的副本，
+  > 拉到新版之後它仍然會繼續跑舊副本、繼續擋你。每台機器要各自做一次：
+  >
+  > ```
+  > # 1. 在 Claude Code 裡輸入（兩行都要）
+  > /plugin uninstall ai-cli-verification-gate@ai-cli-mcp
+  > /plugin marketplace remove ai-cli-mcp
+  >
+  > # 2. 更新 ai-cli 本體（沒裝自動更新的機器才需要手動跑）
+  > git pull --ff-only && npm install
+  >
+  > # 3. 確認乾淨，並取得剩下該刪什麼的指令
+  > node tools/check-gate-removed.mjs
+  > ```
+  >
+  > 第 3 步會逐項檢查六個地方（`installed_plugins.json`、`known_marketplaces.json`、
+  > `settings.json` 的兩個欄位、`marketplaces/` 與 `cache/` 兩個磁碟副本）加上
+  > 這份安裝本身與 install marker，沒過的會把該跑的指令原樣印出來。全乾淨回 exit 0。
+  > **它只檢查，不會動你的設定檔。**
+  >
+  > 兩個實測到的坑：`/plugin marketplace remove` 只清註冊，**cache 的副本要自己刪**；
+  > 而 `installed_plugins.json` 才是「這個 plugin 到底會不會載入」的權威來源，
+  > `settings.json` 的 `enabledPlugins` 只反映使用者層，用 project scope 裝過的機器在那裡看不到。
+  >
+  > `~/.local/state/ai-cli/verification-gate.jsonl` 是過去累積的紀錄，
+  > 那是**資料不是程式**，checker 不會要求你刪。要留著做事後分析就別動它。
+
+- `tools/check-gate-removed.mjs`：檢查驗證閘門是否已從這台機器完全移除，
+  只回報不改設定，沒過會印出該跑的指令。（claude）
+
 
 ### 新增
 

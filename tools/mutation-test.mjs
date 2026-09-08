@@ -62,16 +62,8 @@ function exec(cmd, args) {
 const run = (args) => exec(process.execPath, args);
 
 const TSC = join('node_modules', 'typescript', 'bin', 'tsc');
-/**
- * 建置＝tsc + 同步 plugin 判定核心。harness 刻意不走 npm.cmd（見上方檔頭），
- * 所以要自己補上 npm run build 的第二步；少了它，突變改到 src/core/verification.ts
- * 時 plugin/hooks/verification-core.mjs 不會跟著變，一致性斷言會替所有這類突變
- * 背鍋，看不出真正該抓的是哪一條。
- */
-const buildAll = () => {
-  const compiled = run([TSC]);
-  return compiled.code !== 0 ? compiled : run(['tools/sync-plugin-core.mjs']);
-};
+/** 建置。harness 刻意不走 npm.cmd（見上方檔頭），直接呼叫 tsc。 */
+const buildAll = () => run([TSC]);
 const results = [];
 
 /**
@@ -164,9 +156,8 @@ for (const [i, mutation] of MUTATIONS.entries()) {
 // 一定要用 exec() 而不是 run()：run() 只吃一個參數陣列，
 // `run('git', [...])` 會把第二個參數整個丟掉、命令根本沒跑，
 // 然後印出空字串當成「worktree 乾淨」—— 這正是這支工具在抓的那種假綠燈。
-// 最後一個突變還原 src 之後，建置產物仍停在那個突變的狀態（例如
-// plugin/hooks/verification-core.mjs）。重建一次讓產物回到基準，否則下面的
-// 「worktree 應乾淨」會對著自己造成的差異報警。
+// 最後一個突變還原 src 之後，建置產物仍停在那個突變的狀態。
+// 重建一次讓產物回到基準，否則下面的「worktree 應乾淨」會對著自己造成的差異報警。
 buildAll();
 const status = exec('git', ['status', '--short']);
 if (hadConfig) copyFileSync(CONFIG_BAK, CONFIG);

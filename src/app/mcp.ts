@@ -33,8 +33,6 @@ import { ProcessService } from '../core/process-service.js';
 import { CircuitBreakerError } from '../core/circuit-breaker.js';
 import { UsageService } from '../plugins/usage-service.js';
 import { consumeNotice, scheduleBackgroundUpdates } from '../core/updater.js';
-import { consumePluginNotice } from '../core/plugin-status.js';
-import { writeInstallMarker } from '../core/install-marker.js';
 
 const require = createRequire(import.meta.url);
 const SERVER_VERSION = (require('../../package.json') as { version: string }).version;
@@ -517,9 +515,7 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
         session_id: toolArguments.session_id as string | undefined,
         reasoning_effort: toolArguments.reasoning_effort as string | undefined,
       });
-      // pluginNotice 只會出現一次：自動更新帶得下 plugin 的程式碼，帶不下「已啟用」，
-      // 而每台機器的啟用狀態只有這台機器自己知道。
-      return this.jsonResult({ ...result, updateNotice: consumeNotice(), pluginNotice: consumePluginNotice() });
+      return this.jsonResult({ ...result, updateNotice: consumeNotice() });
     } catch (error) {
       // 熔斷器攔截：回傳清楚的錯誤，讓呼叫端知道是框架迴圈防護而非一般失敗。
       if (error instanceof CircuitBreakerError) {
@@ -627,7 +623,6 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
     await this.server.connect(transport);
     console.error('AI CLI MCP server running on stdio');
     // 讓隨附的 plugin 找得到這份安裝的最新判定核心，不必為了修 bug 重裝 plugin。
-    writeInstallMarker();
     this.stopUpdates = scheduleBackgroundUpdates(async (message) => {
       console.error(message.replace(/\r?\n/g, ' | '));
       // MCP 的 logging 是 server capability；client 沒有標準 logging capability。

@@ -1,4 +1,3 @@
 # 由 tools/sync-plugin-core.mjs 產生的檔案：釘住 LF，不做 EOL 轉換。
 # 否則 checkout 給 CRLF、sync 寫入 LF，工作區會永遠顯示為 modified——
 # 突變測試的「worktree 應乾淨」會因此每輪都判本輪結果不可信。
-plugin/hooks/verification-core.mjs -text
