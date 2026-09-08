@@ -609,16 +609,16 @@
   {
     "name": "FAIL_TEXT 恢復比對裸 failed（0 failed 被誤判成失敗）",
     "file": "src/core/verification.ts",
-    "from": "const FAIL_TEXT =\n  /(\\bFAIL\\b|[1-9]\\d*\\s+(tests?\\s+)?(failed|failing|failures)|not ok|error TS\\d|AssertionError|exit code [1-9])/;",
-    "to": "const FAIL_TEXT =\n  /(\bFAIL\b|\bfailed\b|not ok|error TS\\d|AssertionError|exit code [1-9])/i;",
-    "expect": "正規化：claude 沒有 exit_code 時用輸出文字判失敗",
+    "from": "const FAIL_TEXT =\n  /(\\bFAIL\\b(?![=:\\s]*0\\b)|[1-9]\\d*\\s+(tests?\\s+)?(failed|failing|failures)|not ok|error TS\\d|AssertionError|exit code [1-9])/;",
+    "to": "const FAIL_TEXT =\n  /(\\bFAIL\\b|[1-9]\\d*\\s+(tests?\\s+)?(failed|failing|failures)|not ok|error TS\\d|AssertionError|exit code [1-9])/;",
+    "expect": "FAIL=0 是計數器標籤，不是失敗",
     "script": "verify-verification.mjs"
   },
   {
     "name": "echo 出的指令被當成真的跑過驗證",
     "file": "src/core/verification.ts",
-    "from": "    if (VERIFY_CMD.test(command) && !ECHOED.test(command)) {",
-    "to": "    if (VERIFY_CMD.test(command)) {",
+    "from": "    if (VERIFY_CMD.test(command) && !ECHOED.test(command) && !SEARCH_CMD.test(command)) {",
+    "to": "    if (VERIFY_CMD.test(command) && !SEARCH_CMD.test(command)) {",
     "expect": "echo 出指令字串不算跑過驗證",
     "script": "verify-verification.mjs"
   },
@@ -729,8 +729,8 @@
   {
     "name": "比對不了就當成過時（催人重裝沒必要的）",
     "file": "src/core/plugin-status.ts",
-    "from": "function installedIsCurrent(installPath: unknown): boolean | null {\n  if (typeof installPath !== 'string' || !installPath) return null;",
-    "to": "function installedIsCurrent(installPath: unknown): boolean | null {\n  if (typeof installPath !== 'string' || !installPath) return false;",
+    "from": "  if (typeof installPath !== 'string' || !installPath) return null;",
+    "to": "  if (typeof installPath !== 'string' || !installPath) return false;",
     "expect": "讀不到 installPath 時 upToDate 是 null",
     "script": "verify-verification.mjs"
   },
@@ -756,6 +756,30 @@
     "from": "    return existsSync(join(root, 'dist', 'core', 'verification.js')) ? root : null;",
     "to": "    return root;",
     "expect": "install marker：指向沒有 dist 的目錄要回 null",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "搜尋指令算成跑過驗證（rg \"npm test\" 判成 passed）",
+    "file": "src/core/verification.ts",
+    "from": "    if (VERIFY_CMD.test(command) && !ECHOED.test(command) && !SEARCH_CMD.test(command)) {",
+    "to": "    if (VERIFY_CMD.test(command) && !ECHOED.test(command)) {",
+    "expect": "rg 是在找字串，不是在跑測試",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "判寫入目標前不剝引號（說明文字裡的重導向被當成改檔）",
+    "file": "src/core/verification.ts",
+    "from": "  const command = stripQuoted(rawCommand);",
+    "to": "  const command = rawCommand;",
+    "expect": "引號裡的重導向是文字，不是寫檔",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "upToDate 不看 install marker（hook 已在跑最新判定卻催重裝）",
+    "file": "src/core/plugin-status.ts",
+    "from": "  if (marker && sameDir(marker, repoRoot())) return true;",
+    "to": "  if (marker && sameDir(marker, repoRoot())) return null;",
+    "expect": "marker 有效時實際跑的是最新判定",
     "script": "verify-verification.mjs"
   }
 ]
