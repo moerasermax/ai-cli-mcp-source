@@ -276,5 +276,40 @@ ok('沒有 tools 的 claude 結果不硬掰驗證狀態', () => {
   assert.strictEqual(r.verification, undefined, '看不到工具紀錄時不應捏造狀態');
 });
 
+// ---------------- 落地記錄（第 1 層與 hook 共用同一份檔案）----------------
+const { recordVerification, resetVerificationLog } = await import('./dist/core/verification-log.js');
+const { mkdtempSync, existsSync, readFileSync, rmSync } = await import('node:fs');
+const { join } = await import('node:path');
+const LOGDIR = mkdtempSync(join('dist', 'verify-vlog-'));
+process.env.AI_CLI_STATE_DIR = LOGDIR;
+const logFile = join(LOGDIR, 'verification-gate.jsonl');
+const readEntries = () =>
+  existsSync(logFile)
+    ? readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    : [];
+
+ok('記錄：寫進與 hook 同一份 verification-gate.jsonl，並標明 source', () => {
+  resetVerificationLog();
+  recordVerification({ pid: 101, agent: 'codex', status: 'not_observed', lastCodeChange: 'Edit a.ts' });
+  const entries = readEntries();
+  assert.strictEqual(entries.length, 1);
+  assert.strictEqual(entries[0].source, 'ai-cli', '要能跟 hook 記的那些分得開');
+  assert.strictEqual(entries[0].status, 'not_observed');
+  assert.ok(entries[0].at, '要有時間戳');
+});
+
+ok('★ 記錄：同一個 pid 只記一次（wait 會反覆呼叫 getProcessResult）', () => {
+  recordVerification({ pid: 101, agent: 'codex', status: 'not_observed' });
+  recordVerification({ pid: 101, agent: 'codex', status: 'not_observed' });
+  assert.strictEqual(readEntries().length, 1, '重複呼叫不該灌爆記錄檔');
+});
+
+ok('記錄：不同 pid 各記一筆', () => {
+  recordVerification({ pid: 102, agent: 'claude', status: 'passed' });
+  assert.strictEqual(readEntries().length, 2);
+});
+
+rmSync(LOGDIR, { recursive: true, force: true });
+
 console.log(failures === 0 ? '\n全部通過 ✅' : `\n有 ${failures} 項失敗 ❌`);
 process.exit(failures === 0 ? 0 : 1);

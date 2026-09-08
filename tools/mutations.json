@@ -525,5 +525,13 @@
     "to": "  const projectRoot = null;",
     "expect": "暫存腳本不擋",
     "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "驗證記錄不去重（wait 反覆呼叫會灌爆記錄檔）",
+    "file": "src/core/verification-log.ts",
+    "from": "  if (recorded.has(entry.pid)) return;",
+    "to": "  if (false) return;",
+    "expect": "記錄：同一個 pid 只記一次",
+    "script": "verify-verification.mjs"
   }
 ]

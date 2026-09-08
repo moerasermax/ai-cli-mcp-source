@@ -14,6 +14,7 @@ import type { AgentId } from '../agents/types.js';
 import { getAgent } from '../agents/registry.js';
 import { buildCliCommand, type BuildCliCommandOptions } from './command-builder.js';
 import { buildProcessResult } from './process-result.js';
+import { recordVerification } from './verification-log.js';
 import { buildLiveness, emptyOutputStats, listProcessTiming, type ProcessOutputStats } from './liveness.js';
 import {
   LivenessEventExtractor,
@@ -366,7 +367,7 @@ export class ProcessService {
       workFolder: proc.workFolder,
       status: proc.status,
     });
-    return buildProcessResult(
+    const result = buildProcessResult(
       {
         pid,
         agent: proc.toolType,
@@ -383,6 +384,19 @@ export class ProcessService {
       agentOutput,
       verbose
     );
+    // 終局才記，而且每個 pid 只記一次（wait 會反覆呼叫這支）。
+    const verification = result.verification as { status?: string; evidence?: { lastCodeChange?: string | null } } | undefined;
+    if (verification && verification.status !== 'pending') {
+      recordVerification({
+        pid,
+        agent: proc.toolType,
+        model: proc.model,
+        status: String(verification.status),
+        workFolder: proc.workFolder,
+        lastCodeChange: verification.evidence?.lastCodeChange ?? null,
+      });
+    }
+    return result;
   }
 
   async waitForProcesses(

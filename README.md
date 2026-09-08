@@ -158,6 +158,17 @@ through and logged as `waived`); and when the situation cannot be judged reliabl
 unreadable transcript, missing module — let it through. Missing a violation is
 cheaper than blocking work that was fine.
 
+Only changes **under the working directory** count — `workFolder` for dispatched
+jobs, the hook event's `cwd` for your own turns. A throwaway analysis script written
+to a temp directory will not trip the gate; it has no tests to run in the first place.
+(Relative paths always count, since they resolve against that same directory.)
+
+Both layers append their verdicts to the same
+`AI_CLI_STATE_DIR/verification-gate.jsonl`, tagged with `source` (`ai-cli` or `hook`).
+Together they are one machine's quality baseline; split apart, neither number
+represents the whole. It only records — no aggregation, nothing sent anywhere. A
+cross-machine baseline needs an explicit sync target and a privacy policy first.
+
 Why it exists: scanning 178 transcripts over 44 hours (26,003 usage records), **31.7%
 of work segments that touched source code never ran a single test or build**, and that
 share climbs with context size — 5% below 200k tokens, 59% in the 600–800k band. Of
