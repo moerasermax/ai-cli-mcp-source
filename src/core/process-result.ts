@@ -81,7 +81,8 @@ function buildVerification(
     };
   }
   const structured = STRUCTURED_TOOL_HISTORY[context.agent] ?? true;
-  return verificationFromAgentOutput(agentOutput, { structured });
+  // workFolder 是這次派工的專案根：子 agent 改到工作目錄以外的檔案（暫存腳本等）不算數。
+  return verificationFromAgentOutput(agentOutput, { structured, projectRoot: context.workFolder });
 }
 
 export function buildProcessResult(

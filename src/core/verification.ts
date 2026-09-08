@@ -59,6 +59,43 @@ const VERIFY_CMD =
 const FAIL_TEXT =
   /(\bFAIL\b|\bfailed\b|\bfailing\b|not ok|error TS\d|\bError:|AssertionError|\d+ (test(s)? )?failed|exit code [1-9])/i;
 
+/**
+ * 判定選項。`projectRoot` 是這套判定唯一的「範圍」概念。
+ *
+ * 為什麼需要它：2026-09-08 拿真實 transcript 實測時，閘門把寫到暫存目錄的一次性
+ * 分析腳本（`D:\Temp\...\real-check.mjs`）當成專案程式碼而誤擋。那種腳本本來就
+ * 沒有測試可跑，要求驗證是騷擾。給了 projectRoot 之後，只有工作目錄底下的修改
+ * 才算數——ai-cli 這側傳 workFolder，plugin 這側傳 hook 事件的 cwd。
+ */
+export interface NormalizeOptions {
+  projectRoot?: string | null;
+}
+
+/** 路徑正規化到可比對的形式：統一斜線、去掉大小寫差異（Windows）。 */
+function canonical(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/** Windows 磁碟機、UNC 或 POSIX 絕對路徑。 */
+function isAbsolutePath(path: string): boolean {
+  return /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+}
+
+/**
+ * target 是否位於 projectRoot 底下。沒給 root 就一律算數（維持舊行為）。
+ *
+ * 相對路徑一律算在專案內——它本來就是相對於工作目錄解析的，
+ * 拿它去跟絕對路徑的 root 比對只會全部落空。
+ */
+function insideProject(target: string, projectRoot?: string | null): boolean {
+  if (!projectRoot) return true;
+  if (!isAbsolutePath(target)) return true;
+  const root = canonical(projectRoot);
+  const file = canonical(target);
+  if (!root) return true;
+  return file === root || file.startsWith(root + '/');
+}
+
 /** 統一過的事件；不同 agent 的原始格式先正規化成這個形狀再判定。 */
 export interface NormalizedEvent {
   kind: 'code_change' | 'verification' | 'other';
@@ -103,16 +140,17 @@ function outputText(output: unknown): string {
  * 以及 `{ server, tool, input, output }` 的 MCP 呼叫。exit_code 存在時優先用它，
  * 因為文字比對會把「測試輸出裡剛好有 error 字樣」誤判成失敗。
  */
-export function normalizeToolEvent(entry: unknown): NormalizedEvent {
+export function normalizeToolEvent(entry: unknown, options: NormalizeOptions = {}): NormalizedEvent {
   if (!entry || typeof entry !== 'object') return { kind: 'other', label: '' };
   const record = entry as Record<string, unknown>;
   const tool = String(record.tool ?? record.name ?? '');
   const input = record.input;
   const command = commandOf(input);
   const target = pathOf(input);
+  const { projectRoot } = options;
 
   if (EDIT_TOOL.test(tool) && target) {
-    return CODE_EXT.test(target)
+    return CODE_EXT.test(target) && insideProject(target, projectRoot)
       ? { kind: 'code_change', label: `${tool} ${target}` }
       : { kind: 'other', label: `${tool} ${target}` };
   }
@@ -227,7 +265,7 @@ export function classifyVerification(
  */
 export function verificationFromAgentOutput(
   agentOutput: unknown,
-  options: { structured?: boolean; waivedReason?: string | null } = {}
+  options: { structured?: boolean; waivedReason?: string | null; projectRoot?: string | null } = {}
 ): VerificationReport | null {
   const tools =
     agentOutput && typeof agentOutput === 'object'
@@ -238,5 +276,10 @@ export function verificationFromAgentOutput(
       ? classifyVerification([], options)
       : null;
   }
-  return classifyVerification(tools.map(normalizeToolEvent), options);
+  // 注意不要寫成 tools.map(normalizeToolEvent)：map 會把 index 當第二參數傳進去。
+  const projectRoot = options.projectRoot ?? null;
+  return classifyVerification(
+    tools.map((entry) => normalizeToolEvent(entry, { projectRoot })),
+    options
+  );
 }

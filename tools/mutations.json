@@ -485,5 +485,45 @@
     "to": "        if (false) entry.exit_code = 1;",
     "expect": "如實記成 failed 而不是 passed",
     "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "insideProject 不特判相對路徑（專案內的相對路徑修改全被漏掉）",
+    "file": "src/core/verification.ts",
+    "from": "  if (!isAbsolutePath(target)) return true;",
+    "to": "  if (false) return true;",
+    "expect": "projectRoot：相對路徑一律算在專案內",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "normalizeToolEvent 不理會 projectRoot（暫存腳本被誤判成專案程式碼）",
+    "file": "src/core/verification.ts",
+    "from": "    return CODE_EXT.test(target) && insideProject(target, projectRoot)",
+    "to": "    return CODE_EXT.test(target)",
+    "expect": "projectRoot：暫存目錄的一次性腳本不算 code_change",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "insideProject 用純前綴比對（姊妹目錄被當成專案內）",
+    "file": "src/core/verification.ts",
+    "from": "  return file === root || file.startsWith(root + '/');",
+    "to": "  return file === root || file.startsWith(root);",
+    "expect": "projectRoot：前綴相同但不是子目錄的路徑不算數",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "buildVerification 不傳 workFolder 當專案根",
+    "file": "src/core/process-result.ts",
+    "from": "  return verificationFromAgentOutput(agentOutput, { structured, projectRoot: context.workFolder });",
+    "to": "  return verificationFromAgentOutput(agentOutput, { structured });",
+    "expect": "buildProcessResult 用 workFolder 當專案根",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "Stop hook 不傳 cwd 當專案根（暫存腳本誤擋）",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "  const projectRoot = event.cwd ?? null;",
+    "to": "  const projectRoot = null;",
+    "expect": "暫存腳本不擋",
+    "script": "verify-gate-hook.mjs"
   }
 ]

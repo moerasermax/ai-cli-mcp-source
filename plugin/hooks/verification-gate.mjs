@@ -159,7 +159,14 @@ async function main() {
   const mod = await loadClassifier();
   if (!mod?.classifyVerification || !mod?.normalizeToolEvent) return;
 
-  const report = mod.classifyVerification(events.map(mod.normalizeToolEvent), { structured: true });
+  // cwd 是這個回合的專案根。少了它，寫到暫存目錄的一次性分析腳本會被當成專案
+  // 程式碼而誤擋——2026-09-08 拿真實 transcript 實測時就是這樣被抓到的。
+  // 也不要寫成 events.map(mod.normalizeToolEvent)：map 會把 index 當第二參數傳進去。
+  const projectRoot = event.cwd ?? null;
+  const report = mod.classifyVerification(
+    events.map((entry) => mod.normalizeToolEvent(entry, { projectRoot })),
+    { structured: true }
+  );
 
   if (report.status !== 'not_observed' || !report.evidence.lastCodeChange) {
     // 沒改程式碼、已驗證、或驗證失敗（失敗時模型自己就會看到，不需要再擋一次）

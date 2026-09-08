@@ -226,6 +226,36 @@ test('沒有 transcript_path → 不擋、exit 0', async () => {
   check('缺欄位仍 exit 0', r.code === 0, `code=${r.code}`);
 });
 
+test('★ 只改工作目錄外的暫存腳本 → 不擋', async () => {
+  // 真實 transcript 實測抓到的誤報：分析用的一次性 .mjs 寫在暫存目錄，
+  // 被當成專案程式碼而要求驗證。那種腳本本來就沒有測試可跑。
+  const t = writeTranscript('scratch', [
+    userPrompt('幫我算一下這批資料'),
+    assistantTools(edit('D:\\Temp\\scratch\\probe.mjs')),
+    toolResults({ id: 't0' }),
+  ]);
+  const r = await runHook({
+    transcript_path: t,
+    session_id: 's12',
+    cwd: 'C:\\Users\\Moera\\ai-cli-mcp-source',
+  });
+  check('暫存腳本不擋', decisionOf(r.stdout) === null, r.stdout);
+});
+
+test('工作目錄內的程式碼修改 → 照擋', async () => {
+  const t = writeTranscript('inproject', [
+    userPrompt('改一下'),
+    assistantTools(edit('C:\\Users\\Moera\\ai-cli-mcp-source\\src\\a.ts')),
+    toolResults({ id: 't0' }),
+  ]);
+  const r = await runHook({
+    transcript_path: t,
+    session_id: 's13',
+    cwd: 'C:\\Users\\Moera\\ai-cli-mcp-source',
+  });
+  check('專案內的修改仍會被擋', decisionOf(r.stdout)?.decision === 'block', r.stdout);
+});
+
 test('shell 改程式碼也算數（sed -i）', async () => {
   const t = writeTranscript('shell', [
     userPrompt('用 sed 改一下'),

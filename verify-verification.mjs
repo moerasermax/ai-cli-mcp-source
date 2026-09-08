@@ -83,6 +83,65 @@ ok('正規化：MCP 呼叫不算 code_change 也不算 verification', () => {
   assert.strictEqual(normalizeToolEvent(codexMcp('knowledge_search')).kind, 'other');
 });
 
+// ---------------- 專案範圍（projectRoot）----------------
+// 真實 transcript 實測抓到的誤報：寫到暫存目錄的一次性分析腳本被當成專案程式碼。
+const ROOT = 'C:\\Users\\Moera\\ai-cli-mcp-source';
+
+ok('projectRoot：工作目錄內的 .ts 算 code_change', () => {
+  const e = normalizeToolEvent(claudeEdit(`${ROOT}\\src\\a.ts`), { projectRoot: ROOT });
+  assert.strictEqual(e.kind, 'code_change');
+});
+
+ok('★ projectRoot：暫存目錄的一次性腳本不算 code_change', () => {
+  const e = normalizeToolEvent(claudeEdit('D:\\Temp\\scratch\\probe.mjs'), { projectRoot: ROOT });
+  assert.strictEqual(e.kind, 'other', '暫存腳本沒有測試可跑，不該要求驗證');
+});
+
+ok('projectRoot：路徑分隔與大小寫差異不影響判斷', () => {
+  const e = normalizeToolEvent(claudeEdit('c:/users/moera/ai-cli-mcp-source/src/a.ts'), {
+    projectRoot: ROOT,
+  });
+  assert.strictEqual(e.kind, 'code_change');
+});
+
+ok('projectRoot：前綴相同但不是子目錄的路徑不算數', () => {
+  const e = normalizeToolEvent(claudeEdit(`${ROOT}-other\\src\\a.ts`), { projectRoot: ROOT });
+  assert.strictEqual(e.kind, 'other', 'ai-cli-mcp-source-other 不是 ai-cli-mcp-source 的子目錄');
+});
+
+ok('projectRoot：沒給就一律算數（維持舊行為）', () => {
+  assert.strictEqual(normalizeToolEvent(claudeEdit('D:\\Temp\\x.mjs')).kind, 'code_change');
+});
+
+ok('★ projectRoot：相對路徑一律算在專案內', () => {
+  const e = normalizeToolEvent(claudeEdit('src/a.ts'), { projectRoot: ROOT });
+  assert.strictEqual(e.kind, 'code_change', '相對路徑本來就相對於工作目錄，不能被排除');
+});
+
+ok('projectRoot：POSIX 絕對路徑在專案外時排除', () => {
+  const e = normalizeToolEvent(claudeEdit('/tmp/probe.mjs'), { projectRoot: '/home/me/proj' });
+  assert.strictEqual(e.kind, 'other');
+});
+
+ok('★ 暫存腳本 + 專案內修改並存時，以專案內的為準', () => {
+  const events = [
+    claudeEdit(`${ROOT}\\src\\a.ts`),
+    claudeBash('npm test'),
+    claudeEdit('D:\\Temp\\probe.mjs'),
+  ].map((e) => normalizeToolEvent(e, { projectRoot: ROOT }));
+  const r = classifyVerification(events);
+  assert.strictEqual(r.status, 'passed', '之後寫的暫存腳本不該讓已驗證的工作變成未驗證');
+});
+
+ok('buildProcessResult 用 workFolder 當專案根', () => {
+  const r = buildProcessResult(
+    ctx({ workFolder: ROOT }),
+    { message: 'done', tools: [claudeEdit('D:\\Temp\\probe.mjs')] },
+    false
+  );
+  assert.strictEqual(r.verification.status, 'not_applicable', '子 agent 寫到工作目錄外不算數');
+});
+
 // ---------------- 五態 ----------------
 ok('not_applicable：只改文件，不需要驗證', () => {
   const r = classifyVerification([claudeEdit('README.md')].map(normalizeToolEvent));
