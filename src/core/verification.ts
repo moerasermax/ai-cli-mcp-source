@@ -74,6 +74,29 @@ const VERIFY_CMD =
  */
 const ECHOED = /^\s*(echo|printf|print|cat|type|write-host|write-output)\b/i;
 
+/**
+ * 搜尋類指令：引號裡那串是**要找的東西**，不是要跑的東西。
+ *
+ * 2026-09-08 astra 稽核抓到的假通過：改完程式碼之後只跑
+ * `rg "npm test" README.md`，判定就回報 passed——因為指令字面上有 `npm test`。
+ * 閘門謊報通過比誤擋嚴重得多，因為呼叫端會信它。
+ */
+const SEARCH_CMD =
+  /(^|[\s;&|])(rg|grep|egrep|fgrep|ag|ack|findstr|Select-String|sls)\b|\bgit\s+log\b[^|;&]*--grep/i;
+
+/**
+ * 把引號內的內容換成空白。
+ *
+ * 只用在**判斷有沒有寫檔**：`echo "example > src/a.ts"` 裡的 `>` 是文字不是重導向
+ * （astra 稽核抓到，實測成立）。剝掉之後 `echo "x" > src/gen.ts` 仍看得到真的重導向。
+ *
+ * **刻意不用在判斷有沒有跑驗證**：`pwsh.exe -Command "npm test"` 的引號裡是真的要執行的
+ * 指令，剝掉就會漏掉——codex 在 Windows 上就是這個形狀。那一側改用 SEARCH_CMD 排除。
+ */
+function stripQuoted(command: string): string {
+  return command.replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ');
+}
+
 /** 「零失敗」的說法。這些出現時，不可以因為字面有 failed 就判成失敗。 */
 const ZERO_FAIL = /\b0\s+(tests?\s+)?(failed|failing|failures|errors)\b|\ball tests? passed\b|\bno tests? failed\b/i;
 
@@ -85,7 +108,7 @@ const ZERO_FAIL = /\b0\s+(tests?\s+)?(failed|failing|failures|errors)\b|\ball te
  * 「非零個失敗」與明確的失敗標記。有 exit code 時一律以 exit code 為準。
  */
 const FAIL_TEXT =
-  /(\bFAIL\b|[1-9]\d*\s+(tests?\s+)?(failed|failing|failures)|not ok|error TS\d|AssertionError|exit code [1-9])/;
+  /(\bFAIL\b(?![=:\s]*0\b)|[1-9]\d*\s+(tests?\s+)?(failed|failing|failures)|not ok|error TS\d|AssertionError|exit code [1-9])/;
 
 /**
  * 判定選項。`projectRoot` 是這套判定唯一的「範圍」概念。
@@ -166,7 +189,9 @@ const NULL_SINK = /^(\/dev\/null|nul|NUL|\/dev\/stdout|\/dev\/stderr|&\d)$/i;
  * 重導向的 `>` 要求前接行首／空白／`;&|)`／fd 數字，同樣是第二層防護——
  * 就算拿掉，`->` 抓到的目標 `readTime` 也不是程式碼檔而不會誤判。
  */
-function shellWriteTargets(command: string): string[] {
+function shellWriteTargets(rawCommand: string): string[] {
+  // 引號裡的 `>` 是文字不是重導向，先剝掉再找目標。
+  const command = stripQuoted(rawCommand);
   const targets: string[] = [];
   const push = (value: string | undefined) => {
     if (value && !NULL_SINK.test(value)) targets.push(value);
@@ -254,7 +279,7 @@ export function normalizeToolEvent(entry: unknown, options: NormalizeOptions = {
     if (writesCode) {
       return { kind: 'code_change', label: command.trim().slice(0, 160) };
     }
-    if (VERIFY_CMD.test(command) && !ECHOED.test(command)) {
+    if (VERIFY_CMD.test(command) && !ECHOED.test(command) && !SEARCH_CMD.test(command)) {
       const exitCode = record.exit_code ?? record.exitCode;
       const text = outputText(record.output);
       const ok =

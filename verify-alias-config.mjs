@@ -478,8 +478,9 @@ async function mcpChecks() {
 
   let buf = '';
   const pending = new Map();
+  child.stdout.setEncoding('utf8');
   child.stdout.on('data', (d) => {
-    buf += d.toString();
+    buf += d;
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim();

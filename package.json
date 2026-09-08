@@ -1,6 +1,6 @@
 {
   "name": "ai-cli-mcp",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "Run Claude, Codex, Antigravity (agy), and any third-party OpenAI-compatible API through MCP with background jobs. Self-maintained, registry-based architecture.",
   "private": true,
   "homepage": "https://github.com/moerasermax/ai-cli-mcp-source/blob/master/CHANGELOG.md",

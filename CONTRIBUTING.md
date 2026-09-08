@@ -20,7 +20,8 @@
 - 維持既有風格：繁體中文註解、檔頭用區塊註解說明該檔職責、對外行為改動要標註。
 - 改完一定要能編譯：`npm run build`（或 `npm run typecheck`）必須零錯誤。
 - 有對應的驗證腳本（`verify-*.mjs`）時，跑過確認通過；新功能盡量補一支。
-- `npm test` 串起九支驗證腳本（breaker / rate / direct-api / alias-config / catalog-source / exec-contract / mcp / liveness / update），都不會打真實 AI 供應商或真實 origin。
+- `npm test` 串起十一支驗證腳本（breaker / rate / direct-api / alias-config / catalog-source / exec-contract / mcp / liveness / update / verification / gate-hook），都不會打真實 AI 供應商或真實 origin。
+- `verify-verification.mjs` 驗判定核心的五態與順序規則，`verify-gate-hook.mjs` 直接跑 `plugin/hooks/verification-gate.mjs`，含「複製到沒有 `dist/` 的位置後仍要能擋」這條——那是 marketplace 安裝的真實形狀。
 - `verify-catalog-source.mjs` 涵蓋非同步查詢、單飛、10 分鐘 TTL、30 天磁碟快取及 agy 的逾時／stderr／kill；`verify-mcp.mjs` 對三個入口驗冷啟動 `tools/list < 1 秒` 與 `models` 等待規則。兩支自建暫存快取並使用 `tools/stubs/agy-models-*`，不連真實 vendor。
 - verify 腳本與突變 harness 載入 `tools/stubs/catalog-test-env.mjs`，隔離 config.json、providers、catalog-cache 與狀態，並設定 `AI_CLI_AUTO_UPDATE=off`、git 只允許 file 協定。alias-config 單跑也會自行載入，不碰使用者目錄。
 - `verify-update.mjs` 只在暫存 bare origin + A/B clone 內開啟更新；`AI_CLI_UPDATE_REPO_ROOT` 僅供測試，不要用來覆寫正式安裝。
@@ -83,6 +84,23 @@ commit 內文（body）說明**為什麼這樣改**，而不只是改了什麼�
 3. 開 PR，描述：**動機 / 改了什麼 / 影響範圍 / 如何驗證**。
 4. 動到 `core/` 的 PR 至少要有一位其他協作者 review。
 5. **push 到 master 會被所有機器自動拉下來**，等同部署；push 前必須 `npm test` 全綠。
+
+### 5.1 目前的實況與替代做法（2026-09-08 補）
+
+上面 2–4 寫的是理想流程，**實際上不是這樣跑的**：至今 200 個 commit 裡只有 4 個經過 PR，
+其餘直接進 master。維護者只有一人，開一個只有自己能 merge 的 PR 是形式，不是審查。
+
+與其留一份沒人照做的規定，這裡寫下**真正在執行的規則**——動到 `core/` 時，
+下列三件事一件都不能少，缺任何一件就不准 push：
+
+- **獨立稽核**：派一個沒有寫這段程式碼的 agent（`mcp__ai-cli__run`）讀實作原始碼審查，
+  不是自己 review 自己。稽核意見要**逐條實測確認成立才修**，不成立的要說明為什麼。
+- **稽核結果進 CHANGELOG**：由誰稽核、找到什麼、修了什麼、哪幾條判定不成立。
+  看不到稽核紀錄的 core 改動，等同沒稽核過。
+- **突變測試**：修完 bug 補一個對應突變（§2），確認新斷言真的殺得掉那個 bug。
+  測試全綠不算數，要證明測試沒在假綠燈。
+
+2–4 仍適用於**有第二位人類協作者參與**的情況。單人作業時走上面這條。
 
 ## 6. 不要提交的東西
 

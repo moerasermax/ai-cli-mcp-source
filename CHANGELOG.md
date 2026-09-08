@@ -8,11 +8,41 @@
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-09-08
+
+**判 MAJOR 的理由是對外行為不相容，不是這一版做了多少東西。** 依 CONTRIBUTING §4，
+下列每一條各自都足以構成 MAJOR：
+
+| 變更 | 舊行為 | 新行為 | 誰會壞 |
+|---|---|---|---|
+| `wait` 逾時 | 丟錯（MCP InternalError） | 回目前結果陣列，running 的帶 `timedOut: true` | 靠 `catch` 判斷逾時的呼叫端 |
+| `codex-ultra` | → `gpt-5.6-sol`、effort `xhigh` | → `gpt-6-astra`、effort `max` | codex-cli < 0.153 的機器會被 API 拒絕 |
+| `doctor.checks.loginState` / `termsAcceptance` | `boolean` | `null`（誠實表示「沒驗這個」） | 把它當布林讀的呼叫端 |
+| CLI job 無結束紀錄時 | `failed` | `lost`（不知道 ≠ 失敗） | 只判斷 `failed` 的呼叫端會漏掉 |
+| `gemini-*` 模型名 | 由 claude 的 catch-all 接走 | 路由到 agy，並實際傳 `--model` | 依賴舊路由行為的呼叫端 |
+
+前兩條是 2026-09-05 那批，後三條來自 `805c619`（2026-08-22）——**是發版前逐 commit
+對照才補上的**，我原本只記得自己近期做的那兩條。這正是 CONTRIBUTING §4 要求
+「照 git log 逐 commit 對照，不能只看自己記得的部分」的理由（4.0.0 也踩過同一個坑）。
+
+這一版的主線是**讓工具對呼叫端說實話**：`wait` 逾時回 liveness 而不是錯誤、模型目錄
+說得出每一筆的出處與能不能派工、`run` 的回傳說得出「這次改了程式碼但沒驗證」。
+另外補上原始碼安裝的自動更新，以及一個會擋住自己的程式碼修改驗證閘門——
+它上線當天連續四次擋錯人，那四次的修復也在下面。
+
 ### 新增（程式碼修改驗證閘門）
+
+> **這一批標記為實驗性。** 判定是啟發式的，上線第一天就誤擋七次（單字母副檔名、`->`、
+> `2>/dev/null`、引號裡的重導向、`rg "npm test"` 誤判通過、`FAIL=0`），全部修掉了，
+> 但這代表判定規則還在收斂。三次誤擋的修法都**刻意選擇收緊**（寧可漏擋不要誤擋），
+> 所以實際覆蓋率低於設計覆蓋率——`cmd>file` 不留空白、單字母副檔名沒路徑都會漏。
+> `run` / `wait` / `get_result` 多回一個 `verification` 欄位是加法、不影響既有呼叫端；
+> 會擋人的那一層是**要自己去 `/plugin install` 才會生效**的，預設不啟用。
+
 - 新增 `src/core/verification.ts`：程式碼修改的驗證狀態五態判定（`not_applicable` / `not_observed` / `passed` / `failed` / `waived`，running 另回 `pending`）。**刻意不是布林值**——`verified: false` 沒辦法區分「沒改程式碼所以不用驗」「改了但看不到有沒有驗」「驗了而且失敗」這三件對呼叫端意義完全不同的事。判定依**事件順序**：驗證必須發生在最後一次修改之後，否則「先跑測試再改程式碼」會假通過。（Claude，moerasermax 指示）
 - `run` / `wait` / `get_result` 的回傳新增 `verification` 欄位，**compact 模式也不拿掉**。呼叫端是 AI，它只看得到工具回傳；回傳沒說「這次改了程式碼但沒驗證」，它就會把子 agent 的「我做完了」當成做完了。這與 2026-09-05「wait 逾時不丟錯、改回 liveness」同源：工具要對 AI 說實話。antigravity 沒有結構化工具紀錄，一律回 `not_observed`（看不到不等於沒改），不得回 `not_applicable`。（Claude，moerasermax 指示）
-- 新增隨附的 Claude Code plugin `ai-cli-verification-gate`（`plugin/`，附 `.claude-plugin/marketplace.json`）：Stop hook 在「本回合改了程式碼卻沒跑驗證」時擋一次，要求補驗證或寫明豁免理由。硬性規則為一律 exit 0、最多擋一次（靠官方 `stop_hook_active` 防無限迴圈，第二次一律放行並記為 waived）、無法可靠判定時不擋。與第 1 層共用同一個判定模組，不是另一套規則。（Claude，moerasermax 指示）
-- 新增 `verify-verification.mjs`（66 條）與 `verify-gate-hook.mjs`（24 條）並納入 `npm test`；新增 32 個突變（28 個判定、記錄、plugin 偵測與稽核修復，4 個 hook），涵蓋順序陷阱、compact 拿掉 verification、running 假稱結果、agy 誤判、豁免蓋過失敗、exit_code 被輸出文字蓋過。hook 的狀態目錄沿用 `AI_CLI_STATE_DIR` 隔離，測試不碰使用者目錄。（Claude，moerasermax 指示）
+- 新增隨附的 Claude Code plugin `ai-cli-verification-gate`（`plugin/`，附 `.claude-plugin/marketplace.json`）：Stop hook 在「本回合改了程式碼卻沒跑驗證」時擋一次，要求補驗證或寫明豁免理由。硬性規則為一律 exit 0、最多擋一次（靠官方 `stop_hook_active` 防無限迴圈，第二次一律放行並誠實記下原狀態、標 `gate: allow-after-block`）、無法可靠判定時不擋。與第 1 層共用同一個判定模組，不是另一套規則。（Claude，moerasermax 指示）
+- 新增 `verify-verification.mjs`（100 條）與 `verify-gate-hook.mjs`（47 條）並納入 `npm test`；新增 43 個突變（36 個判定、記錄、plugin 偵測與稽核修復，7 個 hook），涵蓋順序陷阱、compact 拿掉 verification、running 假稱結果、agy 誤判、豁免蓋過失敗、exit_code 被輸出文字蓋過。hook 的狀態目錄沿用 `AI_CLI_STATE_DIR` 隔離，測試不碰使用者目錄。（Claude，moerasermax 指示）
 - 動機是實測而非臆測：掃 2026-09-06 13:00 起 44 小時、178 條 Claude Code transcript、26,003 筆 usage 記錄後，有改到程式碼的工作段裡 **31.7% 完全沒跑任何 test/build**，且該比例隨上下文長度上升（峰值 0-200k 為 5%、600-800k 為 59%）；有驗證的工作段返工率 59.2%、平均 4.67 圈。同一份資料顯示首次驗證通過率在各上下文區間之間沒有趨勢（89/77/86/78/86%），亦即長上下文並未讓品質變差，只是同一件工作在 800k+ 要花 11.64M 額度、在 200k 以下只要 1.43M。（Claude，moerasermax 指示）
 - 判定加上專案範圍：只有工作目錄底下的修改才算數（ai-cli 傳 `workFolder`、plugin 傳 hook 事件的 `cwd`）。這是拿真實 transcript 實測時抓到的誤報——寫在暫存目錄的一次性分析腳本被當成專案程式碼而要求驗證，但那種腳本本來就沒有測試可跑。相對路徑一律算在專案內（它本來就相對於工作目錄解析）。（Claude，moerasermax 指示）
 - 新增 `src/core/verification-log.ts`：第 1 層的判定結果落地到 `AI_CLI_STATE_DIR/verification-gate.jsonl`，**與 plugin 的 Stop hook 寫同一份檔案**，用 `source`（`ai-cli` / `hook`）區分。兩層合起來才是一台機器完整的品質基線，分開存會變成兩份誰也代表不了整體的數字。同一個 pid 只記一次（`wait` 會反覆呼叫 `getProcessResult`）。這一層只記錄、不彙總、不外送——跨機器基線需要明確的同步端與隱私政策，在那之前資料留在本機。（Claude，moerasermax 指示）
@@ -29,6 +59,35 @@
   - 另修 `verification-log` 的去重標記早於實際寫入（首次寫失敗就永不重試）、hook 在第二次放行時謊稱 `waived`（waived 依定義需要明確理由，hook 無法可靠判斷，改為誠實記錄原狀態並標 `gate: allow-after-block`）、`process.exit` 可能截斷 stdout。**並採納其設計意見：驗證失敗也擋一次**——原本只擋「沒驗證」，但模型看得到測試失敗仍可能回一句「改好了」就結束，那正是完成閘門要防的事。（Claude，moerasermax 指示）
 - **端到端實測抓到 codex 改檔完全看不到**：codex 用 `file_change` item type 記錄改檔，而 `agents/codex.ts` 的 parser 只收 `mcp_tool_call` 與 `command_execution`，因此 codex 子 agent 改了程式碼也永遠判 `not_applicable`——第 1 層對 codex 等於失效。parser 補收 `file_change` 並把多檔展開成每檔一筆。真實派工複驗：改檔不驗證判 `not_observed`、改檔並跑 `npm test` 判 `passed`。（Claude，moerasermax 指示）
 - 這批由 Claude 實作、@codex-gpt-5.6-sol（high）分三輪獨立稽核並修正三個實錯：兩張統計表口徑不一致（效率差距 8.3 倍實為 2.7 倍）、首次通過率母體混入未改程式碼的工作段（91.4% 實為 81.7%）、`205:1965` 是不同單位不能當覆蓋率。設計上採納其三項意見：五態而非布林、驗證須在最後一次修改之後、以 companion plugin 散布而非改寫使用者的 `~/.claude/settings.json`。（Claude，moerasermax 指示）
+
+### 修正（發版前稽核抓到的第三類誤判：「說到」被當成「做到」）
+- **修正假通過**：改完程式碼之後只要指令**字面上**出現 `npm test`，判定就回報 `passed`——`rg "npm test" README.md`、`grep -rn "npm test" .`、`git log --grep="npm test"` 全都算數。**閘門謊報通過比誤擋嚴重得多，因為呼叫端會信它。** 搜尋類指令（rg/grep/ag/ack/findstr/Select-String、`git log --grep`）一律不算跑過驗證；但 `pwsh.exe -Command "npm test"` 仍算——那裡的引號包的是真的要執行的指令，是 codex 在 Windows 的形狀。（Claude，moerasermax 指示）
+- **修正引號裡的重導向被當成寫檔**：`echo "example > src/a.ts"`、`echo "用 tee src/x.ts 可以同時看到"` 這種說明文字會被判成改了程式碼。判斷寫檔目標前先剝掉引號內容；`echo "x" > src/gen.ts` 的重導向在引號外，仍然算數。（Claude，moerasermax 指示）
+- **修正輸出含 `FAIL=0` 被判成失敗**：大寫 `FAIL` 一律中，而零失敗白名單只認得 `0 failed` 這種語序，接不住 `FAIL=0` / `FAIL: 0` 這類計數器寫法。這個誤判是閘門在我報告它有問題的那一則回覆裡當場示範的。（Claude，moerasermax 指示）
+- **修正測試讀 stderr/stdout 時逐 chunk 解碼**：`stderr += buffer` 會對每個 chunk 各自 `toString()`，一個中文字（3 bytes）跨 chunk 邊界時兩邊都解成替換字元，要比對的中文訊息就永遠對不上。這是 `verify-update.mjs` 那支 flaky 的**第二個**來源（第一個是等待條件漏了一半）。`verify-update` / `verify-gate-hook` / `verify-exec-contract` / `verify-alias-config` 都補上 `setEncoding('utf8')`——`verify-liveness` 與 `updater.ts` 本來就有。（Claude，moerasermax 指示）
+- **修正 `upToDate` 沒考慮 install marker**：hook 現在會優先讀 marker 指到的安裝，那份就是最新的，這時候 cache 舊不舊都不影響實際行為，催人重裝是騷擾。marker 指向本安裝時直接回 `true`；指向別的安裝時仍比對 cache。（Claude，moerasermax 指示）
+- 這五條由 @gpt-6-astra（high，使用者特許）在發版前稽核抓出，逐條實測確認成立後才修。它同時指出版號判定漏了三個破壞性變更、CHANGELOG 漏記六個 commit、以及「第二次記 waived」那句與實作自相矛盾——都已補正。（Claude，moerasermax 指示）
+
+### 修正（驗證閘門上線後的三次誤擋與 plugin 送達問題）
+- 修正 `CODE_EXT` 收單字母副檔名 `c|h|m|r` 造成的誤判：Python 的 `re.M`、`re.S` 這種 regex flag，以及任何 `物件.c` 形式的屬性存取，都會被當成程式碼檔案路徑。改為單字母副檔名必須有路徑分隔符才算——`src/main.c` 仍算，`re.M` 不算。（Claude，moerasermax 指示）
+- 修正重導向偵測沒要求前綴：輸出訊息裡的 `->`、比較用的 `=>`、regex 字面值裡的 `>` 都會被當成寫檔，一句 `echo "字數: 4591 -> readTime 應為 10"` 就讓整個回合被判成改了程式碼。改為 `>` 必須前接行首、空白、`;&|)` 或 fd 數字；代價是 `cmd>file` 這種不留空白的寫法會漏掉——漏擋比誤擋便宜。（Claude，moerasermax 指示）
+- 修正「有寫檔動作」與「有程式碼路徑」被分開判定：那兩件事可能毫無關係——`grep -rn "a" src/core/updater.ts 2>/dev/null` 的寫入目標是 `/dev/null`，跟那個 `.ts` 無關，卻因為兩個條件各自成立而被判成改了它。改為只看**實際寫入的目標**（重導向取 `>` 後面那個 token，`tee`／`mv`／`cp` 取目的地，`dd of=`／`install -D` 取參數，`sed -i`／`patch` 因目標位置不固定才退回掃整串）。順帶修正 `cp src/a.ts /tmp/backup.txt`——來源是程式碼，但寫入目標不是。舊的 `SHELL_WRITE` 與 `pathTokens` 一併移除。（Claude，moerasermax 指示）
+- 修正 plugin 安裝偵測只讀 `settings.json`：本機實查有 4 個 project scope 的 plugin 是 `enabledPlugins` 完全看不到的，於是裝過的機器會被判成沒裝而每 3 天被催一次。改為 `installed_plugins.json` / `known_marketplaces.json` / `settings.json` 三個來源任一說有就算有，三個全部讀不到才算判斷不了；狀態多回一個 `scopes`。（Claude，moerasermax 指示）
+
+### 新增（plugin 自動跟上 ai-cli）
+- 新增 `src/core/install-marker.ts`：MCP server 啟動時把自己的 repo 根寫進 `AI_CLI_STATE_DIR/install.json`，hook 優先讀那份安裝的判定核心、讀不到才用 plugin 自帶的。**Claude Code 安裝 plugin 是把 source 目錄複製到 cache，之後 `git pull` 不會動它**——沒有這條的話，每修一次判定就要重裝一次 plugin，而重裝完又會被下一次修改超車（2026-09-08 實測連續發生四次）。自足是下限、跟上是常態，兩者要一起成立。marker 只放路徑且兩端都驗證：寫的時候確認真的看得到判定核心，讀的時候確認那個路徑下真的有——「指到不存在的地方」跟「沒有 marker」下場相同。（Claude，moerasermax 指示）
+
+### 測試（驗證閘門）
+- 修掉四條假綠燈：`async` 函式傳進同步的 `ok()` 時，`fn()` 只回傳 Promise，try/catch 抓不到裡面的斷言錯誤，那四條測試永遠通過（其中一條還是最重要的 plugin 判定核心一致性）。`ok()` 現在明確擋掉 Promise，動態載入一律提到檔案頂層。突變 harness 補上判定核心的同步步驟並在收尾重建產物，`.gitattributes` 釘住產生檔的換行，否則「worktree 應乾淨」每輪誤報。（Claude，moerasermax 指示）
+- 移除兩個本質上測不到的突變並在程式碼註明那兩層是冗餘防護：修完「只看寫入目標」之後，重導向的前綴檢查與 `/dev/null` 白名單都殺不掉任何斷言——主要保護擋在後面。留著測不到的突變只會每輪紅一次，但要寫明它們是第二層，免得後人在錯的地方修東西。（Claude，moerasermax 指示）
+
+### 其他（發版前逐 commit 對照補記）
+- `exec` 前景執行契約：呼叫端自己擁有程序、自己收 stdout、自己判斷終態，`started` frame 回報實際生效的模式。fail-closed 為預設——agent 沒有 `buildStrictCommand` 就拒絕啟動，不退回帶著 `--dangerously-*` 全開權限的 `buildCommand`。（`805c619`、`0df5c04`）
+- `doctor.checks.loginState` 與 `termsAcceptance` 由 `boolean` 改成 `null`：doctor 只驗二進位路徑，從來沒有驗登入狀態，回 `false` 會讓人以為「驗過了、沒登入」。`null` 誠實表示「這一項沒有驗」。**這是破壞性變更**，見上方相容性表。（`805c619`）
+- CLI 的 job 在沒收到結束回報時由 `failed` 改成 `lost`：程序不見了而且沒有結束紀錄，結果是**真的不知道**，那跟失敗不是同一件事。**這是破壞性變更**。（`805c619`）
+- `gemini-*` 模型名改由 antigravity 認領並實際傳 `--model`：先前會被 claude 的 catch-all 靜默接走。**這是破壞性變更**。（`805c619`）
+- 修正 `marketplace.json` 缺 `id`、`plugins[].version` 導致 `/plugin install` **完全沒有輸出、沒有安裝、也沒有錯誤訊息**；補齊必要欄位並加測試守住。（`7c64ae5`）
+- 英文 README 改為主入口、中文保留為完整參考；新增 Apache-2.0 授權；`.planner-id` 進版控（跨 checkout 的專案身分標記）；`package-lock.json` 版號補同步，避免安裝後留下髒樹。（`df3386e`、`6372cb7`、`da7010f`、`6912c90`、`e67657b`）
 
 ### 新增（ai-cli 自動更新）
 - 原始碼安裝新增背景更新器：MCP 連線後延遲檢查 origin，獨立 CLI 子程序以 fast-forward 套用、依套件變動安裝或建置、doctor 煙霧測試；支援 on／check／off、檢查節流、髒樹與分支守門、pid 殘留鎖、失敗回滾和 node-pty 鎖檔說明。（@codex-gpt-6-astra，moerasermax 指示）

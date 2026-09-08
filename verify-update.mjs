@@ -96,7 +96,9 @@ async function openMcp(f, policy = 'off') {
   } });
   const client = new Client({ name: 'verify-update', version: '1' }, { capabilities: {} });
   let stderr = '';
-  transport.stderr.on('data', (s) => { stderr += s; });
+  // setEncoding 讓 Node 在內部處理跨 chunk 的多位元組字元；少了它，一個中文字被切在
+  // 兩個 chunk 之間會各自解成替換字元，要比對的訊息（含中文）就永遠對不上。
+  transport.stderr.setEncoding('utf8').on('data', (s) => { stderr += s; });
   const notifications = [];
   client.setNotificationHandler(LoggingMessageNotificationSchema, (n) => { notifications.push(n.params); });
   await client.connect(transport, { timeout: 10000 });
@@ -303,9 +305,17 @@ try {
     } finally { await server.client.close(); }
     const restarted = await openMcp(f, 'off');
     try {
+      /*
+        兩個條件都要等，不能只等 notice。
+
+        updater 是「先清 notice（寫檔）、再 report（印 stderr）」兩個動作，
+        所以 notice 變 null 的時候 stderr 常常還沒寫出來。舊版只等 notice 就斷言，
+        實測 4 次跑 2 次失敗——那不是偶發，是等待條件漏了一半。
+      */
+      const expected = `ai-cli 已是最新版 ${target.slice(0, 7)}`;
       const deadline = Date.now() + 5000;
-      while (disk(f).notice && Date.now() < deadline) await delay(50);
-      check('重啟 MCP 清提示並印新版 SHA', disk(f).notice === null && restarted.stderr().includes(`ai-cli 已是最新版 ${target.slice(0, 7)}`));
+      while ((disk(f).notice || !restarted.stderr().includes(expected)) && Date.now() < deadline) await delay(50);
+      check('重啟 MCP 清提示並印新版 SHA', disk(f).notice === null && restarted.stderr().includes(expected));
     } finally { await restarted.client.close(); }
   });
 } finally {

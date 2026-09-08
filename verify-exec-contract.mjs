@@ -39,8 +39,9 @@ function runExec(request) {
     const child = spawn(process.execPath, [CLI, 'exec'], { stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
-    child.stdout.on('data', (c) => (out += c.toString('utf-8')));
-    child.stderr.on('data', (c) => (err += c.toString('utf-8')));
+    // 每個 chunk 各自 toString 會切斷跨界的多位元組字元，改由 stream 內部處理。
+    child.stdout.setEncoding('utf8').on('data', (c) => (out += c));
+    child.stderr.setEncoding('utf8').on('data', (c) => (err += c));
     child.on('close', (code) => {
       const frames = out
         .split('\n')

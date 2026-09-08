@@ -61,8 +61,9 @@ function runHookAt(hookPath, payload, env = {}) {
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => (stdout += d));
-    child.stderr.on('data', (d) => (stderr += d));
+    // hook 的 JSON reason 全是中文，跨 chunk 切斷會讓 JSON.parse 失敗或內容變形。
+    child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
+    child.stderr.setEncoding('utf8').on('data', (d) => (stderr += d));
     child.on('close', (code) => resolve({ code, stdout, stderr }));
     child.stdin.end(JSON.stringify(payload));
   });
@@ -224,7 +225,7 @@ test('壞掉的 stdin → 不擋、exit 0', async () => {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
-  child.stdout.on('data', (d) => (stdout += d));
+  child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
   child.stdin.end('{ this is not json');
   const code = await new Promise((res) => child.on('close', res));
   check('壞 JSON 不擋', stdout.trim() === '', stdout);

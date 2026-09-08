@@ -481,6 +481,60 @@ ok('cp 的目的地不是程式碼檔就不算', () => {
   assert.strictEqual(e.kind, 'other', '來源是程式碼但寫入目標不是');
 });
 
+// ★ 2026-09-08 astra 稽核抓到的第三類：「說到」被當成「做到」。
+// 前兩類是誤擋（該放行卻擋），這一類的第一條是**假通過**——閘門謊報 passed，比誤擋嚴重。
+ok('★★ 搜尋 npm test 不算跑過驗證（假通過）', () => {
+  const events = [
+    { tool: 'Edit', input: { file_path: 'src/a.ts' } },
+    { tool: 'Bash', input: { command: 'rg "npm test" README.md' }, output: 'README.md:12: npm test' },
+  ].map((e) => normalizeToolEvent(e));
+  assert.strictEqual(events[1].kind, 'other', 'rg 是在找字串，不是在跑測試');
+  assert.strictEqual(classifyVerification(events).status, 'not_observed', '不得謊報 passed');
+});
+
+ok('★ grep / git log --grep 找測試指令也不算驗證', () => {
+  for (const cmd of ['grep -rn "npm test" .', 'git log --grep="npm test"', 'Select-String "npm test" x.md']) {
+    assert.strictEqual(normalizeToolEvent({ tool: 'Bash', input: { command: cmd } }).kind, 'other', cmd);
+  }
+});
+
+ok('★ 但 -Command "npm test" 仍算驗證（codex 在 Windows 的形狀）', () => {
+  const e = normalizeToolEvent({
+    tool: 'command_execution',
+    input: { command: '"C:\\pwsh.exe" -Command "npm test"' },
+    exit_code: 0,
+  });
+  assert.strictEqual(e.kind, 'verification', '引號裡是真的要執行的指令，不能剝掉');
+  assert.strictEqual(e.ok, true);
+});
+
+ok('★★ 引號裡的重導向是文字，不是寫檔', () => {
+  for (const cmd of ['echo "example > src/a.ts "', 'echo "把結果寫進 > out.ts 就好"', 'echo "用 tee src/x.ts 可以同時看到"']) {
+    assert.strictEqual(normalizeToolEvent({ tool: 'Bash', input: { command: cmd } }).kind, 'other', cmd);
+  }
+});
+
+ok('★ 但引號外的重導向仍算寫檔', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'echo "x" > src/gen.ts' } });
+  assert.strictEqual(e.kind, 'code_change', '引號只包住內容，重導向在外面');
+});
+
+ok('★★ 輸出含 FAIL=0 不算失敗（閘門擋住自己時的第七個誤判）', () => {
+  const e = normalizeToolEvent({
+    tool: 'Bash',
+    input: { command: 'npm test' },
+    output: '  第 1 次: exit=0  FAIL=0',
+  });
+  assert.strictEqual(e.ok, true, 'FAIL=0 是計數器標籤，不是失敗');
+});
+
+ok('FAIL=1 與 FAIL <path> 仍算失敗', () => {
+  assert.strictEqual(
+    normalizeToolEvent({ tool: 'Bash', input: { command: 'npm test' }, output: 'FAIL=1' }).ok, false);
+  assert.strictEqual(
+    normalizeToolEvent({ tool: 'Bash', input: { command: 'npm test' }, output: 'FAIL src/a.test.ts' }).ok, false);
+});
+
 ok('shell 改專案內的相對路徑仍算 code_change', () => {
   const e = normalizeToolEvent(
     { tool: 'Bash', input: { command: 'sed -i s/a/b/ src/a.ts' } },
@@ -610,8 +664,38 @@ ok('★ plugin：known_marketplaces.json 才是 marketplace 的權威來源', ()
 
 // ★ 2026-09-08 第三次誤擋抓到：plugin 安裝後不會跟著 repo 更新，
 // 已修好的誤判仍會用舊判定核心繼續擋人，而且沒有任何跡象。
+ok('★★ plugin：install marker 指向本安裝時，cache 舊也不催重裝', () => {
+  // hook 會優先讀 marker 指到的 dist，那份就是最新的——這時候催人重裝是騷擾。
+  // （astra 稽核指出：marker 那條修好之後產生的新不一致。）
+  clearPluginFiles();
+  const dir = freshState();
+  setSettings({ enabledPlugins: {} });
+  const stale = join(PDIR, 'stale-but-marker-ok');
+  mkdirSync(join(stale, 'hooks'), { recursive: true });
+  writeFileSync(join(stale, 'hooks', 'verification-core.mjs'), '// 舊到不能再舊\n');
+  setInstalled({ version: 2, plugins: { [PLUGIN_KEY]: [{ scope: 'user', installPath: stale }] } });
+  writeFileSync(join(dir, 'install.json'), JSON.stringify({ repoRoot: process.cwd() }));
+  const s = getPluginStatus();
+  assert.strictEqual(s.upToDate, true, 'marker 有效時實際跑的是最新判定');
+  assert.strictEqual(s.notice, null, '不該催重裝');
+});
+
+ok('plugin：marker 指向別的安裝時，仍要比對 cache', () => {
+  clearPluginFiles();
+  const dir = freshState();
+  setSettings({ enabledPlugins: {} });
+  const stale = join(PDIR, 'stale-other-marker');
+  mkdirSync(join(stale, 'hooks'), { recursive: true });
+  writeFileSync(join(stale, 'hooks', 'verification-core.mjs'), '// 舊\n');
+  setInstalled({ version: 2, plugins: { [PLUGIN_KEY]: [{ scope: 'user', installPath: stale }] } });
+  writeFileSync(join(dir, 'install.json'), JSON.stringify({ repoRoot: join(PDIR, 'another-ai-cli') }));
+  const s = getPluginStatus();
+  assert.strictEqual(s.upToDate, false, '別人的安裝不能代表這份是最新的');
+});
+
 ok('★ plugin：安裝的判定核心與 repo 不同時要報 upToDate=false 並提醒重裝', () => {
   clearPluginFiles();
+  freshState();
   setSettings({ enabledPlugins: {} });
   const stale = join(PDIR, 'stale-install');
   mkdirSync(join(stale, 'hooks'), { recursive: true });

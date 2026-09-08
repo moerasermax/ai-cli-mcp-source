@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readInstallMarker } from './install-marker.js';
 
 /** plugin 名稱與 marketplace 名稱，必須與 plugin.json / marketplace.json 一致。 */
 export const PLUGIN_NAME = 'ai-cli-verification-gate';
@@ -71,6 +72,15 @@ function pluginsDir(): string {
   return process.env.AI_CLI_CLAUDE_PLUGINS_DIR || join(claudeDir(), 'plugins');
 }
 
+/** 兩個路徑是不是同一個目錄（統一斜線，Windows 不分大小寫）。 */
+function sameDir(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const u = p.replace(/\\/g, '/').replace(/\/+$/, '');
+    return process.platform === 'win32' ? u.toLowerCase() : u;
+  };
+  return norm(a) === norm(b);
+}
+
 /** 這份安裝的 repo 根：dist/core/plugin-status.js → 上溯兩層。 */
 function repoRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -95,6 +105,14 @@ function readJson(path: string): any | null {
  * 讀不到就回 null——「比對不了」不是「過時」。
  */
 function installedIsCurrent(installPath: unknown): boolean | null {
+  /*
+    hook 會**優先**讀 install marker 指到的安裝，讀不到才用 cache 自帶的那份。
+    所以只要 marker 指向這份 repo，實際跑的判定就是最新的——cache 舊不舊都不影響，
+    這時候催人重裝是騷擾（2026-09-08 astra 稽核指出，marker 那條修好之後產生的不一致）。
+  */
+  const marker = readInstallMarker();
+  if (marker && sameDir(marker, repoRoot())) return true;
+
   if (typeof installPath !== 'string' || !installPath) return null;
   try {
     const installed = readFileSync(join(installPath, 'hooks', 'verification-core.mjs'), 'utf8');
