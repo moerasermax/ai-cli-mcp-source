@@ -25,14 +25,35 @@
  * 那是這套判定最容易被說成「假通過」的地方，所以用事件順序而不是「有沒有出現過」。
  */
 /** 會被當成「程式碼」的副檔名。文件、設定、資料不算——改 README 不需要跑測試。 */
-const CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|cs|cpp|cc|c|h|hpp|rb|php|swift|kt|kts|scala|sh|bash|ps1|sql|vue|svelte|dart|ex|exs|lua|m|mm|pl|r)$/i;
+const CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|cs|cpp|cc|hpp|rb|php|swift|kt|kts|scala|sh|bash|ps1|sql|vue|svelte|dart|ex|exs|lua|mm|pl)$/i;
+/**
+ * 單字母副檔名（C、標頭、Objective-C、R）**必須有路徑證據**才算程式碼。
+ *
+ * 2026-09-08 閘門誤擋自己時抓到：Python 的 `re.M`、`re.S` 這種 flag，
+ * 以及任何 `物件.c` 形式的屬性存取，都會被單純的副檔名比對當成程式碼檔案。
+ * 要求 token 含路徑分隔符，才不會把一個 regex flag 當成 Objective-C 原始碼。
+ */
+const CODE_EXT_SINGLE = /\.(c|h|m|r)$/i;
+function looksLikeCodePath(token) {
+    if (CODE_EXT.test(token))
+        return true;
+    return CODE_EXT_SINGLE.test(token) && /[\\/]/.test(token);
+}
 /**
  * 直接改檔的工具。
  * `file_change` 是 codex 的形狀（它改檔不走 shell），由 agents/codex.ts 展開成每檔一筆。
  */
 const EDIT_TOOL = /^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|edit_file|write_file|file_change)$/i;
-/** shell 裡也能改程式碼：重導向、sed -i、tee、patch、mv/cp 到程式碼檔。 */
-const SHELL_WRITE = /(^|[\s;&|])(sed\s+(-[^\s]*\s+)*-i|patch\s|tee\s|dd\s+of=|install\s+-D)|>\s*[^\s>|&]+|>>\s*[^\s>|&]+|\b(mv|cp)\s+[^\s]+\s+[^\s]+/i;
+/**
+ * shell 裡也能改程式碼：重導向、sed -i、tee、patch、mv/cp 到程式碼檔。
+ *
+ * 重導向的 `>` **必須前接行首、空白、`;&|)` 或 fd 數字**。
+ * 舊版只寫 `>\s*[^\s>|&]+`，於是輸出訊息裡的 `->`、比較用的 `=>`、
+ * 甚至 regex 字面值裡的 `>` 都會被當成寫檔（2026-09-08 閘門誤擋自己時抓到：
+ * 一句 `echo "字數: $N -> readTime 應為 ..."` 就中了）。
+ * 代價是 `cmd>file` 這種不留空白的寫法會漏掉——漏擋比誤擋便宜。
+ */
+const SHELL_WRITE = /(^|[\s;&|])(sed\s+(-[^\s]*\s+)*-i|patch\s|tee\s|dd\s+of=|install\s+-D)|(^|[\s;&|)])\d?>{1,2}\s*[^\s>|&]+|\b(mv|cp)\s+[^\s]+\s+[^\s]+/i;
 /** 跑得起來就算驗證的指令。跟 baseline 腳本用同一套，換掉要兩邊一起換。 */
 const VERIFY_CMD = /(npm\s+(run\s+)?(test|build|lint|typecheck)|yarn\s+(test|build|lint)|pnpm\s+(test|build|lint)|npx\s+(tsc|vitest|jest|eslint)|pytest|python\s+-m\s+pytest|cargo\s+(test|build|check|clippy)|go\s+(test|build|vet)|dotnet\s+(test|build)|mvn\s+(test|verify)|gradle\s+(test|build)|\btsc\b|vitest|jest|eslint|ruff|mypy|make\s+(test|check|build))/i;
 /**
@@ -97,7 +118,7 @@ function insideProject(target, projectRoot) {
 }
 /** 從 shell 指令裡撈出看起來像檔案路徑的 token，用來判斷改的是不是專案內的檔案。 */
 function pathTokens(command) {
-    return (command.match(/[^\s'"<>|&;()]+/g) ?? []).filter((token) => CODE_EXT.test(token));
+    return (command.match(/[^\s'"<>|&;()]+/g) ?? []).filter(looksLikeCodePath);
 }
 function commandOf(input) {
     if (!input || typeof input !== 'object')
@@ -146,7 +167,7 @@ export function normalizeToolEvent(entry, options = {}) {
     const target = pathOf(input);
     const { projectRoot } = options;
     if (EDIT_TOOL.test(tool) && target) {
-        return CODE_EXT.test(target) && insideProject(target, projectRoot)
+        return looksLikeCodePath(target) && insideProject(target, projectRoot)
             ? { kind: 'code_change', label: `${tool} ${target}` }
             : { kind: 'other', label: `${tool} ${target}` };
     }

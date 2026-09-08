@@ -701,5 +701,21 @@
     "to": "    return await import(pathToFileURL(join(HERE, '..', '..', 'dist', 'core', 'verification.js')).href);",
     "expect": "安裝後的 hook 仍會擋",
     "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "單字母副檔名不要求路徑證據（re.M 被當成 Objective-C）",
+    "file": "src/core/verification.ts",
+    "from": "  return CODE_EXT_SINGLE.test(token) && /[\\/]/.test(token);",
+    "to": "  return CODE_EXT_SINGLE.test(token);",
+    "expect": "Python 的 re.M 不是 Objective-C 原始碼",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "重導向偵測不要求前綴（-> 被當成寫檔）",
+    "file": "src/core/verification.ts",
+    "from": "|(^|[\\s;&|)])\\d?>{1,2}\\s*[^\\s>|&]+|",
+    "to": "|>{1,2}\\s*[^\\s>|&]+|",
+    "expect": "輸出訊息裡的 -> 不是重導向",
+    "script": "verify-verification.mjs"
   }
 ]

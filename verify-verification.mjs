@@ -407,6 +407,38 @@ ok('★ shell 改檔也要受 projectRoot 限制', () => {
   assert.strictEqual(e.kind, 'other', '改專案外的檔案不該要求本專案跑測試');
 });
 
+// ★ 2026-09-08 閘門誤擋自己時抓到的兩個誤報來源。
+ok('★ Python 的 re.M 不是 Objective-C 原始碼', () => {
+  const cmd = 'python -c "re.sub(r\'x\',\'\',t,flags=re.S|re.M)" > /dev/null';
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: cmd } });
+  assert.strictEqual(e.kind, 'other', 'regex flag 不該被當成程式碼檔案');
+});
+
+ok('★ 輸出訊息裡的 -> 不是重導向', () => {
+  const cmd = 'echo "字數: 4591 -> readTime 應為 10"';
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: cmd } });
+  assert.strictEqual(e.kind, 'other');
+});
+
+ok('單字母副檔名有路徑分隔符時仍算程式碼', () => {
+  const e = normalizeToolEvent(claudeEdit('src/main.c'));
+  assert.strictEqual(e.kind, 'code_change', 'src/main.c 是真的 C 原始碼');
+});
+
+ok('單字母副檔名沒有路徑分隔符時不算', () => {
+  assert.strictEqual(normalizeToolEvent(claudeEdit('re.M')).kind, 'other');
+});
+
+ok('真正的重導向寫檔仍算 code_change', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'echo "x" > src/gen.ts' } });
+  assert.strictEqual(e.kind, 'code_change');
+});
+
+ok('fd 前綴的重導向也算', () => {
+  const e = normalizeToolEvent({ tool: 'Bash', input: { command: 'node b.js 2> src/err.ts' } });
+  assert.strictEqual(e.kind, 'code_change');
+});
+
 ok('shell 改專案內的相對路徑仍算 code_change', () => {
   const e = normalizeToolEvent(
     { tool: 'Bash', input: { command: 'sed -i s/a/b/ src/a.ts' } },
