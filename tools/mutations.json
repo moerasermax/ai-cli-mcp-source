@@ -457,8 +457,8 @@
   {
     "name": "exit_code 被輸出文字蓋過",
     "file": "src/core/verification.ts",
-    "from": "        typeof exitCode === 'number' ? exitCode === 0 : !FAIL_TEXT.test(outputText(record.output));",
-    "to": "        !FAIL_TEXT.test(outputText(record.output));",
+    "from": "        typeof exitCode === 'number'\n          ? exitCode === 0\n          : ZERO_FAIL.test(text) || !FAIL_TEXT.test(text);",
+    "to": "        false\n          ? exitCode === 0\n          : ZERO_FAIL.test(text) || !FAIL_TEXT.test(text);",
     "expect": "exit_code 非 0 判失敗",
     "script": "verify-verification.mjs"
   },
@@ -489,8 +489,8 @@
   {
     "name": "insideProject 不特判相對路徑（專案內的相對路徑修改全被漏掉）",
     "file": "src/core/verification.ts",
-    "from": "  if (!isAbsolutePath(target)) return true;",
-    "to": "  if (false) return true;",
+    "from": "  const file = canonical(isAbsolutePath(target) ? target : `${projectRoot}/${target}`);",
+    "to": "  if (!isAbsolutePath(target)) return true;\n  const file = canonical(target);",
     "expect": "projectRoot：相對路徑一律算在專案內",
     "script": "verify-verification.mjs"
   },
@@ -609,8 +609,8 @@
   {
     "name": "FAIL_TEXT 恢復比對裸 failed（0 failed 被誤判成失敗）",
     "file": "src/core/verification.ts",
-    "from": "  /(\bFAIL\b|[1-9]\\d*\\s+(tests?\\s+)?(failed|failing|failures)|not ok|error TS\\d|AssertionError|exit code [1-9])/;",
-    "to": "  /(\bFAIL\b|\bfailed\b|not ok|error TS\\d|AssertionError|exit code [1-9])/i;",
+    "from": "const FAIL_TEXT =\n  /(\\bFAIL\\b|[1-9]\\d*\\s+(tests?\\s+)?(failed|failing|failures)|not ok|error TS\\d|AssertionError|exit code [1-9])/;",
+    "to": "const FAIL_TEXT =\n  /(\bFAIL\b|\bfailed\b|not ok|error TS\\d|AssertionError|exit code [1-9])/i;",
     "expect": "輸出含「0 failed」不得判成失敗",
     "script": "verify-verification.mjs"
   },
@@ -663,10 +663,10 @@
     "script": "verify-verification.mjs"
   },
   {
-    "name": "build 不同步 plugin 判定核心（marketplace 安裝後永久失效）",
-    "file": "package.json",
-    "from": "\"build\": \"tsc && node tools/sync-plugin-core.mjs\"",
-    "to": "\"build\": \"tsc\"",
+    "name": "sync-plugin-core 不寫檔（plugin 判定核心漂移）",
+    "file": "tools/sync-plugin-core.mjs",
+    "from": "  writeFileSync(TARGET, HEADER + compiled);",
+    "to": "  void compiled;",
     "expect": "判定核心已同步到 plugin",
     "script": "verify-verification.mjs"
   }

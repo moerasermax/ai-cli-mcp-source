@@ -9,12 +9,26 @@ import {
   verificationFromAgentOutput,
 } from './dist/core/verification.js';
 import { buildProcessResult } from './dist/core/process-result.js';
+import { codexAgent } from './dist/agents/codex.js';
+import { bodyOf } from './tools/sync-plugin-core.mjs';
+import { readFileSync as readFile, existsSync as fileExists } from 'node:fs';
 import assert from 'node:assert';
 
 let failures = 0;
+/**
+ * 只吃**同步**函式。
+ *
+ * 2026-09-08 突變測試抓到：傳 async 函式進來時，fn() 只是回傳一個 Promise，
+ * try/catch 完全抓不到裡面的斷言錯誤，那條測試就永遠 PASS——四條假綠燈就是
+ * 這樣來的。所以這裡明確擋掉 Promise，需要動態載入的東西一律提到檔案頂層
+ * 用 top-level await 取得。
+ */
 function ok(name, fn) {
   try {
-    fn();
+    const result = fn();
+    if (result && typeof result.then === 'function') {
+      throw new Error('ok() 只接受同步函式；async 會讓斷言錯誤被吞掉而永遠通過');
+    }
     console.log(`  PASS  ${name}`);
   } catch (err) {
     failures++;
@@ -100,8 +114,7 @@ ok('正規化：file_change 改到文件不算 code_change', () => {
   assert.strictEqual(e.kind, 'other');
 });
 
-ok('★ codex parser 會收 file_change 並展開成每檔一筆', async () => {
-  const { codexAgent } = await import('./dist/agents/codex.js');
+ok('★ codex parser 會收 file_change 並展開成每檔一筆', () => {
   // 真實 codex NDJSON（2026-09-08 由 codex 0.153.4 實際輸出捕捉）
   const ndjson = [
     JSON.stringify({ type: 'thread.started', thread_id: 'th_1' }),
@@ -119,8 +132,7 @@ ok('★ codex parser 會收 file_change 並展開成每檔一筆', async () => {
   assert.strictEqual(changes[1].input.kind, 'add');
 });
 
-ok('★ codex 端到端形狀：file_change + 之後跑 npm test → passed', async () => {
-  const { codexAgent } = await import('./dist/agents/codex.js');
+ok('★ codex 端到端形狀：file_change + 之後跑 npm test → passed', () => {
   const ndjson = [
     JSON.stringify({ type: 'item.completed', item: { id: 'i1', type: 'file_change', changes: [{ path: 'D:\\proj\\src\\a.ts', kind: 'update' }] } }),
     JSON.stringify({ type: 'item.completed', item: { id: 'i2', type: 'command_execution', command: 'pwsh.exe -Command "npm test"', aggregated_output: 'ok', exit_code: 0 } }),
@@ -130,8 +142,7 @@ ok('★ codex 端到端形狀：file_change + 之後跑 npm test → passed', as
   assert.strictEqual(r.status, 'passed', `實際 ${r.status}: ${r.reason}`);
 });
 
-ok('★ codex 端到端形狀：只有 file_change 沒驗證 → not_observed', async () => {
-  const { codexAgent } = await import('./dist/agents/codex.js');
+ok('★ codex 端到端形狀：只有 file_change 沒驗證 → not_observed', () => {
   const ndjson = JSON.stringify({
     type: 'item.completed',
     item: { id: 'i1', type: 'file_change', changes: [{ path: 'D:\\proj\\src\\a.ts', kind: 'update' }] },
@@ -404,13 +415,11 @@ ok('shell 改專案內的相對路徑仍算 code_change', () => {
   assert.strictEqual(e.kind, 'code_change');
 });
 
-ok('★ 判定核心已同步到 plugin（dist 不進版控，plugin 必須自足）', async () => {
-  const { readFileSync: rf, existsSync: ex } = await import('node:fs');
+ok('★ 判定核心已同步到 plugin（dist 不進版控，plugin 必須自足）', () => {
   const target = 'plugin/hooks/verification-core.mjs';
-  assert.ok(ex(target), 'plugin 必須自帶判定核心，否則 marketplace 安裝後永久靜默失效');
-  const { bodyOf } = await import('./tools/sync-plugin-core.mjs');
-  const synced = bodyOf(rf(target, 'utf8'));
-  const compiled = rf('dist/core/verification.js', 'utf8');
+  assert.ok(fileExists(target), 'plugin 必須自帶判定核心，否則 marketplace 安裝後永久靜默失效');
+  const synced = bodyOf(readFile(target, 'utf8'));
+  const compiled = readFile('dist/core/verification.js', 'utf8');
   assert.strictEqual(synced, compiled, '判定核心與 src 不一致——請重跑 npm run build');
 });
 

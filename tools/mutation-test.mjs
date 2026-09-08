@@ -62,6 +62,16 @@ function exec(cmd, args) {
 const run = (args) => exec(process.execPath, args);
 
 const TSC = join('node_modules', 'typescript', 'bin', 'tsc');
+/**
+ * 建置＝tsc + 同步 plugin 判定核心。harness 刻意不走 npm.cmd（見上方檔頭），
+ * 所以要自己補上 npm run build 的第二步；少了它，突變改到 src/core/verification.ts
+ * 時 plugin/hooks/verification-core.mjs 不會跟著變，一致性斷言會替所有這類突變
+ * 背鍋，看不出真正該抓的是哪一條。
+ */
+const buildAll = () => {
+  const compiled = run([TSC]);
+  return compiled.code !== 0 ? compiled : run(['tools/sync-plugin-core.mjs']);
+};
 const results = [];
 
 /**
@@ -93,7 +103,7 @@ const baselineStatus = exec('git', ['status', '--short']).out.trim();
 
 // 先確認基準是綠的：基準就紅的話，後面每個突變都會「被殺」而毫無意義。
 {
-  const build = run([TSC]);
+  const build = buildAll();
   if (build.code !== 0) {
     console.error('基準建置失敗，中止：', build.out.slice(-500));
     process.exit(1);
@@ -124,7 +134,7 @@ for (const [i, mutation] of MUTATIONS.entries()) {
   }
 
   writeFileSync(path, normalized.replace(mutation.from, mutation.to));
-  const build = run([TSC]);
+  const build = buildAll();
   const { code, out } =
     build.code !== 0 ? { code: -1, out: `BUILD FAILED\n${build.out}` } : run([scriptOf(mutation)]);
   writeFileSync(path, originalBytes);
