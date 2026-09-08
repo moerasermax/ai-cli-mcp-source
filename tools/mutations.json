@@ -497,8 +497,8 @@
   {
     "name": "normalizeToolEvent 不理會 projectRoot（暫存腳本被誤判成專案程式碼）",
     "file": "src/core/verification.ts",
-    "from": "    return CODE_EXT.test(target) && insideProject(target, projectRoot)",
-    "to": "    return CODE_EXT.test(target)",
+    "from": "    return looksLikeCodePath(target) && insideProject(target, projectRoot)",
+    "to": "    return looksLikeCodePath(target)",
     "expect": "projectRoot：暫存目錄的一次性腳本不算 code_change",
     "script": "verify-verification.mjs"
   },
@@ -705,7 +705,7 @@
   {
     "name": "單字母副檔名不要求路徑證據（re.M 被當成 Objective-C）",
     "file": "src/core/verification.ts",
-    "from": "  return CODE_EXT_SINGLE.test(token) && /[\\/]/.test(token);",
+    "from": "  return CODE_EXT_SINGLE.test(token) && /[\\\\/]/.test(token);",
     "to": "  return CODE_EXT_SINGLE.test(token);",
     "expect": "Python 的 re.M 不是 Objective-C 原始碼",
     "script": "verify-verification.mjs"
