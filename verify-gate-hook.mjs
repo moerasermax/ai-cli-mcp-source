@@ -348,6 +348,59 @@ test('★ marketplace/plugin manifest 必要欄位齊全（缺了會安裝靜默
   check('source 指向 plugin 子目錄', entry?.source === './plugin', String(entry?.source));
 });
 
+test('★ plugin 自動跟上 ai-cli：自帶的核心舊了也要用安裝裡的最新判定', async () => {
+  /*
+    Claude Code 安裝 plugin 是把 source 目錄複製到 cache，之後 git pull 不會動它。
+    2026-09-08 連續三次被自己的閘門誤擋，就是因為判定修好、push 了，本機仍跑安裝
+    當下那份；而重裝完又被下一次修改超車。所以 hook 優先讀 ai-cli 安裝裡的 dist，
+    讀不到才退回自帶的——有裝 ai-cli 的機器從此不必為了修 bug 重裝 plugin。
+  */
+  const base = join(TEMP, 'autofollow');
+  const installed = join(base, 'cache', '1.0.0');
+  const state = join(base, 'state');
+  mkdirSync(installed, { recursive: true });
+  mkdirSync(state, { recursive: true });
+  cpSync(join(ROOT, 'plugin'), installed, { recursive: true });
+
+  // 把自帶的核心換成一份「會誤擋純讀取指令」的舊行為
+  writeFileSync(join(installed, 'hooks', 'verification-core.mjs'), [
+    "export function normalizeToolEvent(entry) {",
+    "  const cmd = String(entry?.input?.command ?? '');",
+    "  return />\\s*[^\\s>|&]+/.test(cmd) && /[^\\s]+\\.ts/.test(cmd)",
+    "    ? { kind: 'code_change', label: cmd.slice(0, 60) } : { kind: 'other', label: 'x' };",
+    "}",
+    "export function classifyVerification(events) {",
+    "  const i = events.map((e) => e.kind).lastIndexOf('code_change');",
+    "  const evidence = { lastCodeChange: i < 0 ? null : events[i].label,",
+    "    verificationsAfterChange: [], failedVerifications: [], staleVerifications: 0 };",
+    "  return { status: i < 0 ? 'not_applicable' : 'not_observed', reason: '', evidence };",
+    "}",
+  ].join('\n'));
+
+  // 純讀取、但含 2>/dev/null 與 .ts 路徑——舊核心會誤擋，新判定不會
+  const t = writeTranscript('autofollow', [
+    userPrompt('看一下狀態'),
+    assistantTools(bash('grep -rn "a" src/app/mcp.ts src/core/updater.ts 2>/dev/null')),
+    toolResults({ id: 't0' }),
+  ]);
+  const hookPath = join(installed, 'hooks', 'verification-gate.mjs');
+  const payload = { transcript_path: t, session_id: 'af', cwd: join(base, 'proj') };
+
+  const stale = await runHookAt(hookPath, payload, { AI_CLI_STATE_DIR: state });
+  check('前置：自帶的舊核心確實會誤擋（證明這條測試有效）',
+    decisionOf(stale.stdout)?.decision === 'block', stale.stdout || '(沒擋)');
+
+  writeFileSync(join(state, 'install.json'), JSON.stringify({ repoRoot: ROOT }));
+  const fresh = await runHookAt(hookPath, payload, { AI_CLI_STATE_DIR: state });
+  check('★ 有 install marker 就改用 ai-cli 的最新判定，不再誤擋',
+    decisionOf(fresh.stdout) === null, fresh.stdout || '(仍被擋)');
+
+  writeFileSync(join(state, 'install.json'), JSON.stringify({ repoRoot: 'D:/nope/nothing' }));
+  const broken = await runHookAt(hookPath, payload, { AI_CLI_STATE_DIR: state });
+  check('marker 指向不存在的路徑時退回自帶核心，不當機',
+    decisionOf(broken.stdout)?.decision === 'block', broken.stdout);
+});
+
 const run = async () => {
   for (const [name, fn] of tests) {
     console.log(`\n${name}`);

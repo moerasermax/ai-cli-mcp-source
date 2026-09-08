@@ -733,5 +733,29 @@
     "to": "function installedIsCurrent(installPath: unknown): boolean | null {\n  if (typeof installPath !== 'string' || !installPath) return false;",
     "expect": "讀不到 installPath 時 upToDate 是 null",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "hook 不讀 install marker（plugin 永遠停在安裝當下那份）",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "  const root = installedAiCliRoot();\n  if (root) {",
+    "to": "  const root = null;\n  if (root) {",
+    "expect": "有 install marker 就改用 ai-cli 的最新判定",
+    "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "marker 壞掉時不退回自帶核心（閘門整個失效）",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "  try {\n    return await import(pathToFileURL(join(HERE, 'verification-core.mjs')).href);\n  } catch {\n    return null;\n  }",
+    "to": "  return null;",
+    "expect": "marker 指向不存在的路徑時退回自帶核心",
+    "script": "verify-gate-hook.mjs"
+  },
+  {
+    "name": "install marker 指向沒 build 過的目錄也照寫",
+    "file": "src/core/install-marker.ts",
+    "from": "    if (!existsSync(join(root, 'dist', 'core', 'verification.js'))) return;",
+    "to": "    if (false) return;",
+    "expect": "marker 指向不存在的路徑時退回自帶核心",
+    "script": "verify-gate-hook.mjs"
   }
 ]

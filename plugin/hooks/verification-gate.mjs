@@ -122,16 +122,37 @@ function record(entry) {
   }
 }
 
+/** 讀 ai-cli 寫下的安裝位置；讀不到就回 null。 */
+function installedAiCliRoot() {
+  try {
+    const raw = readFileSync(join(STATE_DIR, 'install.json'), 'utf8');
+    const root = JSON.parse(raw)?.repoRoot;
+    return typeof root === 'string' && root ? root : null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadClassifier() {
   /*
-    只 import plugin 自己帶的那份，**不去猜 ai-cli 的安裝位置**。
+    先用 ai-cli 安裝裡的那份，再退回 plugin 自帶的。
 
-    舊版試著 import `../../dist/core/verification.js`，但 dist 不進版控——plugin 從
-    marketplace 安裝時拿到的只有版控裡的檔案，所以在正式安裝的機器上一定找不到，
-    而「找不到就放行」的設計會讓整個閘門永久靜默失效，且不留任何痕跡
-    （2026-09-08 codex 稽核抓到，實測 git ls-files dist 為 0）。
-    verification-core.mjs 由 npm run build 自動同步並進版控，跟 hook 同目錄，一定在。
+    Claude Code 安裝 plugin 是把 source 目錄**複製**到 cache，之後 git pull 不會
+    動它——2026-09-08 連續三次被自己的閘門誤擋，就是因為判定修好了、push 了，
+    本機仍跑安裝當下複製的那份，而且要重裝才會生效（重裝完又被下一次修改超車）。
+
+    所以有裝 ai-cli 的機器直接讀它的 dist，跟著自動更新前進，不必重裝 plugin；
+    沒裝的機器才用自帶的 verification-core.mjs（那份由 build 同步並進版控，
+    保證 marketplace 安裝後仍然能運作）。
   */
+  const root = installedAiCliRoot();
+  if (root) {
+    try {
+      return await import(pathToFileURL(join(root, 'dist', 'core', 'verification.js')).href);
+    } catch {
+      /* 那份不能用就退回自帶的 */
+    }
+  }
   try {
     return await import(pathToFileURL(join(HERE, 'verification-core.mjs')).href);
   } catch {

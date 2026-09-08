@@ -34,6 +34,7 @@ import { CircuitBreakerError } from '../core/circuit-breaker.js';
 import { UsageService } from '../plugins/usage-service.js';
 import { consumeNotice, scheduleBackgroundUpdates } from '../core/updater.js';
 import { consumePluginNotice } from '../core/plugin-status.js';
+import { writeInstallMarker } from '../core/install-marker.js';
 
 const require = createRequire(import.meta.url);
 const SERVER_VERSION = (require('../../package.json') as { version: string }).version;
@@ -625,6 +626,8 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('AI CLI MCP server running on stdio');
+    // 讓隨附的 plugin 找得到這份安裝的最新判定核心，不必為了修 bug 重裝 plugin。
+    writeInstallMarker();
     this.stopUpdates = scheduleBackgroundUpdates(async (message) => {
       console.error(message.replace(/\r?\n/g, ' | '));
       // MCP 的 logging 是 server capability；client 沒有標準 logging capability。
