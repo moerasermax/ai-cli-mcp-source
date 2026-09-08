@@ -148,9 +148,29 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif',
 };
 
+/**
+ * 這些欄位由框架自己組，**不接受** extra_body 覆蓋。
+ *
+ * 不是潔癖：`stream` 被改成 false 會讓 consumeResponse 的 SSE 解析器收到
+ * 一整包 JSON 而解不出任何東西；`tools` 被覆蓋會讓 executeTool 收到自己
+ * 不認識的工具名；`messages` 被覆蓋則整段對話歷史消失。三種都是「設定看起來
+ * 生效了，實際上壞在很遠的地方」。
+ */
+const RESERVED_EXTRA_BODY_KEYS = new Set([
+  'model',
+  'messages',
+  'stream',
+  'stream_options',
+  'tools',
+]);
+
 interface ProviderConfig {
   base_url: string;
   api_key: string;
+  /** 併進 /chat/completions request body 的額外欄位（provider 層預設）。 */
+  extra_body?: Record<string, unknown>;
+  /** 同上，但只套用在特定 model 上；與 provider 層合併時以這裡為準。 */
+  model_extra_body?: Record<string, Record<string, unknown>>;
 }
 
 interface ProvidersFile {
@@ -263,22 +283,107 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function normalizeProviderConfig(providerName: string, value: unknown): ProviderConfig | null {
+/**
+ * 解析一份 extra_body。**不合法就丟錯，不靜默丟棄。**
+ *
+ * 這與 config.json 的「設定檔推導值靜默降級」刻意相反：那邊丟掉一個 reasoning
+ * 偏好，最壞是慢一點；這邊丟掉 `reasoning_effort: "none"`，模型會照預設跑滿
+ * 16384 token 的思考，使用者只會看到「設定寫了但沒用」。錯誤訊息點名 provider
+ * 與欄位，讓人知道要去改哪一行。
+ */
+function normalizeExtraBody(
+  providerName: string,
+  label: string,
+  value: unknown,
+  targetPath: string
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value);
+  if (!record) {
+    throw new Error(
+      `Invalid providers.json at ${targetPath}: provider "${providerName}" ${label} must be an object.`
+    );
+  }
+  for (const key of Object.keys(record)) {
+    if (RESERVED_EXTRA_BODY_KEYS.has(key)) {
+      throw new Error(
+        `Invalid providers.json at ${targetPath}: provider "${providerName}" ${label} may not set "${key}" — ` +
+          'that field is built by ai-cli itself and overriding it breaks the streaming/tool loop.'
+      );
+    }
+  }
+  return { ...record };
+}
+
+function normalizeProviderConfig(
+  providerName: string,
+  value: unknown,
+  targetPath: string
+): ProviderConfig | null {
   const record = asRecord(value);
   if (!record) return null;
   const apiKey = record.api_key || record.key || record.token;
   const baseUrl = record.base_url || record.baseURL || DEFAULT_PROVIDER_BASE_URLS[providerName];
   if (typeof apiKey !== 'string' || !apiKey.trim()) return null;
   if (typeof baseUrl !== 'string' || !baseUrl.trim()) return null;
-  return { base_url: baseUrl.trim().replace(/\/+$/, ''), api_key: apiKey.trim() };
+
+  const extraBody = normalizeExtraBody(providerName, 'extra_body', record.extra_body, targetPath);
+
+  let modelExtraBody: Record<string, Record<string, unknown>> | undefined;
+  if (record.model_extra_body !== undefined) {
+    const byModel = asRecord(record.model_extra_body);
+    if (!byModel) {
+      throw new Error(
+        `Invalid providers.json at ${targetPath}: provider "${providerName}" model_extra_body must be an object.`
+      );
+    }
+    modelExtraBody = {};
+    for (const [modelName, raw] of Object.entries(byModel)) {
+      const parsed = normalizeExtraBody(
+        providerName,
+        `model_extra_body["${modelName}"]`,
+        raw,
+        targetPath
+      );
+      if (parsed) modelExtraBody[modelName] = parsed;
+    }
+  }
+
+  const config: ProviderConfig = {
+    base_url: baseUrl.trim().replace(/\/+$/, ''),
+    api_key: apiKey.trim(),
+  };
+  if (extraBody) config.extra_body = extraBody;
+  if (modelExtraBody) config.model_extra_body = modelExtraBody;
+  return config;
 }
 
-function migrateOpenCodeAuth(rawAuth: unknown): ProvidersFile {
+/**
+ * provider 層的 extra_body 疊上 model 專屬的那層，model 覆蓋 provider。
+ *
+ * 查表一律走 hasOwnProperty：`JSON.parse` 出來的物件在 `model_extra_body`
+ * 這種 map 上，`'constructor' in map` 為 true 且取值會拿到函式而不是 undefined。
+ */
+export function resolveExtraBody(
+  provider: Pick<ProviderConfig, 'extra_body' | 'model_extra_body'>,
+  modelName: string
+): Record<string, unknown> | undefined {
+  const base = provider.extra_body;
+  const byModel = provider.model_extra_body;
+  const perModel =
+    byModel && Object.prototype.hasOwnProperty.call(byModel, modelName)
+      ? byModel[modelName]
+      : undefined;
+  if (!base && !perModel) return undefined;
+  return { ...(base ?? {}), ...(perModel ?? {}) };
+}
+
+function migrateOpenCodeAuth(rawAuth: unknown, sourcePath: string): ProvidersFile {
   const auth = asRecord(rawAuth);
   const providers: Record<string, ProviderConfig> = {};
   if (!auth) return { providers };
   for (const [providerName, rawProvider] of Object.entries(auth)) {
-    const normalized = normalizeProviderConfig(providerName, rawProvider);
+    const normalized = normalizeProviderConfig(providerName, rawProvider, sourcePath);
     if (normalized) {
       providers[providerName] = normalized;
     }
@@ -294,7 +399,7 @@ function ensureProvidersConfigMigrated(): void {
 
   let migrated: ProvidersFile;
   try {
-    migrated = migrateOpenCodeAuth(JSON.parse(readFileSync(sourcePath, 'utf-8')));
+    migrated = migrateOpenCodeAuth(JSON.parse(readFileSync(sourcePath, 'utf-8')), sourcePath);
   } catch (error) {
     throw new Error(`Failed to migrate OpenCode auth.json: ${(error as Error).message}`);
   }
@@ -324,7 +429,7 @@ export function loadProvidersConfig(): ProvidersFile {
   }
   const providers: Record<string, ProviderConfig> = {};
   for (const [providerName, rawProvider] of Object.entries(rawProviders)) {
-    const normalized = normalizeProviderConfig(providerName, rawProvider);
+    const normalized = normalizeProviderConfig(providerName, rawProvider, targetPath);
     if (!normalized) {
       throw new Error(
         `Invalid providers.json at ${targetPath}: provider "${providerName}" requires base_url and api_key.`
@@ -406,10 +511,13 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
   if (!input.providerName || !input.providerModel) {
     throw new Error('direct-api requires a provider-prefixed model such as or-qwen/qwen3.7-plus.');
   }
+  // 呼叫端直接給了 base_url/api_key 時就不碰 providers.json，因此也沒有
+  // extra_body 可解析——那條路徑等於「完全不使用設定檔」。
   const provider =
     input.providerBaseUrl && input.providerApiKey
       ? { base_url: input.providerBaseUrl, api_key: input.providerApiKey }
       : getProviderConfig(input.providerName);
+  const extraBody = resolveExtraBody(provider, input.providerModel);
   return {
     cliPath: '',
     args: [],
@@ -423,6 +531,7 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
       modelName: input.providerModel,
       baseUrl: provider.base_url,
       apiKey: provider.api_key,
+      ...(extraBody ? { extraBody } : {}),
     },
   };
 }
@@ -1115,8 +1224,18 @@ async function requestCompletion(params: {
   toolsEnabled: boolean;
   state: StreamState;
   io: DirectRunIO;
+  extraBody?: Record<string, unknown>;
 }): Promise<CompletionTurn> {
+  /*
+    extra_body 先展開，框架自己的欄位**後**寫 —— 順序就是保護。
+
+    ★ 這是第二層防護，不是主要防線：保留欄位在 normalizeExtraBody() 載入設定時
+      就被擋掉了（見 RESERVED_EXTRA_BODY_KEYS），正常路徑上這裡永遠沒有東西可覆蓋。
+      留著它是因為「誰先寫誰輸」這件事一旦被人重構成 Object.assign(requestBody, extraBody)，
+      壞掉的方式會非常安靜。要修這類問題請去改載入端的驗證，不要只改這裡。
+  */
   const requestBody: Record<string, unknown> = {
+    ...(params.extraBody ?? {}),
     model: params.modelName,
     messages: params.messages,
     stream: true,
@@ -1187,6 +1306,7 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
       toolsEnabled,
       state,
       io,
+      extraBody: config.extraBody,
     });
     if (toolsEnabled && turn.finishReason !== 'tool_calls' && turn.toolCalls.length === 0 && turn.assistantText) {
       const xmlToolCalls = parseXmlToolCalls(turn.assistantText);

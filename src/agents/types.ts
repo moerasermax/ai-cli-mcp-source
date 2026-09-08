@@ -57,6 +57,12 @@ export interface DirectApiCommandConfig {
   modelName: string;
   baseUrl: string;
   apiKey: string;
+  /**
+   * 併進 /chat/completions request body 的額外欄位（providers.json 的
+   * extra_body ∪ model_extra_body）。框架自組的欄位不會出現在這裡——
+   * 那些在載入設定時就被擋掉了。
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface DirectRunIO {

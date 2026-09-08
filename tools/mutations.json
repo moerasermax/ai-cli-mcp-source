@@ -781,5 +781,37 @@
     "to": "  if (marker && sameDir(marker, repoRoot())) return null;",
     "expect": "marker 有效時實際跑的是最新判定",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "extra_body 的保留欄位改成靜默丟棄（設定寫了但沒送出去）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    if (RESERVED_EXTRA_BODY_KEYS.has(key)) {",
+    "to": "    if (false && RESERVED_EXTRA_BODY_KEYS.has(key)) {",
+    "expect": "保留欄位必須在載入時丟錯，不是靜默放行",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "extra_body 展開順序反過來（設定可覆蓋框架自組的欄位）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    ...(params.extraBody ?? {}),\n    model: params.modelName,",
+    "to": "    model: params.modelName,\n    ...(params.extraBody ?? {}),",
+    "expect": "model/stream/tools 不可被 extra_body 蓋掉",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "model_extra_body 查表改用直接取值（prototype key 會拿到函式）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    byModel && Object.prototype.hasOwnProperty.call(byModel, modelName)",
+    "to": "    byModel && modelName in byModel",
+    "expect": "model 名叫 constructor 時不可命中 prototype 上的東西",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "model 專屬 extra_body 被 provider 層蓋掉（合併方向反了）",
+    "file": "src/agents/direct-api.ts",
+    "from": "  return { ...(base ?? {}), ...(perModel ?? {}) };",
+    "to": "  return { ...(perModel ?? {}), ...(base ?? {}) };",
+    "expect": "model 專屬設定要覆蓋 provider 層，不是反過來",
+    "script": "verify-extra-body.mjs"
   }
 ]

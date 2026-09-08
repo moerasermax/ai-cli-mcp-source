@@ -8,6 +8,20 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **`providers.json` 支援 `extra_body` 與 `model_extra_body`**（`src/agents/direct-api.ts`、
+  `src/agents/types.ts`）。direct-api 原本送出去的 request body 寫死只有
+  `model`／`messages`／`stream`／`stream_options`／`tools`，於是託管模型的預設值只能照單全收。
+  實測 `nvidia/nemotron-3.5-lightning-30b-a3b` 走預設要 **28.0 秒／318 token**，
+  傳 `reasoning_effort: "none"` 只要 **6.1 秒／84 token**，兩者成功率都是 5/5。
+  provider 層是預設，model 層覆蓋它。（claude）
+- `model`／`messages`／`stream`／`stream_options`／`tools` 是保留欄位，
+  兩層設定都不准覆蓋，**載入時就丟錯並點名是哪個 provider 的哪個欄位**——不是靜默丟棄。
+  覆蓋 `stream` 會讓 SSE 解析器收到一整包 JSON，覆蓋 `tools` 會讓模型收到框架執行不了的工具。
+  request body 的展開順序（框架欄位後寫）是第二層防護，程式碼裡有註明。（claude）
+- `verify-extra-body.mjs`：26 項，已接進 `npm test`。（claude）
+
 ## [6.0.0] - 2026-09-08
 
 **判 MAJOR 的理由是對外行為不相容，不是這一版做了多少東西。** 依 CONTRIBUTING §4，

@@ -112,96 +112,6 @@ This matters because Codex and Claude emit nothing at all while reasoning. Witho
 The file-backed path keeps a `lost` state: the PID is gone and no completion was
 recorded, so the outcome is genuinely unknown — which is not the same as failed.
 
-## Did the code actually get verified?
-
-Same idea as `liveness`, one layer up: the caller is an AI, and it only ever sees the
-tool result. If the result does not say "this job changed code and never ran a test",
-the caller treats the sub-agent's "done" as done.
-
-So `run`, `wait` and `get_result` all carry a `verification` field — **including in
-compact mode**, because a field that only exists under `verbose` is a field nobody
-reads.
-
-| Status | Meaning |
-|---|---|
-| `not_applicable` | No source file was modified. Nothing needed verifying. |
-| `not_observed` | Either code changed and no verification followed, or the agent emits no structured tool history at all (agy). "Can't see" is not "didn't happen". |
-| `passed` | A test/build/lint ran **after the last code change** and succeeded. |
-| `failed` | Such a run happened and failed. Do not treat the work as done. |
-| `waived` | Code changed without verification, with an explicit reason recorded. Never overrides `failed`. |
-| `pending` | Still running. Anything else would be a guess. |
-
-It is deliberately not a boolean. `verified: false` cannot tell apart "no code was
-touched", "code was touched but I can't see whether it was checked", and "it was
-checked and it broke" — three states that call for three different next moves.
-
-Ordering is the whole game: verification only counts if it ran **after** the last
-edit. Otherwise "run the tests, then change the code" reports a pass. The evidence
-object names the last code change, the verifications that followed it, and how many
-stale ones were ignored.
-
-### The companion plugin
-
-The same judgement runs on your own turns too, via a bundled Claude Code plugin
-(`plugin/`, published through `.claude-plugin/marketplace.json`). Its `Stop` hook
-blocks **once** when a turn changed code and never verified it, then asks you to run
-the tests or state why you are not going to.
-
-```bash
-/plugin marketplace add moerasermax/ai-cli-mcp-source
-/plugin install ai-cli-verification-gate@ai-cli-mcp
-```
-
-> ⚠️ **Updating the plugin is also manual.** Installing copies `plugin/` into
-> `~/.claude/plugins/cache/`; a later `git pull` does not touch it, so a machine keeps
-> running whatever was copied at install time. `doctor.plugin`'s `upToDate` tells you
-> when that has drifted — reinstall with `/plugin uninstall <key>` then `/plugin install <key>`.
-
-Hard rules: always exit 0, never break the session; block at most once (the official
-`stop_hook_active` flag exists for exactly this, and the second pass is always let
-through and logged as `waived`); and when the situation cannot be judged reliably —
-unreadable transcript, missing module — let it through. Missing a violation is
-cheaper than blocking work that was fine.
-
-Only changes **under the working directory** count — `workFolder` for dispatched
-jobs, the hook event's `cwd` for your own turns. A throwaway analysis script written
-to a temp directory will not trip the gate; it has no tests to run in the first place.
-(Relative paths always count, since they resolve against that same directory.)
-
-### How other machines learn to install it
-
-Auto-update ships **code**, not **enablement**. The plugin files arrive on every
-machine via `git pull`, but whether Claude Code loads them lives in each machine's own
-`~/.claude/settings.json`. ai-cli does not touch that file — a dispatch tool silently
-rewriting your Claude Code settings is bad design.
-
-So ai-cli only detects and says so:
-
-- `doctor.plugin` always reports `{ bundled, enabled, marketplaceAdded, version, reason, notice }`.
-  You have to ask, so it is never noisy.
-- `run` results carry a `pluginNotice` when the files are present but this machine has
-  not enabled them — **at most once every 3 days**
-  (`AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC` overrides it). Once is not enough: the first
-  time it appears you are usually busy with something else, and then you never see it
-  again. Every run would be noise. Enabling it clears the flag; disabling later starts
-  the reminders over.
-- If `settings.json` is unreadable or unparseable, only `reason` is filled and nothing
-  is suggested — that may not be a Claude Code environment at all.
-
-Both layers append their verdicts to the same
-`AI_CLI_STATE_DIR/verification-gate.jsonl`, tagged with `source` (`ai-cli` or `hook`).
-Together they are one machine's quality baseline; split apart, neither number
-represents the whole. It only records — no aggregation, nothing sent anywhere. A
-cross-machine baseline needs an explicit sync target and a privacy policy first.
-
-Why it exists: scanning 178 transcripts over 44 hours (26,003 usage records), **31.7%
-of work segments that touched source code never ran a single test or build**, and that
-share climbs with context size — 5% below 200k tokens, 59% in the 600–800k band. Of
-the segments that did verify, 59.2% needed rework, averaging 4.67 rounds. First-pass
-rates showed no trend across context sizes (89/77/86/78/86%), so long context was not
-making the code worse — it was just making the same work cost 11.64M tokens instead
-of 1.43M.
-
 ## Auto-update
 
 All three entry points serve normally after the transport connects, then check in the
@@ -225,6 +135,38 @@ agent, addressed as `or-<model>` for OpenRouter, `ds-<model>` for DashScope, or
 `<provider>-<model>` for any provider key configured in
 `~/.local/share/ai-cli/providers.json`. See the Chinese reference for the config
 file format and the limits of what this path can do.
+
+### extra_body
+
+`reasoning_effort` and `max_tokens` are not part of the `run` tool's contract for
+this agent, but many hosted models pick expensive defaults when you say nothing —
+`nvidia/nemotron-3.5-lightning-30b-a3b` takes 28.0s per tool round on its default
+reasoning and 6.1s with `reasoning_effort: "none"`. Set those per provider, or per
+model, in `providers.json`:
+
+```json
+{
+  "providers": {
+    "nv": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key": "nvapi-...",
+      "extra_body": { "max_tokens": 8192 },
+      "model_extra_body": {
+        "nvidia/nemotron-3.5-lightning-30b-a3b": { "reasoning_effort": "none" }
+      }
+    }
+  }
+}
+```
+
+`model_extra_body` is keyed by the model name as sent to the provider (the part
+after the provider prefix) and overrides `extra_body` field by field.
+
+`model`, `messages`, `stream`, `stream_options` and `tools` are built by ai-cli
+and are **rejected** if either block tries to set them — overriding `stream`
+would hand the SSE reader a single JSON blob, and overriding `tools` would offer
+the model tools that `executeTool` cannot run. The error names the provider and
+the offending key; nothing is dropped silently.
 
 ## Wiring into Claude Code
 
