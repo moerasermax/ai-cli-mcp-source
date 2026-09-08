@@ -479,11 +479,11 @@
     "script": "verify-gate-hook.mjs"
   },
   {
-    "name": "Stop hook 不理會驗證與修改的先後順序",
+    "name": "Stop hook 沒把 is_error 轉成 exit_code（失敗被誤記成通過）",
     "file": "plugin/hooks/verification-gate.mjs",
     "from": "        if (part.is_error === true) entry.exit_code = 1;",
     "to": "        if (false) entry.exit_code = 1;",
-    "expect": "驗證失敗時不再擋一次",
+    "expect": "如實記成 failed 而不是 passed",
     "script": "verify-gate-hook.mjs"
   }
 ]

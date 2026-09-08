@@ -68,6 +68,23 @@ function runHook(payload, env = {}) {
   });
 }
 
+/** 讀 hook 寫下的判定紀錄。多個測試共用同一份，用 session id 過濾。 */
+function readLog() {
+  const p = join(TEMP, 'state', 'verification-gate.jsonl');
+  if (!existsSync(p)) return [];
+  return readFileSync(p, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return {};
+      }
+    });
+}
+
 function decisionOf(stdout) {
   if (!stdout.trim()) return null;
   try {
@@ -103,14 +120,23 @@ test('改了程式碼且驗證通過 → 放行', async () => {
   check('驗證過就不擋', decisionOf(r.stdout) === null, r.stdout);
 });
 
-test('驗證失敗 → 不重複擋（模型自己看得到失敗）', async () => {
+test('驗證失敗 → 不重複擋，但必須如實記成 failed', async () => {
+  // 輸出文字刻意不含任何失敗字樣：這樣 is_error 是判定失敗的**唯一**資訊來源。
+  // 若 hook 沒把 is_error 轉成 exit_code，這裡會被誤判成 passed——而兩者都不會擋，
+  // 所以光看「有沒有擋」是分不出來的，必須斷言記錄下來的狀態。
   const t = writeTranscript('failed', [
     userPrompt('幫我修一下'),
     assistantTools(edit('src/a.ts'), bash('npm test')),
-    toolResults({ id: 't0' }, { id: 't1', content: '2 failed', is_error: true }),
+    toolResults({ id: 't0' }, { id: 't1', content: 'done', is_error: true }),
   ]);
   const r = await runHook({ transcript_path: t, session_id: 's3' });
   check('驗證失敗時不再擋一次', decisionOf(r.stdout) === null, r.stdout);
+  const entry = readLog().find((l) => l.session === 's3');
+  check(
+    '如實記成 failed 而不是 passed',
+    entry?.status === 'failed',
+    `實際記到 ${JSON.stringify(entry)}`
+  );
 });
 
 test('只改文件 → 不擋', async () => {
