@@ -5,7 +5,7 @@
  * 執行：npm run build && node verify-gate-hook.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, cpSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,9 +53,9 @@ function writeTranscript(name, lines) {
   return p;
 }
 
-function runHook(payload, env = {}) {
+function runHookAt(hookPath, payload, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [HOOK], {
+    const child = spawn(process.execPath, [hookPath], {
       env: { ...process.env, AI_CLI_STATE_DIR: join(TEMP, 'state'), ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -67,6 +67,9 @@ function runHook(payload, env = {}) {
     child.stdin.end(JSON.stringify(payload));
   });
 }
+
+/** 跑 repo 內的那份 hook（大多數測試用這個）。 */
+const runHook = (payload, env = {}) => runHookAt(HOOK, payload, env);
 
 /** 讀 hook 寫下的判定紀錄。多個測試共用同一份，用 session id 過濾。 */
 function readLog() {
@@ -272,6 +275,48 @@ test('shell 改程式碼也算數（sed -i）', async () => {
   ]);
   const r = await runHook({ transcript_path: t, session_id: 's11' });
   check('sed -i 改程式碼會被擋', decisionOf(r.stdout)?.decision === 'block', r.stdout);
+});
+
+test('★ 模擬 marketplace 安裝：複製到沒有 dist 的位置後仍要能擋', async () => {
+  /*
+    Claude Code 安裝 plugin 的方式是把 marketplace.json 指定的 source 目錄
+    （我們是 ./plugin）完整複製到 ~/.claude/plugins/cache/<mkt>/<plugin>/<ver>/。
+    那個位置沒有 repo 的 dist/，也回溯不到 ai-cli 的安裝。
+
+    2026-09-08 codex 稽核抓到：hook 原本 import ../../dist/core/verification.js，
+    在真實安裝條件下必然找不到，而「找不到就放行」讓它不留痕跡地永久失效。
+    這條測試就是守這件事——它是整個第 2 層最容易無聲回歸的地方。
+  */
+  const installed = join(TEMP, 'fake-cache', 'ai-cli-mcp', 'ai-cli-verification-gate', '1.0.0');
+  mkdirSync(installed, { recursive: true });
+  cpSync(join(ROOT, 'plugin'), installed, { recursive: true });
+
+  check('判定核心有跟著被複製', existsSync(join(installed, 'hooks', 'verification-core.mjs')));
+  check('安裝位置沒有 dist/', !existsSync(join(installed, 'dist')));
+  check('上兩層也沒有 dist/', !existsSync(join(installed, '..', '..', 'dist')));
+
+  const t = writeTranscript('installed', [
+    userPrompt('幫我改一下'),
+    assistantTools(edit('C:\\proj\\src\\a.ts')),
+    toolResults({ id: 't0' }),
+  ]);
+  const hookPath = join(installed, 'hooks', 'verification-gate.mjs');
+  const r = await runHookAt(hookPath, { transcript_path: t, session_id: 'inst', cwd: 'C:\\proj' });
+  check('★ 安裝後的 hook 仍會擋', decisionOf(r.stdout)?.decision === 'block',
+    `exit=${r.code} out=${r.stdout.slice(0, 200)} err=${r.stderr.slice(0, 200)}`);
+
+  // 對照組：改回舊寫法，確認它在同樣環境下靜默失效——證明這條保護不是多餘的。
+  const oldHook = join(installed, 'hooks', 'old-style.mjs');
+  const src = readFileSync(hookPath, 'utf8');
+  const reverted = src.replace(
+    "    return await import(pathToFileURL(join(HERE, 'verification-core.mjs')).href);",
+    "    return await import(pathToFileURL(join(HERE, '..', '..', 'dist', 'core', 'verification.js')).href);"
+  );
+  check('對照組確實改到 import 路徑', reverted !== src);
+  writeFileSync(oldHook, reverted);
+  const r2 = await runHookAt(oldHook, { transcript_path: t, session_id: 'inst2', cwd: 'C:\\proj' });
+  check('舊寫法在安裝後靜默失效（所以上面那條保護是必要的）',
+    decisionOf(r2.stdout) === null && r2.code === 0, r2.stdout);
 });
 
 const run = async () => {

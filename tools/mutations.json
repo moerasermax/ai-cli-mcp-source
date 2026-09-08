@@ -693,5 +693,13 @@
     "to": "  if (settings === null) {",
     "expect": "plugin：settings 壞掉但 plugins 目錄讀得到",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "hook 改回 import repo 的 dist（marketplace 安裝後永久靜默失效）",
+    "file": "plugin/hooks/verification-gate.mjs",
+    "from": "    return await import(pathToFileURL(join(HERE, 'verification-core.mjs')).href);",
+    "to": "    return await import(pathToFileURL(join(HERE, '..', '..', 'dist', 'core', 'verification.js')).href);",
+    "expect": "安裝後的 hook 仍會擋",
+    "script": "verify-gate-hook.mjs"
   }
 ]
