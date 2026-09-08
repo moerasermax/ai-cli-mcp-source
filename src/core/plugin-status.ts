@@ -33,7 +33,9 @@ export interface PluginStatus {
   /** marketplace 是否已加入。 */
   marketplaceAdded: boolean;
   version: string | null;
-  /** 讀不到 settings.json 時說明原因；讀得到為 null。 */
+  /** 已安裝的 scope（user / project…）。沒安裝或讀不到時是空陣列。 */
+  scopes: string[];
+  /** 三個來源都讀不到時說明原因；判斷得出來就是 null。 */
   reason: string | null;
   /** 給人看的一段話，沒事為 null。 */
   notice: string | null;
@@ -43,11 +45,25 @@ function stateDir(): string {
   return process.env.AI_CLI_STATE_DIR || join(homedir(), '.local', 'state', 'ai-cli');
 }
 
+function claudeDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+}
+
 function settingsPath(): string {
-  return (
-    process.env.AI_CLI_CLAUDE_SETTINGS_PATH ||
-    join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json')
-  );
+  return process.env.AI_CLI_CLAUDE_SETTINGS_PATH || join(claudeDir(), 'settings.json');
+}
+
+/**
+ * Claude Code 的 plugin 狀態目錄。
+ *
+ * `settings.json` 的 `enabledPlugins` / `extraKnownMarketplaces` **不是權威來源**：
+ * 2026-09-08 在本機實查，`installed_plugins.json` 列出的 plugin 比 settings 多，
+ * 而且帶 scope（user / project + projectPath）；`known_marketplaces.json` 有 3 個
+ * marketplace，settings 的 `extraKnownMarketplaces` 只有 1 個。只讀 settings 的話，
+ * 用 project scope 裝過的機器會被誤判成「沒裝」，然後每 3 天被催一次。
+ */
+function pluginsDir(): string {
+  return process.env.AI_CLI_CLAUDE_PLUGINS_DIR || join(claudeDir(), 'plugins');
 }
 
 /** 這份安裝的 repo 根：dist/core/plugin-status.js → 上溯兩層。 */
@@ -72,25 +88,47 @@ export function getPluginStatus(): PluginStatus {
   const version = typeof manifest?.version === 'string' ? manifest.version : null;
 
   const settingsFile = settingsPath();
+  const installedFile = join(pluginsDir(), 'installed_plugins.json');
+  const marketplacesFile = join(pluginsDir(), 'known_marketplaces.json');
   let reason: string | null = null;
   let enabled = false;
   let marketplaceAdded = false;
+  let scopes: string[] = [];
 
-  if (!existsSync(settingsFile)) {
-    reason = `找不到 Claude Code 設定（${settingsFile}）`;
-  } else {
-    const settings = readJson(settingsFile);
-    if (settings === null) {
-      reason = `Claude Code 設定無法解析（${settingsFile}）`;
-    } else {
-      enabled = settings?.enabledPlugins?.[PLUGIN_KEY] === true;
-      const marketplaces = settings?.extraKnownMarketplaces ?? {};
-      marketplaceAdded =
-        Object.prototype.hasOwnProperty.call(marketplaces, MARKETPLACE_NAME) ||
-        Object.values(marketplaces).some(
-          (entry: any) => entry?.source?.repo === REPO_SLUG
-        );
-    }
+  const settings = existsSync(settingsFile) ? readJson(settingsFile) : null;
+  const installed = existsSync(installedFile) ? readJson(installedFile) : null;
+  const marketplaces = existsSync(marketplacesFile) ? readJson(marketplacesFile) : null;
+
+  /*
+    三個來源任一說「有」就算有，全部說沒有才算沒有。
+
+    installed_plugins.json 是安裝的權威來源且帶 scope（user / project + projectPath）；
+    settings.json 的 enabledPlugins 只反映使用者層的啟用。只看後者的話，
+    用 project scope 裝過的機器會被誤判成「沒裝」而被反覆催促（codex 稽核抓到，
+    2026-09-08 本機實查證實兩份檔案內容確實不同）。
+  */
+  const entries = installed?.plugins?.[PLUGIN_KEY];
+  if (Array.isArray(entries) && entries.length > 0) {
+    enabled = true;
+    scopes = entries
+      .map((e: any) => (typeof e?.scope === 'string' ? e.scope : 'unknown'))
+      .filter((s: string, i: number, a: string[]) => a.indexOf(s) === i);
+  }
+  if (settings?.enabledPlugins?.[PLUGIN_KEY] === true) enabled = true;
+
+  const marketplaceMatches = (record: unknown) =>
+    record !== null &&
+    typeof record === 'object' &&
+    (Object.prototype.hasOwnProperty.call(record, MARKETPLACE_NAME) ||
+      Object.values(record as Record<string, any>).some((e) => e?.source?.repo === REPO_SLUG));
+  marketplaceAdded =
+    marketplaceMatches(marketplaces) || marketplaceMatches(settings?.extraKnownMarketplaces);
+
+  // 三個來源全部讀不到才算「判斷不了」——只要有一份讀得到，結論就是可信的。
+  if (settings === null && installed === null && marketplaces === null) {
+    reason = existsSync(settingsFile)
+      ? `Claude Code 設定無法解析（${settingsFile}）`
+      : `找不到 Claude Code 設定（${settingsFile}）`;
   }
 
   let notice: string | null = null;
@@ -104,7 +142,7 @@ export function getPluginStatus(): PluginStatus {
       `\n作用：改了程式碼卻沒跑驗證就結束回應時擋一次。不想要可以不裝，這則提示每 3 天最多出現一次。`;
   }
 
-  return { bundled, enabled, marketplaceAdded, version, reason, notice };
+  return { bundled, enabled, marketplaceAdded, scopes, version, reason, notice };
 }
 
 /** 提醒間隔，預設 3 天（使用者 2026-09-08 裁定）。測試用環境變數縮短。 */

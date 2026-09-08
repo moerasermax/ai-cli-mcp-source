@@ -425,7 +425,7 @@ ok('★ 判定核心已同步到 plugin（dist 不進版控，plugin 必須自�
 
 // ---------------- 落地記錄（第 1 層與 hook 共用同一份檔案）----------------
 const { recordVerification, resetVerificationLog } = await import('./dist/core/verification-log.js');
-const { mkdtempSync, existsSync, readFileSync, rmSync } = await import('node:fs');
+const { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync } = await import('node:fs');
 const { join } = await import('node:path');
 const LOGDIR = mkdtempSync(join('dist', 'verify-vlog-'));
 process.env.AI_CLI_STATE_DIR = LOGDIR;
@@ -467,7 +467,20 @@ const { writeFileSync } = await import('node:fs');
 const PDIR = mkdtempSync(join('dist', 'verify-plugin-'));
 const settingsFile = join(PDIR, 'settings.json');
 process.env.AI_CLI_CLAUDE_SETTINGS_PATH = settingsFile;
+// 也要隔離 plugins 目錄，否則會讀到這台機器真實的 installed_plugins.json。
+const claudePluginsDir = join(PDIR, 'plugins');
+mkdirSync(claudePluginsDir, { recursive: true });
+process.env.AI_CLI_CLAUDE_PLUGINS_DIR = claudePluginsDir;
 const setSettings = (obj) => writeFileSync(settingsFile, JSON.stringify(obj));
+const setInstalled = (obj) =>
+  writeFileSync(join(claudePluginsDir, 'installed_plugins.json'), JSON.stringify(obj));
+const setMarketplaces = (obj) =>
+  writeFileSync(join(claudePluginsDir, 'known_marketplaces.json'), JSON.stringify(obj));
+const clearPluginFiles = () => {
+  for (const f of ['installed_plugins.json', 'known_marketplaces.json']) {
+    rmSync(join(claudePluginsDir, f), { force: true });
+  }
+};
 const freshState = () => {
   const d = mkdtempSync(join(PDIR, 'state-'));
   process.env.AI_CLI_STATE_DIR = d;
@@ -475,10 +488,59 @@ const freshState = () => {
 };
 
 ok('plugin：已啟用時不提示', () => {
+  clearPluginFiles();
   setSettings({ enabledPlugins: { [PLUGIN_KEY]: true } });
   const s = getPluginStatus();
   assert.strictEqual(s.enabled, true);
   assert.strictEqual(s.notice, null);
+});
+
+// ★ 2026-09-08 本機實查：settings.json 不是權威來源。installed_plugins.json 列出的
+// plugin 比 settings 多且帶 scope；known_marketplaces.json 有 3 個而 settings 只有 1 個。
+// 只讀 settings 會把「用 project scope 裝過」的機器誤判成沒裝，然後每 3 天催一次。
+ok('★ plugin：installed_plugins.json 說裝了就算裝了（settings 沒列也算）', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  setInstalled({ version: 2, plugins: { [PLUGIN_KEY]: [{ scope: 'user', version: '1.0.0' }] } });
+  const s = getPluginStatus();
+  assert.strictEqual(s.enabled, true, 'settings 沒列不代表沒裝');
+  assert.strictEqual(s.notice, null, '裝了就不該再催');
+  assert.deepStrictEqual(s.scopes, ['user']);
+});
+
+ok('★ plugin：project scope 安裝也算已裝，不再被催', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  setInstalled({
+    version: 2,
+    plugins: { [PLUGIN_KEY]: [{ scope: 'project', projectPath: 'D:\\WorkSpace\\X' }] },
+  });
+  const s = getPluginStatus();
+  assert.strictEqual(s.enabled, true);
+  assert.deepStrictEqual(s.scopes, ['project']);
+});
+
+ok('★ plugin：known_marketplaces.json 才是 marketplace 的權威來源', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  setMarketplaces({
+    'ai-cli-mcp': {
+      source: { source: 'github', repo: 'moerasermax/ai-cli-mcp-source' },
+      installLocation: 'C:\\x',
+    },
+  });
+  const s = getPluginStatus();
+  assert.strictEqual(s.marketplaceAdded, true, 'settings 沒有不代表沒加過');
+  assert.doesNotMatch(s.notice ?? '', /marketplace add/, '加過就不該再叫人加一次');
+});
+
+ok('plugin：installed_plugins.json 存在但沒有我們的 plugin → 仍算沒裝', () => {
+  clearPluginFiles();
+  setSettings({ enabledPlugins: {} });
+  setInstalled({ version: 2, plugins: { 'other@somewhere': [{ scope: 'user' }] } });
+  const s = getPluginStatus();
+  assert.strictEqual(s.enabled, false);
+  assert.deepStrictEqual(s.scopes, []);
 });
 
 ok('★ plugin：檔案在但這台機器沒啟用 → 提示且給安裝指令', () => {
@@ -501,7 +563,8 @@ ok('plugin：marketplace 已加、只差啟用 → 不重複叫人再 add 一次
   assert.match(s.notice ?? '', /plugin install/);
 });
 
-ok('★ plugin：讀不到 Claude Code 設定時不亂喊', () => {
+ok('★ plugin：三個來源都讀不到時不亂喊', () => {
+  clearPluginFiles();
   process.env.AI_CLI_CLAUDE_SETTINGS_PATH = join(PDIR, 'nope.json');
   const s = getPluginStatus();
   assert.ok(s.reason, '要說明為什麼判斷不了');
@@ -509,7 +572,18 @@ ok('★ plugin：讀不到 Claude Code 設定時不亂喊', () => {
   process.env.AI_CLI_CLAUDE_SETTINGS_PATH = settingsFile;
 });
 
-ok('plugin：設定檔壞掉時不亂喊', () => {
+ok('plugin：settings 壞掉但 plugins 目錄讀得到 → 仍能判斷', () => {
+  clearPluginFiles();
+  writeFileSync(settingsFile, '{ 這不是 JSON');
+  setInstalled({ version: 2, plugins: {} });
+  const s = getPluginStatus();
+  assert.strictEqual(s.reason, null, '有一份讀得到就不算判斷不了');
+  assert.strictEqual(s.enabled, false);
+  assert.ok(s.notice, '判斷得出來沒裝就該提醒');
+});
+
+ok('plugin：settings 壞掉且 plugins 目錄也沒有 → 不亂喊', () => {
+  clearPluginFiles();
   writeFileSync(settingsFile, '{ 這不是 JSON');
   const s = getPluginStatus();
   assert.ok(s.reason);
@@ -519,6 +593,7 @@ ok('plugin：設定檔壞掉時不亂喊', () => {
 const DAY = 24 * 60 * 60 * 1000;
 
 ok('★ plugin：提示不會每次 run 都跳（間隔內只跳一次）', () => {
+  clearPluginFiles();
   freshState();
   setSettings({ enabledPlugins: {} });
   const t0 = Date.parse('2026-09-08T00:00:00Z');
@@ -528,6 +603,7 @@ ok('★ plugin：提示不會每次 run 都跳（間隔內只跳一次）', () =
 });
 
 ok('★ plugin：滿 3 天後會再提醒一次（不是提醒一次就永遠沉默）', () => {
+  clearPluginFiles();
   freshState();
   setSettings({ enabledPlugins: {} });
   const t0 = Date.parse('2026-09-08T00:00:00Z');
@@ -538,6 +614,7 @@ ok('★ plugin：滿 3 天後會再提醒一次（不是提醒一次就永遠沉
 });
 
 ok('plugin：間隔可由環境變數覆寫', () => {
+  clearPluginFiles();
   freshState();
   setSettings({ enabledPlugins: {} });
   process.env.AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC = '60';
@@ -549,6 +626,7 @@ ok('plugin：間隔可由環境變數覆寫', () => {
 });
 
 ok('plugin：旗標壞掉時當成沒提醒過（寧可多提也不要永遠沉默）', () => {
+  clearPluginFiles();
   const dir = freshState();
   setSettings({ enabledPlugins: {} });
   writeFileSync(join(dir, 'plugin-notice.json'), '{ 壞掉的 JSON');
@@ -556,6 +634,7 @@ ok('plugin：旗標壞掉時當成沒提醒過（寧可多提也不要永遠沉�
 });
 
 ok('plugin：已啟用時清掉旗標（日後若停用會重新開始提醒）', () => {
+  clearPluginFiles();
   freshState();
   setSettings({ enabledPlugins: {} });
   const t0 = Date.parse('2026-09-08T00:00:00Z');

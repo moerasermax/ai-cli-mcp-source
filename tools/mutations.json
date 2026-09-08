@@ -669,5 +669,29 @@
     "to": "  void compiled;",
     "expect": "判定核心已同步到 plugin",
     "script": "verify-verification.mjs"
+  },
+  {
+    "name": "plugin 偵測只讀 settings（project scope 安裝被誤判成沒裝）",
+    "file": "src/core/plugin-status.ts",
+    "from": "  const entries = installed?.plugins?.[PLUGIN_KEY];",
+    "to": "  const entries = undefined as any;",
+    "expect": "plugin：installed_plugins.json 說裝了就算裝了",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "marketplace 偵測忽略 known_marketplaces.json",
+    "file": "src/core/plugin-status.ts",
+    "from": "    marketplaceMatches(marketplaces) || marketplaceMatches(settings?.extraKnownMarketplaces);",
+    "to": "    marketplaceMatches(settings?.extraKnownMarketplaces);",
+    "expect": "plugin：known_marketplaces.json 才是 marketplace 的權威來源",
+    "script": "verify-verification.mjs"
+  },
+  {
+    "name": "只要 settings 讀不到就宣告判斷不了（有其他來源也放棄）",
+    "file": "src/core/plugin-status.ts",
+    "from": "  if (settings === null && installed === null && marketplaces === null) {",
+    "to": "  if (settings === null) {",
+    "expect": "plugin：settings 壞掉但 plugins 目錄讀得到",
+    "script": "verify-verification.mjs"
   }
 ]
