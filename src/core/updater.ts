@@ -76,6 +76,20 @@ const POST_UPDATE_ACTIONS: ReadonlyArray<{ sha: string; action: string }> = [
       '  然後跑：node tools/check-gate-removed.mjs（檢查七處，全乾淨回 exit 0；只回報不改設定）',
   },
   {
+    sha: 'HOOKSHA',
+    action:
+      '【要動手，選用】派工建議表現在也有一份 Claude Code 的 SessionStart hook，' +
+      '會在每個 session 開頭直接告訴模型「什麼情境派哪一顆」，不必等它想到要查 models。\n' +
+      '  安裝（每台機器一次）：\n' +
+      '    cp tools/hooks/aicli-model-policy.py ~/.claude/scripts/aicli_model_policy.py\n' +
+      '    再到 ~/.claude/settings.json 的 hooks.SessionStart 加一筆 command hook 指向它\n' +
+      '    （完整片段見 tools/hooks/aicli-model-policy.py 的檔頭）\n' +
+      '  裝好之後它會隨 git pull 更新，內容改了不必重裝、也不必再動 settings.json。\n' +
+      '  不裝也行：同一份建議在 mcp__ai-cli__models 的 dispatchGuidance / knownBadModels 裡，\n' +
+      '  那個隨自動更新過去、不需要安裝。hook 的差別只是「不必等 AI 想到要查」。\n' +
+      '  ai-cli 不會自己去改你的 settings.json——派工工具靜默改寫使用者的設定是壞設計。',
+  },
+  {
     sha: 'b8f7865',
     action:
       '【要動手，想用才需要】NVIDIA 免費 API（build.nvidia.com）現在接得上了，' +
