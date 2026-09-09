@@ -496,6 +496,24 @@ try {
   );
 }
 
+console.log('== server 身分：repository 正規化的範圍 ==');
+{
+  const { normalizeRepositoryUrl } = await load('core/identity.js');
+  // 認得出來的形狀要正規化成可瀏覽網址
+  check(
+    normalizeRepositoryUrl('git+https://github.com/o/r.git') === 'https://github.com/o/r',
+    'git+https 形式正規化成可瀏覽網址',
+    normalizeRepositoryUrl('git+https://github.com/o/r.git')
+  );
+  // 認不出來的形狀要「原樣」回傳——半套正規化（只剝 .git）會產出既不能 clone
+  // 也不能貼進瀏覽器的字串，比不處理更糟。
+  for (const raw of ['git@github.com:o/r.git', 'github:o/r', 'o/r', 'git+ssh://git@github.com/o/r.git']) {
+    check(normalizeRepositoryUrl(raw) === raw, `認不出的形狀原樣回傳：${raw}`, String(normalizeRepositoryUrl(raw)));
+  }
+  check(normalizeRepositoryUrl(undefined) === null, 'repository 缺欄位回 null');
+  check(normalizeRepositoryUrl('') === null, 'repository 空字串回 null');
+}
+
 } catch (error) {
   check(false, 'catalog 測試流程不得拋例外', error.stack ?? String(error));
 } finally {

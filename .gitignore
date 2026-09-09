@@ -12,3 +12,7 @@ dist.bak-*/
 # 一次性測試輸出
 mcp-test-out.txt
 e2e-out.txt
+# direct-api 的 session 檔（src/agents/direct-api.ts 寫到 workFolder/.tmp/api_sessions）。
+# 派工時把 workFolder 指到本 repo 就會出現，而檔案裡是完整對話內容——
+# 不該有機會被 commit 進來。
+.tmp/

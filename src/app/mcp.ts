@@ -35,8 +35,13 @@ import { consumeNotice, scheduleBackgroundUpdates } from '../core/updater.js';
 import { getServerIdentity } from '../core/identity.js';
 
 // 版本與 doctor / models 回傳的 server.version 取自同一份來源，避免兩處各讀一次
-// package.json 而在某天分岔。identity 讀不到時回 null，握手仍需要一個字串。
-const SERVER_VERSION = getServerIdentity().version ?? '0.0.0';
+// package.json 而在某天分岔。
+//
+// 讀不到時**不要編一個看起來像真版本的字串**（例如 '0.0.0'）：那是合法 semver，
+// 呼叫端會當成真的，而同一個行程的 doctor 卻回 `version: null` ——兩邊打架。
+// MCP 的 serverInfo.version 只要求字串、不要求 semver，所以誠實講「不知道」。
+const identityVersion = getServerIdentity().version;
+const SERVER_VERSION = identityVersion?.trim() ? identityVersion : 'unknown';
 
 let isFirstToolUse = true;
 const serverStartupTime = new Date().toISOString();
@@ -246,12 +251,12 @@ ${getSupportedModelsDescription()}
         {
           name: 'doctor',
           description:
-            'Check supported AI CLI binary availability and path resolution. Does not verify login state or terms acceptance.',
+            'Check supported AI CLI binary availability and path resolution. Does not verify login state or terms acceptance. Also reports the identity of this server itself — npm package name, version and repository — in the "server" field, which is the authoritative answer to "which project is this?".',
           inputSchema: { type: 'object', properties: {} },
         },
         {
           name: 'models',
-          description: 'List supported model names, model aliases, and dynamic backend discovery hints.',
+          description: 'List supported model names, model aliases, and dynamic backend discovery hints. Also reports the identity of this server itself (npm package, version, repository) in the "server" field.',
           inputSchema: { type: 'object', properties: {} },
         },
         {

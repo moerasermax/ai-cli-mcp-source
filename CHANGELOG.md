@@ -8,6 +8,92 @@
 
 ## [Unreleased]
 
+### 新增（工具說得出自己是誰）
+
+- **`doctor` 與 `models` 的回傳新增 `server` 欄位**：`name` / `version` /
+  `repository` / `homepage` / `note`，來源是新檔 `src/core/identity.ts`。
+
+  為什麼要有它：MCP 的註冊內容只有一行 `node <path>/dist/server.js`，呼叫端多半
+  是另一個 AI，它從工具名認得出「有 ai-cli 這組工具」，**認不出對應哪個 repo、
+  哪個 npm 套件**。於是它會去查外部紀錄——而 2026-09-09 改名之後，所有既有紀錄
+  同時變錯。**識別資訊不能只存在文件裡**，文件要靠人記得更新，而改名恰好是
+  「所有既有紀錄同時失效」的事件。能自我描述的東西才撐得住改名。
+
+  三條規則與 `describeConfiguredProviders` 同源：永不丟錯、不查網路、
+  **不硬編名稱**（寫死的話下次改名就會再說一次謊）。
+  `repository` 只正規化 `http(s)://` 與 `git+http(s)://`，其餘原樣回傳。
+  `src/core/identity.ts`、`src/core/doctor.ts`、`src/models/catalog.ts`、
+  `src/app/mcp.ts`（`dc0eccc`）（Claude）
+
+- 兩個工具的 description 也寫明了這件事。工具描述是呼叫端**決定要不要呼叫之前
+  唯一讀得到的東西**；只把欄位放進 payload，等於假設對方會先呼叫再發現。（Claude）
+
+### 修正（`server` 欄位的獨立稽核結果）
+
+稽核者：`gpt-5.6-sol`(high) 與 `claude-ultra`，各自獨立、全程只讀原始碼。
+`dc0eccc` 當初**漏做了 CONTRIBUTING §5.1 要求的獨立稽核與 CHANGELOG 紀錄就 push**，
+這一段是補做的結果。
+
+**找到並已修：**
+
+- **`note` 成功時整個欄位消失**（`note?: string`）。這是 doctor / models 兩份
+  payload 裡唯一這樣設計的欄位——`describeConfiguredProviders`、`updateNotice`、
+  `checks.loginState` 全都是「欄位永遠在、值為 null」。欄位消失時，呼叫端分不出
+  「這一版沒有這個欄位」與「這一版有、只是這次沒問題」。改為 `note: string | null`。（claude-ultra）
+- **`normalizeRepositoryUrl` 對認不出的形狀做了半套正規化。**
+  `git@github.com:o/r.git` 會被剝成 `git@github.com:o/r`——既不能 clone 也不能貼進
+  瀏覽器。**半套正規化比不處理更糟**，因為呼叫端是 AI，它會直接當網址用。
+  改成只處理 `http(s)` 形狀。（gpt-5.6-sol）
+- **握手的版本 fallback 是 `'0.0.0'`。** 那是合法 semver，呼叫端會當成真版本，
+  而同一個行程的 `doctor` 卻回 `version: null`——兩邊打架。改成 `'unknown'`
+  （MCP 的 `serverInfo.version` 只要求字串）。另外空字串／純空白會通過
+  `typeof === 'string'` 而 `??` 不會啟動，改用 `trim()` 判斷。（claude-ultra、gpt-5.6-sol）
+- **`note` 原本回原始 `error.message`。** ENOENT / EACCES 的訊息通常帶絕對安裝路徑
+  （在 Windows 上就是使用者名稱與目錄結構），而這個結構會原樣進工具回傳。
+  改成只回錯誤類別，詳細訊息寫 stderr。（gpt-5.6-sol）
+- **身分是可變單例**，doctor 與 models 共用同一個實例。改為 `Object.freeze`。（兩位都提）
+- 快取註解「套件檔在行程存活期間不會改變」不精確——背景更新確實會改磁碟，
+  只是執行中的 server 仍跑舊 dist。改成「身分描述的是本次已載入的這個 process」。（gpt-5.6-sol）
+
+**判定成立、但這次刻意不做：**
+
+- `doctor` 的回傳型別仍是 open index signature，每加一個具名欄位就要再撐寬一次，
+  型別對呼叫端的資訊量遞減。正解是把 agent 狀態收進 `agents:` 子物件——那會動到
+  既有呼叫端，屬於 MAJOR，不在這一輪。（兩位都提）
+- **下一版應為 `6.2.0`（MINOR，純加欄位）。** 目前 `package.json` 仍是 `6.1.1`，
+  與 npm 上**沒有**這個欄位的 `6.1.1` 同號——那個為了「說得出自己是誰」而生的欄位，
+  此刻分辨不出自己是哪一份。這與 npm `6.0.0` 對不上 tag 是同一種形狀。發版前務必 bump。（claude-ultra）
+
+**判定不成立（稽核者自己推翻的懷疑）：**
+
+- 「缺檔／壞 JSON／package 根節點異常會殺死 MCP」——讀取與欄位存取都在同一個 `try/catch` 內。
+- 「失敗結果是 falsy，所以每次都重讀」——失敗回傳的仍是物件，會快取到 process 結束。
+- 「`../../package.json` 在 `dist/` 或 npm 安裝後會指錯」——兩者都回到 package root。
+- 「`0.0.0` 不符 MCP schema，握手會失敗」——SDK 只驗證是字串。
+- 「握手的 `ai_cli_mcp` 違反『不硬編名稱』」——那是 MCP implementation ID，與 npm 套件名不同用途。
+- 「整份 package.json 會被序列化出去」——回傳的是明確四欄投影。
+- 「`server` 會被 `models` 的『陣列 key 當 agent 清單』誤收」——`Array.isArray` 對 plain object 為 false。
+- 「`verify-catalog-source` 的 everyAvailable 會被新 key 汙染」——它呼叫的是 `buildDoctorStatus()`，不含 `server`／`update`。
+
+**順帶記下的既有問題（非本次造成，未修）：**
+
+- `verify-mcp.mjs` 印「doctor available CLIs」那行把 `update.available`（語意是
+  「有新版可更新」）當成「CLI 找得到」，是假陽性。只在 `log()` 裡，不影響 CI 判定。
+- 若哪天有 agent id 叫 `server` 或 `update`，會被 `doctor.ts` 的 spread 順序**靜默覆蓋**。
+  `AgentId` 目前是封閉 union 所以不成立，但「加後端不該動 `core/`」的人不會知道
+  `core/` 已經佔用了三個保留字。
+
+驗證：`npm test` 11 支全綠；`verify-mcp` 21→24 項、`verify-catalog-source` 新增
+repository 正規化範圍的 7 項；突變 79→81。
+
+### 新增（.gitignore）
+
+- `.tmp/` 進 `.gitignore`。`src/agents/direct-api.ts` 把 session 寫到
+  `workFolder/.tmp/api_sessions/`，所以只要派工時把 workFolder 指到本 repo 就會
+  出現——而**那些檔案裡是完整對話內容**，不該有機會被 commit 進來。
+  本次稽核期間就真的產生過一次。（Claude）
+
+
 ### 新增（給 AI agent 的開場必讀檔）
 
 - **新增 `CLAUDE.md`。** 這棵樹先前沒有 `CLAUDE.md`、也沒有 `.claude/`，

@@ -118,6 +118,9 @@ async function checkEntry(entry) {
   check(identity?.name === PKG.name && identity?.version === PKG.version,
     `${entry.name} models 說得出自己的套件名與版本`,
     `name=${identity?.name} version=${identity?.version}`);
+  check(identity !== undefined && 'note' in identity && identity.note === null,
+    `${entry.name} server.note 永遠在，正常時為 null`,
+    `note=${JSON.stringify(identity?.note)}`);
   check(typeof identity?.repository === 'string'
     && identity.repository.startsWith('https://')
     && !identity.repository.endsWith('.git')

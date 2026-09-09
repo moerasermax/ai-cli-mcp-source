@@ -585,8 +585,8 @@
   {
     "name": "normalizeRepositoryUrl 沒剝掉 git+ 前綴（回傳 git URL 而不是可瀏覽網址）",
     "file": "src/core/identity.ts",
-    "from": "  return url.replace(/^git\\+/, '').replace(/\\.git$/, '');",
-    "to": "  return url.replace(/\\.git$/, '');",
+    "from": "  const stripped = url.replace(/^git\\+/, '');",
+    "to": "  const stripped = url;",
     "expect": "server.repository 是可瀏覽網址而不是 git URL",
     "script": "verify-mcp.mjs"
   },
@@ -602,8 +602,24 @@
     "name": "doctor 自己編一份空身分，與 models 分岔",
     "file": "src/core/doctor.ts",
     "from": "  ), update: getUpdateStatus(), server: getServerIdentity() };",
-    "to": "  ), update: getUpdateStatus(), server: { name: null, version: null, repository: null, homepage: null } };",
+    "to": "  ), update: getUpdateStatus(), server: { name: null, version: null, repository: null, homepage: null, note: null } };",
     "expect": "doctor 與 models 回報同一個身分",
     "script": "verify-mcp.mjs"
+  },
+  {
+    "name": "identity 成功時把 note 設成空字串而不是 null（欄位語意被破壞）",
+    "file": "src/core/identity.ts",
+    "from": "      note: null,",
+    "to": "      note: '',",
+    "expect": "server.note 永遠在，正常時為 null",
+    "script": "verify-mcp.mjs"
+  },
+  {
+    "name": "normalizeRepositoryUrl 的形狀守衛放寬成全部命中（半套正規化復活）",
+    "file": "src/core/identity.ts",
+    "from": "  if (!/^https?:\\/\\//.test(stripped)) return url;",
+    "to": "  if (!/^/.test(stripped)) return url;",
+    "expect": "認不出的形狀原樣回傳",
+    "script": "verify-catalog-source.mjs"
   }
 ]

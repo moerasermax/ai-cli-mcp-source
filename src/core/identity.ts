@@ -26,8 +26,14 @@ export interface ServerIdentity {
   /** 正規化過的可瀏覽網址；沒有 repository 欄位時為 null。 */
   repository: string | null;
   homepage: string | null;
-  /** 只有在讀不到時才出現：「讀不到」與「沒設定」對呼叫端是兩件事。 */
-  note?: string;
+  /**
+   * 讀不到時說明原因，正常時為 `null`——**欄位永遠在**。
+   *
+   * 這一點與 `describeConfiguredProviders`（`note: string | null`）、`updateNotice`
+   * 與 `checks.loginState` 一致：欄位消失的話，呼叫端分不出「這一版沒有這個欄位」
+   * 與「這一版有、只是這次沒問題」。呼叫端是另一個 AI，它讀不到原始碼的註解。
+   */
+  note: string | null;
 }
 
 const require = createRequire(import.meta.url);
@@ -36,12 +42,19 @@ const require = createRequire(import.meta.url);
  * `git+https://github.com/x/y.git` → `https://github.com/x/y`。
  *
  * package.json 的 repository 是給 npm 用的 git URL，直接回傳的話呼叫端拿到
- * 的是一個貼進瀏覽器不會動的字串。認不出的形狀原樣回傳，不要猜。
+ * 的是一個貼進瀏覽器不會動的字串。
+ *
+ * **只處理 `http(s)://` 與 `git+http(s)://` 這兩種認得出來的形狀，其餘原樣回傳。**
+ * npm 也接受 `github:owner/repo`、`owner/repo` 與 `git@github.com:owner/repo.git`
+ * 這類寫法——對它們做半套正規化比不做更糟：把 scp 形式的 `.git` 剝掉之後，
+ * 得到的字串既不能 clone 也不能貼進瀏覽器，而呼叫端是 AI，它會直接當網址用。
  */
 export function normalizeRepositoryUrl(raw: unknown): string | null {
   const url = typeof raw === 'string' ? raw : (raw as { url?: unknown } | null | undefined)?.url;
   if (typeof url !== 'string' || url.length === 0) return null;
-  return url.replace(/^git\+/, '').replace(/\.git$/, '');
+  const stripped = url.replace(/^git\+/, '');
+  if (!/^https?:\/\//.test(stripped)) return url;
+  return stripped.replace(/\.git$/, '');
 }
 
 function readIdentity(): ServerIdentity {
@@ -57,24 +70,40 @@ function readIdentity(): ServerIdentity {
       version: typeof pkg.version === 'string' ? pkg.version : null,
       repository: normalizeRepositoryUrl(pkg.repository),
       homepage: typeof pkg.homepage === 'string' ? pkg.homepage : null,
+      note: null,
     };
   } catch (error) {
     // 規則 1：不丟錯。呼叫端看到 note 就知道是「讀不到」而不是「沒有這些欄位」。
+    //
+    // ⚠️ note **只回錯誤類別，不回原始 message**：ENOENT / EACCES 的訊息通常帶著
+    // 絕對安裝路徑（在 Windows 上就是使用者名稱與目錄結構），而這個結構會原樣進
+    // doctor / models 的工具回傳。詳細訊息寫 stderr，那裡不是對外通道。
+    const code = (error as { code?: unknown } | null | undefined)?.code;
+    const kind =
+      typeof code === 'string' ? code : error instanceof Error ? error.name : 'UnknownError';
+    console.error(
+      `[identity] 讀不到 package.json：${error instanceof Error ? error.message : String(error)}`
+    );
     return {
       name: null,
       version: null,
       repository: null,
       homepage: null,
-      note: `讀不到 package.json：${error instanceof Error ? error.message : String(error)}`,
+      note: `讀不到 package.json（${kind}）`,
     };
   }
 }
 
-// 套件檔在行程存活期間不會改變（更新走的是換行程，見 updater.ts），所以讀一次就好。
+// 身分描述的是**本次已載入的這個 process**，所以第一次讀完就固定。
+// 背景更新確實會改動磁碟上的 package.json，但執行中的 server 仍跑舊 dist、
+// 下次啟動才生效（見 updater.ts），所以跟著磁碟變反而會說謊。
+//
+// 凍結是因為這個物件會原樣交給 doctor 與 models 共用——不凍的話，任何一個
+// 呼叫端改到它，另一個就跟著被污染。
 let cached: ServerIdentity | undefined;
 
-/** 這個 server 的身分。永不丟錯、不查網路。 */
+/** 這個 server 的身分。永不丟錯、不查網路、回傳唯讀。 */
 export function getServerIdentity(): ServerIdentity {
-  if (!cached) cached = readIdentity();
+  if (!cached) cached = Object.freeze(readIdentity());
   return cached;
 }
