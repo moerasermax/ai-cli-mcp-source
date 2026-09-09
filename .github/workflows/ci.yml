@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Windows is the supported platform: the ConPTY runner and the CLI resolution
-  # paths are exercised here, so this job is the gate.
+  # Windows is the primary platform: the ConPTY runner and the CLI resolution
+  # paths were developed against it.
   test:
     name: test (windows, node ${{ matrix.node }})
     runs-on: windows-latest
@@ -26,8 +26,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
-  # POSIX is not verified at runtime yet — this job only proves the tree still
-  # type-checks and builds on Linux/macOS, which is a real regression guard.
+  # Kept as a fast type/compile signal that reports before the full suite finishes.
   build-posix:
     name: build (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
@@ -46,22 +45,23 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
-  # Informational only. The suite has never been run on POSIX; this job exists to
-  # find out how far it gets. It must not gate merges until it is actually green,
-  # and it is not allowed to report success it did not earn.
-  test-posix-experimental:
-    name: test (${{ matrix.os }}, experimental)
+  # Promoted to a gate on 2026-09-09. The suite had never been executed on POSIX
+  # before that day; the first run was green on both ubuntu and macos, so there is
+  # no longer any reason to let it fail silently. If it breaks, that is a real
+  # regression and it should block.
+  test-posix:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        node: ['20.19', '22']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npm test

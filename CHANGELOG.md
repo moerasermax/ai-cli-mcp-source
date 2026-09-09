@@ -7,6 +7,24 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 變更（CI：POSIX 從實驗性升為閘門）
+
+- **`test-posix` 移除 `continue-on-error`，改為與 Windows 同級的閘門，並補上
+  node 20.19 / 22 雙版本矩陣。**
+
+  這一版 CI 上線時，POSIX 那個 job 是刻意標成 `continue-on-error` 的——理由寫在
+  上一筆：**這套測試從來沒有在 Linux/macOS 上被執行過**，在真的綠之前不該讓它
+  擋合併，也不該讓它回報自己沒掙來的成功。
+
+  第一次跑就全綠。ubuntu-latest 與 macos-latest 的 `npm test` 都通過
+  （step 層級確認，不是被 `continue-on-error` 蓋掉的 job 層級 success）。
+  既然已經是實測綠的，繼續讓它靜默失敗就變成反過來的謊——**壞了卻不擋**。
+  所以立刻升級。
+
+  順帶推翻了一個既有假設：`process.platform` 分支與 node-pty 的 POSIX prebuild
+  一直被當成「應該可以但沒驗過」，現在是驗過的。`build-posix` 保留為比完整套件
+  更早回報的型別/編譯訊號。（Claude，moerasermax 指示）
+
 ### 變更（改名：repo 與 npm scope）
 
 - **GitHub repo `ai-cli-mcp-source` → `tkflyc-ai-cli`**，**npm 套件改以
