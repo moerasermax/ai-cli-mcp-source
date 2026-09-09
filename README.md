@@ -130,26 +130,28 @@ Also honored: `AI_CLI_UPDATE_CHECK_INTERVAL_SEC` (default `3600`),
 
 ## direct-api
 
-Any OpenAI-compatible endpoint can be wired in yourself through the `direct-api`
-agent, addressed as `or-<model>` for OpenRouter, `ds-<model>` for DashScope, or
-`<provider>-<model>` for any provider key configured in
-`~/.local/share/ai-cli/providers.json`. See the Chinese reference for the config
-file format and the limits of what this path can do.
+Besides the three local CLIs there is a fourth path that starts no subprocess at all:
+`direct-api` talks HTTP from inside the Node process, so **any OpenAI-compatible
+`/chat/completions` endpoint works** — OpenRouter, DashScope, DeepSeek, NVIDIA's
+hosted NIM catalog, a local Ollama, your company gateway. Adding a provider needs no
+code change, only a config entry.
 
-### extra_body
+It is not a thin completion wrapper: it runs the full agent loop, so the model gets
+`read_file` / `write_file` / `bash` and can actually change files and run commands.
 
-`reasoning_effort` and `max_tokens` are not part of the `run` tool's contract for
-this agent, but many hosted models pick expensive defaults when you say nothing —
-`nvidia/nemotron-3.5-lightning-30b-a3b` takes 28.0s per tool round on its default
-reasoning and 6.1s with `reasoning_effort: "none"`. Set those per provider, or per
-model, in `providers.json`:
+### Configuring a provider
+
+`~/.local/share/ai-cli/providers.json` (override with `AI_CLI_PROVIDERS_PATH`):
 
 ```json
 {
   "providers": {
+    "openrouter": { "api_key": "sk-or-v1-..." },
+    "local":      { "base_url": "http://127.0.0.1:11434/v1", "api_key": "ollama" },
     "nv": {
       "base_url": "https://integrate.api.nvidia.com/v1",
       "api_key": "nvapi-...",
+      "retry": { "max_retries": 3, "initial_delay_ms": 1000 },
       "extra_body": { "max_tokens": 8192 },
       "model_extra_body": {
         "nvidia/nemotron-3.5-lightning-30b-a3b": { "reasoning_effort": "none" }
@@ -159,55 +161,93 @@ model, in `providers.json`:
 }
 ```
 
-`model_extra_body` is keyed by the model name as sent to the provider (the part
-after the provider prefix) and overrides `extra_body` field by field.
+Address a model as `<provider>-<model>`, where the prefix is the key above:
+`or-qwen/qwen3.7-plus`, `nv-openai/gpt-oss-20b`, `local-llama3.1`. Everything after
+the prefix is sent verbatim, so slashes in model names are fine. `openrouter` and
+`dashscope` have built-in base URLs and short prefixes (`or`, `ds`); every other key
+must supply its own `base_url`.
 
+> **This file is fail-closed as a whole.** One provider missing `base_url` or
+> `api_key` makes the entire file throw, taking the working providers down with it.
+> Back it up before editing.
 
-### Seeing what this machine has
+### extra_body — controlling what the framework does not send
 
-`models` returns a `directApiProviders` block listing the providers configured in
-`providers.json` — their usable prefixes (including built-in shorthands like `or`),
-base URL, whatever models `model_extra_body` names, and a copy-pasteable `example`.
+The request body is `model` / `messages` / `stream` / `stream_options` / `tools` and
+nothing else, so a hosted model's defaults apply untouched — and those defaults can be
+expensive. `nvidia/nemotron-3.5-lightning-30b-a3b` spends 28.0s and 318 output tokens
+per tool round on its default reasoning, and 6.1s / 84 tokens with
+`reasoning_effort: "none"`.
 
-The static `direct-api` array is four placeholder strings, so without this there is
-no way to tell from a tool result what this machine can actually reach. Configured
-providers are local state: not in version control, not in any static list.
+`extra_body` is the provider-wide default; `model_extra_body` overrides it field by
+field, keyed by the model name as sent to the provider.
 
-The block never contains `api_key`, and never throws — an unreadable `providers.json`
-comes back as a `note` rather than taking the whole `models` call down, because
-"cannot read it" and "nothing configured" are different answers.
+`model`, `messages`, `stream`, `stream_options` and `tools` are **rejected at load
+time**, naming the provider and the offending key — not dropped silently. Overriding
+`stream` would hand the SSE reader a single JSON blob; overriding `tools` would offer
+the model tools `executeTool` cannot run.
 
-### retry
+Note the terminology clash: the `run` tool's `reasoning_effort` argument is a
+CLI flag for claude/codex and still does not apply here. What `extra_body` sends is
+the same-named *API field*, which is a different thing.
 
-Shared free endpoints throttle and shed load: NVIDIA's own troubleshooting docs say
+### retry — surviving a shared endpoint
+
+Free shared endpoints throttle and shed load. NVIDIA's own troubleshooting docs say
 the hosted Nemotron endpoints may return 429 or 503 under high demand, and advise a
-short wait plus lower concurrency. So 429 and 5xx are retried with exponential
-backoff and jitter; every other 4xx is not — a request the server rejected as
-malformed is still malformed the second time.
+short wait plus lower concurrency; before this, any non-200 simply failed the job.
 
-```json
-"nv": { "retry": { "max_retries": 3, "initial_delay_ms": 1000 } }
-```
+429 and 5xx are retried with exponential backoff and jitter. Every other 4xx is not —
+a request the server rejected as malformed is still malformed the second time, and
+retrying only burns quota. Defaults are 2 retries and a 1s initial delay;
+`max_retries: 0` turns it off. A `Retry-After` header wins over the computed backoff,
+capped at 60s. A kill during backoff wakes immediately rather than sleeping it out.
 
-Defaults are 2 retries and a 1s initial delay. `max_retries: 0` turns retrying off.
-A `Retry-After` header wins over the computed backoff (capped at 60s). Each retry
-emits a `retry` event on stdout — a silent retry makes "slow" and "stuck"
-indistinguishable to the caller.
+Each retry emits a `retry` event on stdout — a silent retry makes "slow" and "stuck"
+indistinguishable to a caller that only sees the tool result.
 
-Retrying covers **establishing** the request only. Once a 200 arrives and the stream
+Retrying covers **establishing** the request. Once a 200 arrives and the stream
 starts, content has already reached the caller, so a mid-stream failure is not
-retried.
+retried; replaying it would emit the same answer twice.
 
-Measured on `nvidia/nemotron-3-super-120b-a12b`, 10 two-round tool loops each:
-8/10 without retry, 10/10 with it. Slowing the request rate alone did not reach
-100%; retrying did.
+Measured on `nvidia/nemotron-3-super-120b-a12b`, 10 two-round tool loops per row:
 
+| Request pacing | Retry | Success |
+|---|---|---|
+| back-to-back (~66 rpm) | off | 4/10 |
+| 10 rpm | off | 8/10 |
+| 15 rpm | off | 9/10 |
+| **15 rpm** | **on** | **10/10** |
 
-`model`, `messages`, `stream`, `stream_options` and `tools` are built by ai-cli
-and are **rejected** if either block tries to set them — overriding `stream`
-would hand the SSE reader a single JSON blob, and overriding `tools` would offer
-the model tools that `executeTool` cannot run. The error names the provider and
-the offending key; nothing is dropped silently.
+Slowing down alone never reached 100%; retrying did, and at the faster rate. Even
+pacing trades every request's latency for a few requests' success, while backoff pays
+only when the server actually refuses.
+
+### Knowing what this machine can reach
+
+`models` returns a `directApiProviders` block: each configured provider's usable
+prefixes (including built-in shorthands), base URL, the models named in
+`model_extra_body`, and a copy-pasteable `example`.
+
+Without it a tool result cannot answer "what can this machine reach" — the static
+`direct-api` list is four placeholder strings, and configured providers are local
+state that lives in neither version control nor any static list.
+
+The block never contains `api_key`, and never throws: an unreadable `providers.json`
+comes back as a `note`, because "cannot read it" and "nothing configured" are
+different answers.
+
+### Limits
+
+- **Sessions** — `session_id` persists under `workFolder/.tmp/api_sessions`.
+- **Images** — write `[image:C:/path/to.png]` in the prompt (png/jpg/webp/gif).
+- **Plain Q&A** — prefix the prompt with `[no-tools]` to drop the tool loop.
+- **Per turn** — at most 30 API calls and 30 tool-loop iterations.
+- **Keys** — error text is redacted to `[redacted]` before it is returned.
+- Model lists are dynamic; the framework keeps no allow-list.
+
+> Migrating from OpenCode: if `providers.json` is absent but
+> `~/.local/share/opencode/auth.json` exists, it is converted once, automatically.
 
 ## Wiring into Claude Code
 

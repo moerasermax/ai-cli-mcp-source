@@ -144,8 +144,6 @@ npm run typecheck  # 只型別檢查
 | `AI_CLI_AUTO_UPDATE` | `on`（預設）／`check`／`off`，見「自動更新」 |
 | `AI_CLI_UPDATE_CHECK_INTERVAL_SEC` | 更新檢查間隔秒數，預設 `3600`；無效值使用預設 |
 | `AI_CLI_UPDATE_BRANCH` | 覆寫更新分支；未設時依 upstream 或 master |
-| `AI_CLI_PLUGIN_NOTICE_INTERVAL_SEC` | 未啟用驗證閘門 plugin 時的提醒間隔秒數，預設 `259200`（3 天）；`0` 表示每次都提醒 |
-| `AI_CLI_CLAUDE_SETTINGS_PATH` | 覆寫 Claude Code `settings.json` 路徑（偵測 plugin 是否啟用用，測試以此隔離） |
 | `AI_CLI_USAGE_PLUGIN_BIN` | `ai-cli usage` 外掛的 .mjs 絕對路徑 |
 | `CLAUDE_CLI_NAME` / `CODEX_CLI_NAME` / `AGY_CLI_NAME` | 覆寫各 CLI 的指令名稱或絕對路徑 |
 | `AI_CLI_DISCOVER_TIMEOUT_MS` | 模型查詢逾時毫秒，預設 `15000`；測試可縮短，非正整數或超出計時器範圍則用預設值 |
@@ -200,8 +198,11 @@ agent 的 `discoverModels` 現在必須回 Promise、有逾時且永不 reject�
 
 除了三個本機 CLI，這個框架還有一條 **direct-api** 路徑——它不啟動任何子程序，
 直接在 Node 行程內打 HTTP，因此**任何 OpenAI-compatible 的 `/chat/completions` 端點都能接**：
-OpenRouter、阿里雲 DashScope、DeepSeek、Groq、together.ai、vLLM / Ollama 之類的自架服務，
-或你公司內部的 gateway。想加一家新的供應商**不需要改任何程式碼**，只要寫一筆設定。
+OpenRouter、阿里雲 DashScope、NVIDIA 的 NIM 目錄、DeepSeek、Groq、together.ai、
+自架的 vLLM / Ollama，或你公司內部的 gateway。想加一家新的供應商**不需要改任何程式碼**。
+
+它不是單次補全的薄包裝：跑的是完整 agent loop，模型拿得到 `read_file` / `write_file` /
+`bash`，可以真的改檔案、跑指令。
 
 ### 設定檔
 
@@ -211,17 +212,27 @@ OpenRouter、阿里雲 DashScope、DeepSeek、Groq、together.ai、vLLM / Ollama
 {
   "providers": {
     "openrouter": { "api_key": "sk-or-v1-..." },
-    "dashscope":  { "api_key": "sk-..." },
-    "deepseek":   { "base_url": "https://api.deepseek.com/v1", "api_key": "sk-..." },
-    "local":      { "base_url": "http://127.0.0.1:11434/v1",   "api_key": "ollama" }
+    "local":      { "base_url": "http://127.0.0.1:11434/v1", "api_key": "ollama" },
+    "nv": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key": "nvapi-...",
+      "retry": { "max_retries": 3, "initial_delay_ms": 1000 },
+      "extra_body": { "max_tokens": 8192 },
+      "model_extra_body": {
+        "nvidia/nemotron-3.5-lightning-30b-a3b": { "reasoning_effort": "none" }
+      }
+    }
   }
 }
 ```
 
 - `api_key` 也接受寫成 `key` 或 `token`；`base_url` 也接受 `baseURL`。
-- `openrouter` 與 `dashscope` 有**內建預設端點**，所以 `base_url` 可以省略：
-  `https://openrouter.ai/api/v1`、`https://dashscope.aliyuncs.com/compatible-mode/v1`。
-- 其他任何自訂名稱都必須自己給 `base_url`。缺 `base_url` 或 `api_key` 的那一筆會被視為無效。
+- `openrouter` 與 `dashscope` 有**內建預設端點與簡寫前綴**（`or`、`ds`），`base_url` 可省略。
+  其他自訂名稱都必須自己給 `base_url`。
+- provider key 建議取短名：叫 `nvidia` 會變成 `nvidia-nvidia/llama-...`，能動但很醜。
+
+> ⚠️ **這個檔是整份 fail-closed。** 任何一筆 provider 缺 `base_url` 或 `api_key`，
+> 整個檔案 throw，**其他原本正常的 provider 會一起壞掉**。動之前先備份。
 
 ### 怎麼呼叫
 
@@ -230,24 +241,79 @@ model 名稱用 **`<provider>-<model>`**，前綴就是 `providers.json` 裡的�
 | model 參數 | 實際打到哪 |
 |-----------|-----------|
 | `or-qwen/qwen3.7-plus` | OpenRouter（`or` 是 `openrouter` 的內建簡寫） |
-| `ds-qwen-max` | DashScope（`ds` 是 `dashscope` 的內建簡寫） |
-| `deepseek-deepseek-chat` | 上面自訂的 `deepseek` provider |
+| `nv-openai/gpt-oss-20b` | 上面自訂的 `nv`（NVIDIA NIM） |
 | `local-llama3.1` | 上面自訂的 `local`（Ollama） |
 
-前綴之後的整串都當成 model 名稱原樣送出，所以 `or-qwen/qwen3.7-plus` 裡的斜線沒問題。
-**model 清單是動態的**——框架不維護任何白名單，供應商支援什麼就能填什麼；
-`models` 工具的 `dynamicModelBackends` 只會告訴你有哪些前綴可用。
+前綴之後整串原樣送出，所以 model 名稱裡的斜線沒問題。**框架不維護任何白名單**。
+
+### extra_body：控制框架不會替你送的欄位
+
+送出去的 request body 只有 `model` / `messages` / `stream` / `stream_options` / `tools`，
+所以託管模型的預設值原封不動生效——而那些預設值可能很貴。實測
+`nvidia/nemotron-3.5-lightning-30b-a3b`：走預設每輪 **28.0 秒／318 output token**，
+傳 `reasoning_effort: "none"` 只要 **6.1 秒／84 token**。
+
+`extra_body` 是 provider 層預設，`model_extra_body` **逐欄覆蓋**它，
+key 是送給 provider 的完整 model 名（前綴之後那串）。
+
+`model` / `messages` / `stream` / `stream_options` / `tools` 是**保留欄位**，
+兩層都不准設，**載入時就丟錯並點名是哪個 provider 的哪個欄位**——不是靜默丟棄。
+覆蓋 `stream` 會讓 SSE 解析器收到一整包 JSON；覆蓋 `tools` 會讓模型收到
+`executeTool` 執行不了的工具。
+
+> **注意術語衝突**：`run` 工具的 `reasoning_effort` 參數是 claude/codex 的 CLI 旗標，
+> 對 direct-api 仍然無效。`extra_body` 送的是**同名的 API 欄位**，兩者不是同一件事。
+
+### retry：讓共享端點跑得完
+
+免費的共享端點在尖峰會限流與卸載。NVIDIA 自己的故障排除文件就寫明 hosted Nemotron
+endpoint 在高需求時會回 **429 或 503**，並建議「短暫等待後重試、降低並發」——
+而這個框架原本收到任何非 200 就直接讓整個 job 失敗。
+
+現在 429 與 5xx 走**指數退避加抖動**重試，其餘 4xx 不重試：服務端說格式錯的請求，
+再送一次還是錯，只是白等又燒額度。抖動是為了避免並行 job 一起退避、一起回來，
+把剛恢復的服務再打掛一次。
+
+- 預設 2 次、首次退避 1 秒；`max_retries: 0` 明確關閉。
+- 服務端有送 `Retry-After` 就聽它的（上限 60 秒）。
+- 退避途中被 kill 會**立刻醒來**，不會等睡完。
+- 每次重試發一個 `retry` 事件到 stdout——靜默重試會讓「很慢」跟「卡住」長得一模一樣，
+  而呼叫端只看得到工具回傳。
+
+**範圍限制**：重試只包住「建立請求」那一段。一旦回 200 開始讀串流，內容已經送到呼叫端，
+中途失敗**不重試**——重來會讓同一段回答出現兩次。
+
+實測 `nvidia/nemotron-3-super-120b-a12b`，每列 10 輪完整兩輪工具迴圈：
+
+| 請求速率 | 重試 | 成功率 |
+|---|---|---|
+| 背靠背連發（約 66 RPM） | 關 | 4/10 |
+| 10 RPM | 關 | 8/10 |
+| 15 RPM | 關 | 9/10 |
+| **15 RPM** | **開** | **10/10** |
+
+**放慢速率到不了 100%，重試才到**，而且速率還更快。均勻放慢是拿所有請求的時間去換
+少數請求的成功率；退避重試只在服務端真的拒絕時才付出等待。
+
+### 這台機器接得到什麼
+
+`models` 的回傳有一個 `directApiProviders`：每個已設定 provider 的可用前綴
+（含內建簡寫）、`base_url`、`model_extra_body` 裡點名過的 model，
+以及一個可以直接複製去派工的 `example`。
+
+沒有它的話，工具回傳**答不出「這台機器接得到什麼」**——靜態的 `direct-api` 陣列
+只有四個佔位字串，而已設定的 provider 是本機狀態，不在版控也不在任何靜態清單裡。
+
+這個區塊**永遠不含 `api_key`**，而且**永遠不丟錯**：`providers.json` 讀不到時回 `note`，
+因為「讀不到」與「沒設定」對呼叫端是兩件不同的事。
 
 ### 能做什麼、限制在哪
 
-- **會用工具**：direct-api 不只是單次補全，它跑的是完整 agent loop——
-  `read_file` / `write_file` / `bash` 等工具都能用，模型可以真的改檔案、跑指令。
-- **支援 session**：`session_id` 會存在 `workFolder/.tmp/api_sessions`，可以續聊。
-- **支援圖片**：prompt 裡寫 `[image:C:/path/to.png]` 會轉成 vision 訊息（png/jpg/webp/gif）。
-- **想關掉工具**：prompt 開頭加 `[no-tools]`，就退化成單純問答。
-- **不支援 `reasoning_effort`**：這個參數只對 claude / codex 有效。
-- **每回合上限**：最多 30 次 API 呼叫、30 圈 tool loop，避免模型自己繞不出來。
-- **金鑰保護**：任何錯誤訊息在回傳前都會把 api_key 換成 `[redacted]`。
+- **session**：`session_id` 存在 `workFolder/.tmp/api_sessions`，可以續聊。
+- **圖片**：prompt 裡寫 `[image:C:/path/to.png]`（png/jpg/webp/gif）。
+- **關掉工具**：prompt 開頭加 `[no-tools]`，退化成單純問答。
+- **每回合上限**：最多 30 次 API 呼叫、30 圈 tool loop。
+- **金鑰保護**：錯誤訊息回傳前把 api_key 換成 `[redacted]`。
 
 > 從 OpenCode 遷移：若 `providers.json` 不存在但 `~/.local/share/opencode/auth.json` 在，
 > 框架會自動轉檔一次。
