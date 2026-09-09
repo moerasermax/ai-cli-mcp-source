@@ -7,6 +7,39 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（對外發佈：npm 套件、CI、安全政策）
+
+- **改為可發佈的 npm 套件 `@moerasermax/ai-cli-mcp`**：移除 `package.json` 的
+  `"private": true`，補 `license` / `repository` / `bugs` / `keywords` / `files` /
+  `publishConfig.access=public`。
+
+  **為什麼要換名字**：`ai-cli-mcp` 這個 npm 名稱**已被他人佔用**（mkXultra，MIT，
+  latest 2.23.0，而且也是做 Claude/Codex 的 MCP 橋接）。不是偏好 scoped，是原名拿不到。
+  README 因此需要說清楚本專案的差異在哪（registry 架構、背景 job、circuit breaker、
+  direct-api），否則會被當成同一個東西。
+
+  **為什麼現在才發**：從原始碼安裝要 clone + build + 手動指到 `dist/server.js`，
+  這讓「想試一下」的成本高到不合理。`files` 只收 `dist` 與四份文件——`npm pack --dry-run`
+  實測 70 檔 216 kB，沒有夾帶 `node_modules` 或一次性測試輸出。（Claude，moerasermax 指示）
+
+- **新增 `.github/workflows/ci.yml`**：三個 job，刻意分開而不是一個矩陣。
+
+  `test` 只跑 windows-latest（node 20.19 / 22）——ConPTY runner 與 CLI 解析路徑
+  只在 Windows 被實際走過，所以**只有這個 job 是閘門**。`build-posix` 在
+  ubuntu/macos 上跑 `typecheck` + `build`，擋的是型別與建置回歸，不宣稱執行期正確。
+  `test-posix-experimental` 標 `continue-on-error`，因為**這套測試從來沒有在 POSIX 上
+  跑過**，先讓它跑出來看看走多遠，在真的綠之前不准它擋合併，也不准它回報自己沒掙來的成功。
+
+  這與 6.0.0「工具要對呼叫端說實話」同源：一個把沒驗證過的平台算成綠的 badge，
+  比沒有 badge 更糟。（Claude，moerasermax 指示）
+
+- **新增 `SECURITY.md`**：載明 threat model 而不只是回報信箱——這個工具會**執行本機
+  binary**、並**讀取 `providers.json` 裡的明文 API key**。這兩件事決定了它不該被暴露到
+  網路邊界或多租戶環境，講清楚比列一個支援版本表重要。（Claude，moerasermax 指示）
+
+- README 加上 CI / npm / License badge，Quick start 改成「npm 一行」與「從原始碼」
+  兩條路並列。（Claude，moerasermax 指示）
+
 ### 新增（派工建議表的 hook 進版控）
 
 - 新增 `tools/hooks/aicli-model-policy.py`：Claude Code 的 SessionStart hook，

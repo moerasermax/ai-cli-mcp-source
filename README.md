@@ -1,5 +1,9 @@
 # ai-cli-mcp
 
+[![CI](https://github.com/moerasermax/ai-cli-mcp-source/actions/workflows/ci.yml/badge.svg)](https://github.com/moerasermax/ai-cli-mcp-source/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40moerasermax%2Fai-cli-mcp)](https://www.npmjs.com/package/@moerasermax/ai-cli-mcp)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Run local AI CLIs — Claude, Codex, Antigravity (`agy`) — and **any third-party
 OpenAI-compatible API** as MCP tools, with background jobs. Self-maintained from
 source, built on a registry architecture: adding an agent means adding one file.
@@ -12,16 +16,24 @@ Requires Node `^20.19.0 || >=22.12.0`.
 
 ## Quick start
 
+From npm — nothing to build:
+
 ```bash
-git clone <repo-url> ai-cli-mcp-source
+claude mcp add ai-cli -s user -- npx -y @moerasermax/ai-cli-mcp
+```
+
+From source — if you intend to change it:
+
+```bash
+git clone https://github.com/moerasermax/ai-cli-mcp-source
 cd ai-cli-mcp-source
 npm install     # triggers build via the prepare script and produces dist/
 claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 ```
 
-`dist/` is not version-controlled, so the build has to run before first use.
-`npm install` runs it through the `prepare` script, so a separate `npm run build`
-is normally unnecessary.
+`dist/` is not version-controlled, so the source install has to build before first
+use. `npm install` runs it through the `prepare` script, so a separate
+`npm run build` is normally unnecessary.
 
 ## What it does
 

@@ -1,14 +1,45 @@
 {
-  "name": "ai-cli-mcp",
+  "name": "@moerasermax/ai-cli-mcp",
   "version": "6.0.0",
   "description": "Run Claude, Codex, Antigravity (agy), and any third-party OpenAI-compatible API through MCP with background jobs. Self-maintained, registry-based architecture.",
-  "private": true,
-  "homepage": "https://github.com/moerasermax/ai-cli-mcp-source/blob/master/CHANGELOG.md",
+  "license": "Apache-2.0",
+  "author": "moerasermax",
+  "homepage": "https://github.com/moerasermax/ai-cli-mcp-source#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moerasermax/ai-cli-mcp-source.git"
+  },
+  "bugs": {
+    "url": "https://github.com/moerasermax/ai-cli-mcp-source/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "claude-code",
+    "codex",
+    "ai-agent",
+    "cli",
+    "background-jobs",
+    "circuit-breaker",
+    "openai-compatible"
+  ],
   "type": "module",
   "main": "dist/server.js",
   "bin": {
     "ai-cli": "dist/bin/ai-cli.js",
     "ai-cli-mcp": "dist/bin/ai-cli-mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-TW.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
