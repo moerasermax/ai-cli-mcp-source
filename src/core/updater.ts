@@ -76,7 +76,7 @@ const POST_UPDATE_ACTIONS: ReadonlyArray<{ sha: string; action: string }> = [
       '  然後跑：node tools/check-gate-removed.mjs（檢查七處，全乾淨回 exit 0；只回報不改設定）',
   },
   {
-    sha: 'HOOKSHA',
+    sha: '020984d',
     action:
       '【要動手，選用】派工建議表現在也有一份 Claude Code 的 SessionStart hook，' +
       '會在每個 session 開頭直接告訴模型「什麼情境派哪一顆」，不必等它想到要查 models。\n' +

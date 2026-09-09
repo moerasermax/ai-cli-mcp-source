@@ -7,6 +7,26 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（派工建議表的 hook 進版控）
+
+- 新增 `tools/hooks/aicli-model-policy.py`：Claude Code 的 SessionStart hook，
+  在每個 session 開頭注入派工建議表與 NVIDIA 那批的實測注意事項。
+
+  **為什麼要進版控**：原本那份 hook 只在作者機器的 `~/.claude/scripts/` 底下，
+  push 不出去、其他機器拿不到——而它正是「每個 session 開頭主動告訴模型該派哪顆」
+  的那一半。`models` 的 `dispatchGuidance` 隨自動更新過去了，hook 沒有。
+
+  裝好之後它隨 `git pull` 更新，**內容改了不必重裝、也不必再動 `settings.json`**。
+  安裝方式寫在檔頭。
+
+  **ai-cli 不會自己去改你的 `settings.json`。** 派工工具靜默改寫使用者的
+  Claude Code 設定是壞設計——那是他的環境，他該知道被動了什麼。
+  （這與 2026-09-08 移除驗證閘門時的判斷一致：偵測並提醒，不代為安裝。）
+
+- 更新後提醒新增第三則（綁 `020984d`），讓拉到這一版的機器自己看到安裝步驟。
+  不裝也行——同一份建議在 `models` 的 `dispatchGuidance` / `knownBadModels` 裡，
+  那個不需要安裝；hook 的差別只是「不必等 AI 想到要查」。
+
 ### 新增（派工建議表）
 
 - 新增 `models` 回傳的 `dispatchGuidance` 與 `knownBadModels`：依情境該派哪一顆、
