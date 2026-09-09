@@ -115,6 +115,12 @@ export interface FileStartOptions {
   model?: string;
   session_id?: string;
   reasoning_effort?: string;
+  /**
+   * 只給這些能力 → 走 agent 的 strict builder（fail-closed，見 command-builder.ts）。
+   * 這一條與 process-service 必須同時支援：兩條啟動路徑只有一條擋得住，
+   * 等於呼叫端要看運氣才知道自己有沒有被限制住。
+   */
+  capabilities?: readonly string[];
 }
 
 export class FileProcessService {
@@ -148,6 +154,7 @@ export class FileProcessService {
       model: options.model,
       session_id: options.session_id,
       reasoning_effort: options.reasoning_effort,
+      ...(options.capabilities !== undefined ? { capabilities: options.capabilities } : {}),
       cliPaths: this.cliPaths,
     } as BuildCliCommandOptions);
     // 熔斷器：偵測同一行程內框架迴圈造成的爆量/重複啟動。

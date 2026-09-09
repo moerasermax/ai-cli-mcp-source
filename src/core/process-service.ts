@@ -39,6 +39,11 @@ export interface StartProcessOptions {
   model?: string;
   session_id?: string;
   reasoning_effort?: string;
+  /**
+   * 只給這些能力 → 走 agent 的 strict builder（fail-closed，見 command-builder.ts）。
+   * 不傳 = 沒有意見 = 一般模式；傳空陣列 = 什麼都不給，仍走 strict。
+   */
+  capabilities?: readonly string[];
 }
 
 class DirectManagedProcess extends EventEmitter {

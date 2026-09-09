@@ -146,6 +146,12 @@ ${getSupportedModelsDescription()}
                 description:
                   'Optional session ID to resume a previous session. Supported for Claude, Codex, Antigravity, and direct-api. direct-api stores sessions under workFolder/.tmp/api_sessions.',
               },
+              capabilities: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Restrict what the agent may do. Give it and the agent starts through its STRICT builder instead of the normal one: claude gets --allowedTools Read,Glob,Grep with no --dangerously-skip-permissions, codex gets --sandbox read-only. A read-only turn is ["fs/read", "analysis/produce"]. OMITTING this field keeps the long-standing behaviour: unrestricted, with the vendor permission bypasses on. An EMPTY array is NOT the same as omitting it — empty means "no capabilities at all" and still goes through the strict builder. If the selected agent has no strict builder the call is REFUSED rather than quietly falling back to the permissive one.',
+              },
             },
             required: ['workFolder'],
           },
@@ -515,6 +521,11 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
         model: toolArguments.model as string | undefined,
         session_id: toolArguments.session_id as string | undefined,
         reasoning_effort: toolArguments.reasoning_effort as string | undefined,
+        // 存在才轉送——`undefined`（沒有意見）與 `[]`（什麼都不給）必須分得開，
+        // 折成同一件事會讓一個要求限制的呼叫端拿到全開權限而不自知。
+        ...(Array.isArray(toolArguments.capabilities)
+          ? { capabilities: (toolArguments.capabilities as unknown[]).map(String) }
+          : {}),
       });
       return this.jsonResult({ ...result, updateNotice: consumeNotice() });
     } catch (error) {

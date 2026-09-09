@@ -210,19 +210,20 @@ export function planExec(request: ExecRequest): ExecPlan {
   }
 
   /*
-    ★ fail-closed 的那一行。沒有嚴格模式就拒絕——**不退回** buildCommand，
-      那會帶著 --dangerously-* 全開權限跑。
-      檢查刻意放在 buildCliCommand **之前**：拒絕的理由要是「這個 agent 沒有
-      嚴格模式」，而不是它在組指令時碰巧先炸掉的某個別的原因。
-  */
-  const strict = agent.buildStrictCommand;
-  if (requestedAuthority !== 'unrestricted' && typeof strict !== 'function') {
-    throw new Error(
-      `agent「${agent.id}」沒有嚴格模式（buildStrictCommand），exec 拒絕啟動。` +
-        '退回一般模式會帶著權限旁路執行，而呼叫端以為有限制——不做這件事。'
-    );
-  }
+    ★ fail-closed 那一段現在住在 `buildCliCommand` 裡（傳了 capabilities 就走
+      strict builder，agent 沒有 strict builder 就丟錯、不退回一般模式）。
 
+      這裡本來有一份自己的：先檢查 `agent.buildStrictCommand`、組一次一般指令、
+      再把結果拆開餵給 strict 重組。它跟 command-builder 那份「看起來在講同一件事」，
+      而那正是問題——MCP `run` 現在也要能表達「這一回合不要動我的檔案」，
+      權限政策抄成兩份的下場，是其中一份哪天漏改而沒有人發現：兩邊都還跑得動，
+      只有一邊真的擋得住。
+
+      順帶修掉舊版的一個不一致：它傳給 strict 的 `reasoningEffort` 是
+      `request.reasoningEffort ?? ''`，也就是呼叫端沒指定時就送空字串進去，
+      跳過了 alias 解析與設定檔預設。走同一個入口之後，scoped 與 unrestricted
+      拿到的是同一套解析結果。
+  */
   const built = buildCliCommand({
     workFolder: request.cwd,
     prompt: request.prompt,
@@ -232,33 +233,16 @@ export function planExec(request: ExecRequest): ExecPlan {
       ? { reasoning_effort: request.reasoningEffort }
       : {}),
     ...(request.sessionId !== undefined ? { session_id: request.sessionId } : {}),
+    // 呼叫端**要求**不限制時不傳 capabilities——那不是 fail-closed 的退回，
+    // 是它自己明確寫出授權並負責。退回指的是「要求限制、給不出、卻偷偷放寬」。
+    ...(requestedAuthority === 'unrestricted'
+      ? {}
+      : { capabilities: request.capabilities ?? [] }),
   });
 
-  if (requestedAuthority === 'unrestricted') {
-    /*
-      呼叫端**要求**不限制——這不是 fail-closed 的退回。
-      退回是「呼叫端要求限制、我們給不出、卻偷偷放寬」；
-      這裡是呼叫端明確寫出授權，由它自己負責。用 vendor 的一般組裝。
-    */
-    return { authority: 'unrestricted', agent, built };
-  }
-
-  return {
-    authority: 'scoped',
-    agent,
-    built: (strict as NonNullable<typeof strict>)(
-      {
-        cliPath: built.cliPath,
-        cwd: built.cwd,
-        prompt: built.prompt,
-        resolvedModel: built.resolvedModel,
-        rawModel: request.model,
-        reasoningEffort: request.reasoningEffort ?? '',
-        ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
-      },
-      request.capabilities ?? []
-    ),
-  };
+  return requestedAuthority === 'unrestricted'
+    ? { authority: 'unrestricted', agent, built }
+    : { authority: 'scoped', agent, built };
 }
 
 export async function runExec(): Promise<number> {

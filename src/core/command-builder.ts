@@ -30,6 +30,20 @@ export interface BuildCliCommandOptions {
   session_id?: string;
   reasoning_effort?: string;
   cliPaths: Partial<Record<AgentId, string>>;
+  /**
+   * 只給這些能力（例如 `['fs/read', 'analysis/produce']`）。
+   *
+   * **給了就走 agent 的 `buildStrictCommand`，沒給才是一般模式。**
+   * 一般模式帶的是 `--dangerously-skip-permissions`（claude）與
+   * `--dangerously-bypass-approvals-and-sandbox`（codex）——那是刻意的，
+   * 因為呼叫端沒有表達任何限制。但呼叫端**一旦表達了**，就不能退回那條路：
+   * agent 沒有 `buildStrictCommand` 就丟錯，不退回一般模式（fail-closed）。
+   *
+   * 空陣列與 `undefined` 是**不同**的意思：空陣列是「什麼能力都不給」（仍走 strict），
+   * `undefined` 才是「沒有意見」。把兩者折成同一件事，等於讓一個要求限制的呼叫端
+   * 拿到全開權限而不自知——那是最糟的一種說謊，因為它看起來成功了。
+   */
+  capabilities?: readonly string[];
 }
 
 interface ModelSelection {
@@ -154,7 +168,7 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
     reasoningEffort = resolveDefaultReasoningEffort(agent, rawModel, userConfig);
   }
 
-  return agent.buildCommand({
+  const input = {
     cliPath: options.cliPaths[agent.id] || '',
     cwd,
     prompt,
@@ -167,5 +181,28 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
         : undefined,
     providerName,
     providerModel,
-  });
+  };
+
+  /*
+    ★ fail-closed。呼叫端給了 capabilities，就不能退回帶 `--dangerously-*` 的一般模式。
+
+    這段邏輯在 `exec.ts` 已經有一份（planExec）。搬到這裡是為了讓它成為**唯一**的一份：
+    MCP `run` 也要能表達「這一回合不要動我的檔案」，而權限政策抄成兩份的下場，
+    是其中一份哪天漏改而沒有人發現——兩邊看起來都還跑得動。
+
+    檢查刻意放在呼叫 buildCommand **之前**：拒絕的理由要是「這個 agent 沒有嚴格模式」，
+    而不是它在組指令時碰巧先炸掉的某個別的原因。
+  */
+  if (options.capabilities !== undefined) {
+    const strict = agent.buildStrictCommand;
+    if (typeof strict !== 'function') {
+      throw new Error(
+        `agent「${agent.id}」沒有嚴格模式（buildStrictCommand），拒絕啟動。` +
+          '退回一般模式會帶著權限旁路執行，而呼叫端以為有限制——不做這件事。'
+      );
+    }
+    return strict(input, options.capabilities);
+  }
+
+  return agent.buildCommand(input);
 }
