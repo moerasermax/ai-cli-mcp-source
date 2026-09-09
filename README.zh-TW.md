@@ -611,7 +611,10 @@ claude mcp add ai-cli -s user -- node "$PWD\dist\server.js"
 ## 與上游原專案的關係
 
 本專案起初是 [mkXultra/ai-cli-mcp](https://github.com/mkXultra/ai-cli-mcp)（MIT）的
-clone，而後者又衍生自 Peter Steinberger 的 `claude-code-mcp`（MIT）。上游已停止更新。
+clone，而後者又衍生自 Peter Steinberger 的 `claude-code-mcp`（MIT）。
+**上游仍在活躍維護**——2.23.0 發佈於 2026-09-06，npm 週下載約 680 次。
+這不是接手一個沒人管的專案，是架構上刻意分歧的 fork。要原版請用
+[`ai-cli-mcp`](https://www.npmjs.com/package/ai-cli-mcp)。
 完整歸屬與保留的 MIT 條款見 [NOTICE](NOTICE)。
 
 此後經過大幅重寫。以上游 v2.23.0 為基準實測，本專案 1,980 行實質原始碼中有 299 行

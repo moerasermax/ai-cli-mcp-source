@@ -306,8 +306,11 @@ claude mcp add ai-cli -s user -- node "$PWD\dist\server.js"
 
 This project began as a clone of [mkXultra/ai-cli-mcp](https://github.com/mkXultra/ai-cli-mcp)
 (MIT), which is itself derived from Peter Steinberger's `claude-code-mcp` (MIT).
-Upstream is no longer being updated. See [NOTICE](NOTICE) for the full
-attribution and the retained MIT terms.
+**Upstream is actively maintained** — 2.23.0 shipped on 2026-09-06, and it has
+roughly 680 weekly npm downloads. This is not a rescue of an abandoned project;
+it is a fork that diverged on architecture. If you want the original, use
+[`ai-cli-mcp`](https://www.npmjs.com/package/ai-cli-mcp). See [NOTICE](NOTICE)
+for the full attribution and the retained MIT terms.
 
 It has since been substantially rewritten. Measured against upstream v2.23.0,
 about 15% of this tree's substantive source lines are still identical —
