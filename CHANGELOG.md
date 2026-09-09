@@ -7,6 +7,39 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（派工建議表）
+
+- 新增 `models` 回傳的 `dispatchGuidance` 與 `knownBadModels`：依情境該派哪一顆、
+  以及哪些已知不能用與為什麼。`src/models/catalog.ts`
+
+  **為什麼放進工具回傳而不是只寫在 README**：呼叫端是 AI，它讀的是工具回傳。
+  一份只存在文件裡的建議表等於只有人看得到，而真正在挑模型的是它。
+  直接理由是 NVIDIA 免費 API 接上之後，「量大但不難」的工作有了不吃訂閱額度的選項——
+  但那要指名才會用到，沒有這張表就仍然會拿訂閱額度去做不需要它的事。
+
+  | 情境 | 用什麼 |
+  |---|---|
+  | 日常派工 | `gpt-5.6-sol` + `reasoning_effort: high` |
+  | 同一個問題卡超過 5 次 | `gpt-6-astra`（最貴，別一開始就用） |
+  | 稽核／第二意見 | `claude-ultra` 或 `gemini-3.1-pro-high` |
+  | 大量低價值工作 | `nv-openai/gpt-oss-20b`（免費） |
+  | 長脈絡 | `nv-nvidia/nemotron-3.5-lightning-30b-a3b`（1M，免費） |
+  | 較難的 coding／agentic 但不想動訂閱額度 | `nv-meta/muse-glimmer-30b` |
+
+  每一筆的 `note` 都寫「為什麼」而不只是「用哪個」——沒有理由的建議會在情況變了之後
+  被照抄，而讀的人不知道它已經不成立。
+
+  `knownBadModels` 與 catalog 的 `routable: false` 不同：那個講「框架路由不到」，
+  這個講「路由得到但實測不能用」（kimi-k3 的 429、nemotron-3-nano 的 410、
+  gemma-4 的 91 秒工具迴圈、codex 清單裡三個帳號被擋的 model）。
+
+### 測試
+
+- `verify-alias-config.mjs` 增至 83 項，新增七條斷言。其中兩條是**一致性**檢查而不只是
+  存在性：日常派工建議必須與模型政策一致（sol + high，不是一開始就 astra）；
+  **建議表不可推薦出現在 `knownBadModels` 裡的模型**——那種矛盾靠人工看很容易漏掉。
+- 突變 73 → 76，逐一實測全部 KILLED。
+
 ### 新增（reasoning_content 回送）
 
 - 新增 `providers.json` 的 `replay_reasoning`：把上一輪 assistant 的 `reasoning_content`

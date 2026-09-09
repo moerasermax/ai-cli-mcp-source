@@ -123,6 +123,39 @@ async function main(baseConfig) {
   check('prototype key 不會回傳函式', typeof proto === 'string' && proto === 'constructor',
     `got ${typeof proto}`);
 
+
+  // ---- 派工建議表（呼叫端是 AI，它讀的是工具回傳，不是 README）----
+  {
+    const p = catalog.getModelsPayload();
+    check('models 帶 dispatchGuidance', Array.isArray(p.dispatchGuidance) && p.dispatchGuidance.length > 0);
+    check('models 帶 knownBadModels', Array.isArray(p.knownBadModels) && p.knownBadModels.length > 0);
+    check(
+      '每筆建議都有 situation / model / note',
+      p.dispatchGuidance.every((g) => g.situation && g.model && g.note),
+      JSON.stringify(p.dispatchGuidance.filter((g) => !(g.situation && g.model && g.note)))
+    );
+    // note 寫「為什麼」而不只是「用哪個」：沒有理由的建議會在情況變了之後被照抄，
+    // 而讀的人不知道它已經不成立。
+    check(
+      '每筆建議的 note 都不是空話（至少 10 字）',
+      p.dispatchGuidance.every((g) => g.note.length >= 10)
+    );
+    check(
+      '每筆 knownBadModels 都說得出原因',
+      p.knownBadModels.every((b) => b.model && b.reason && b.reason.length >= 10)
+    );
+    check(
+      '★ 日常派工建議與模型政策一致（sol + high，不是一開始就 astra）',
+      p.dispatchGuidance.some((g) => g.model === 'gpt-5.6-sol' && g.reasoningEffort === 'high'),
+      JSON.stringify(p.dispatchGuidance[0])
+    );
+    check(
+      '★ 已知不能用的模型沒有同時出現在建議表裡',
+      !p.dispatchGuidance.some((g) => p.knownBadModels.some((b) => g.model === b.model)),
+      '建議表不可推薦已知不能用的模型'
+    );
+  }
+
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });
   check('config 覆寫優先於內建表', catalog.resolveModelAlias('codex-ultra') === 'gpt-5.6-terra');
 

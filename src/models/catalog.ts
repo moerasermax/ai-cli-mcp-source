@@ -86,6 +86,86 @@ export function removedModelMessage(model: string): string {
 }
 
 /** alias 詳細資訊的內建定義。實際生效值請用 getEffectiveAliasDetails()。 */
+/**
+ * 依情境該派哪一顆——**這是建議，不是規則**，呼叫端可以有自己的判斷。
+ *
+ * 為什麼放進工具回傳而不是只寫在 README：呼叫端是 AI，它讀的是工具回傳。
+ * 一份只存在文件裡的建議表，等於只有人看得到；而真正在挑模型的是它。
+ *
+ * 2026-09-09 加上的直接理由：NVIDIA 免費 API 接上之後，「量大但不難」的工作
+ * 有了不吃訂閱額度的選項——但那要指名才會用到。沒有這張表，預設仍然會拿
+ * 訂閱額度去做不需要它的事。
+ *
+ * `note` 一律寫「為什麼」而不只是「用哪個」：沒有理由的建議會在情況變了之後
+ * 被照抄，而讀的人不知道它已經不成立。
+ */
+export const DISPATCH_GUIDANCE: ReadonlyArray<{
+  situation: string;
+  model: string;
+  reasoningEffort?: string;
+  note: string;
+}> = [
+  {
+    situation: '日常派工',
+    model: 'gpt-5.6-sol',
+    reasoningEffort: 'high',
+    note: '先用便宜的配高推理強度。astra 最貴，不要一開始就用。',
+  },
+  {
+    situation: '同一個問題卡超過 5 次',
+    model: 'gpt-6-astra',
+    reasoningEffort: 'high',
+    note: '升級時要寫明「第幾次、前幾次卡在哪」，不要靜默換模型。',
+  },
+  {
+    situation: '稽核／第二意見',
+    model: 'claude-ultra 或 gemini-3.1-pro-high',
+    note: '要換一家的視角才有意義；同一家的模型會犯同一種錯。結果要逐條驗證，不要照單全收。',
+  },
+  {
+    situation: '大量低價值工作（分類、摘要、格式轉換、批次改寫）',
+    model: 'nv-openai/gpt-oss-20b',
+    note: '走 NVIDIA 免費 API，不吃訂閱額度。實測 10/10、最快（5.1s）。不吃 reasoning_effort。',
+  },
+  {
+    situation: '長脈絡',
+    model: 'nv-nvidia/nemotron-3.5-lightning-30b-a3b',
+    note: '1M context、免費、實測 10/10。設定檔已配 reasoning_effort=none（28.0s → 6.1s）。',
+  },
+  {
+    situation: '較難的 coding／agentic，但不想動用訂閱額度',
+    model: 'nv-meta/muse-glimmer-30b',
+    note: '實測 10/10。hosted 預設 max_tokens 只有 2048 且與推理共用，設定檔已改成 16384。',
+  },
+];
+
+/**
+ * 已知不要派的，以及為什麼。
+ *
+ * 這一份跟 catalog 的 `routable: false` 不同：那個講的是「框架路由不到」，
+ * 這個講的是「路由得到但實測不能用」。清單列得出來 ≠ 能用——2026-09-09
+ * 在 NVIDIA 那批上學到的，`/v1/models` 回的 id 甚至可能是打不通的舊寫法。
+ */
+export const KNOWN_BAD_MODELS: ReadonlyArray<{ model: string; reason: string }> = [
+  {
+    model: 'nv-moonshotai/kimi-k3',
+    reason: '429 額度爭用，實測 3/10；連 8 次指數退避都打不穿。不是尖峰抖動，重試救不了。',
+  },
+  {
+    model: 'nv-nvidia/nemotron-3-nano-30b-a3b',
+    reason: '410 Gone，已終止服務。/v1/models 仍會列出一個打不通的舊 id（nemotron-nano-3-…）。',
+  },
+  {
+    model: 'nv-google/gemma-4-31b-it',
+    reason: '工具迴圈要 91 秒。純文字（prompt 開頭加 [no-tools]）14 秒還可以。',
+  },
+  {
+    model: 'gpt-5.4 / gpt-5.3-codex / gpt-5.2',
+    reason: '這個 ChatGPT 帳號被擋（not supported when using Codex with a ChatGPT account）。靜態清單還留著而已。',
+  },
+];
+
+
 export const MODEL_ALIAS_DETAILS: ModelAliasDetail[] = [
   { name: 'claude-ultra', resolvesTo: 'opus', agent: 'claude', defaultReasoningEffort: 'max' },
   { name: 'codex-ultra', resolvesTo: 'gpt-6-astra', agent: 'codex', defaultReasoningEffort: 'max' },
@@ -314,6 +394,12 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
       providers.json 才知道。不含 api_key；讀不到時回 note 而不是丟錯。
     */
     directApiProviders: describeConfiguredProviders(),
+    /*
+      依情境該派哪一顆。呼叫端是 AI，它讀的是工具回傳——一份只寫在 README 的
+      建議表等於只有人看得到，而真正在挑模型的是它。
+    */
+    dispatchGuidance: DISPATCH_GUIDANCE,
+    knownBadModels: KNOWN_BAD_MODELS,
     userConfig: {
       ...describeUserConfig(snapshot),
       builtinAliasModel: MODEL_ALIASES,
