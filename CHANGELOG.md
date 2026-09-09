@@ -8,6 +8,26 @@
 
 ## [Unreleased]
 
+### 新增（給 AI agent 的開場必讀檔）
+
+- **新增 `CLAUDE.md`。** 這棵樹先前沒有 `CLAUDE.md`、也沒有 `.claude/`，
+  於是 2026-09-09 這一整批對外整備（改名 `tkflyc-ai-cli`、npm 發佈
+  `@tkflyc/ai-cli-mcp`、授權改 Apache-2.0、POSIX CI 升為閘門）**只留在
+  git log 裡**——要人主動去翻才看得到，不是開場就會撞見的東西。
+
+  結果是下一個開在這個目錄的 agent 會以為 repo 還叫 `ai-cli-mcp`、還是 MIT、
+  還沒發過 npm，然後重提已經做完或已經否決的事。
+
+  新檔只寫兩類內容：**現況**（名字／版本／授權／CI 閘門範圍）與**紅線**
+  （NOTICE 不可移出 `files`、不要寫上游停更、POSIX CI 不准降回實驗、
+  發版先打 tag、`process.exit()` 前要排空 stdout、不造假社群訊號）。
+  流程規則不重複，指回 `CONTRIBUTING.md`。（Claude，moerasermax 指示）
+
+### 修正（文件數字）
+
+- `CONTRIBUTING.md` 寫 `npm test` 串起「九支」驗證腳本，但同一句括號裡列了十支。
+  改為十支。（Claude）
+
 ### 修正（事實錯誤：上游並未停更）
 
 - **README（中英）先前寫「上游已停止更新 / no longer being updated」，這是錯的。**
