@@ -12,14 +12,20 @@ import {
 } from './binary-resolver.js';
 import type { CliPaths } from './process-service.js';
 import { getUpdateStatus, type UpdateResult } from './updater.js';
+import { getServerIdentity, type ServerIdentity } from './identity.js';
 
-/** doctor：所有 agent 的二進位可用性。 */
-export function getCliDoctorStatus(): { [key: string]: CliDoctorStatus[string] | UpdateResult; checks: CliDoctorStatus['checks']; update: UpdateResult } {
+/**
+ * doctor：所有 agent 的二進位可用性，外加這個 server 自己的身分。
+ *
+ * `server` 那欄不是裝飾：呼叫端只從 MCP 註冊看得到一行 `node .../dist/server.js`，
+ * 認不出這是哪個 repo／npm 套件。見 identity.ts 檔頭。
+ */
+export function getCliDoctorStatus(): { [key: string]: CliDoctorStatus[string] | UpdateResult | ServerIdentity; checks: CliDoctorStatus['checks']; update: UpdateResult; server: ServerIdentity } {
   return { ...buildDoctorStatus(
     listAgents()
       .filter((a) => a.binary)
       .map((a) => ({ id: a.id, config: a.binary! }))
-  ), update: getUpdateStatus() };
+  ), update: getUpdateStatus(), server: getServerIdentity() };
 }
 
 /** 解析每個 agent 的 CLI 路徑，組成 ProcessService 需要的 CliPaths。 */

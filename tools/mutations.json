@@ -581,5 +581,29 @@
     "to": "    dispatchGuidance: [],",
     "expect": "呼叫端是 AI，建議表要在工具回傳裡",
     "script": "verify-alias-config.mjs"
+  },
+  {
+    "name": "normalizeRepositoryUrl 沒剝掉 git+ 前綴（回傳 git URL 而不是可瀏覽網址）",
+    "file": "src/core/identity.ts",
+    "from": "  return url.replace(/^git\\+/, '').replace(/\\.git$/, '');",
+    "to": "  return url.replace(/\\.git$/, '');",
+    "expect": "server.repository 是可瀏覽網址而不是 git URL",
+    "script": "verify-mcp.mjs"
+  },
+  {
+    "name": "identity 沒把 package.json 的 version 接上（回 null）",
+    "file": "src/core/identity.ts",
+    "from": "      version: typeof pkg.version === 'string' ? pkg.version : null,",
+    "to": "      version: null,",
+    "expect": "說得出自己的套件名與版本",
+    "script": "verify-mcp.mjs"
+  },
+  {
+    "name": "doctor 自己編一份空身分，與 models 分岔",
+    "file": "src/core/doctor.ts",
+    "from": "  ), update: getUpdateStatus(), server: getServerIdentity() };",
+    "to": "  ), update: getUpdateStatus(), server: { name: null, version: null, repository: null, homepage: null } };",
+    "expect": "doctor 與 models 回報同一個身分",
+    "script": "verify-mcp.mjs"
   }
 ]

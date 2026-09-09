@@ -13,7 +13,6 @@ import {
   McpError,
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createRequire } from 'node:module';
 import { debugLog } from '../core/debug.js';
 import { getCliDoctorStatus, resolveAllCliPaths } from '../core/doctor.js';
 import {
@@ -33,9 +32,11 @@ import { ProcessService } from '../core/process-service.js';
 import { CircuitBreakerError } from '../core/circuit-breaker.js';
 import { UsageService } from '../plugins/usage-service.js';
 import { consumeNotice, scheduleBackgroundUpdates } from '../core/updater.js';
+import { getServerIdentity } from '../core/identity.js';
 
-const require = createRequire(import.meta.url);
-const SERVER_VERSION = (require('../../package.json') as { version: string }).version;
+// 版本與 doctor / models 回傳的 server.version 取自同一份來源，避免兩處各讀一次
+// package.json 而在某天分岔。identity 讀不到時回 null，握手仍需要一個字串。
+const SERVER_VERSION = getServerIdentity().version ?? '0.0.0';
 
 let isFirstToolUse = true;
 const serverStartupTime = new Date().toISOString();

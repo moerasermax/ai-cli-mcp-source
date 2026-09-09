@@ -18,6 +18,10 @@ const log = (...a) => logs.push(a.join(' '));
 process.on('exit', () => writeFileSync('mcp-test-out.txt', logs.join('\n') + '\n'));
 
 const dist = (relative) => fileURLToPath(new URL(`./dist/${relative}`, import.meta.url));
+const PKG = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'));
+// 從 git URL 另外算一次 owner/repo：**不呼叫 src 的 normalizeRepositoryUrl**。
+// 用同一段邏輯驗同一段邏輯等於沒驗（這個專案吃過三次這種假綠燈的虧）。
+const PKG_SLUG = String(PKG.repository?.url ?? '').replace(/\.git$/, '').split('/').slice(-2).join('/');
 const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-mcp-smoke-'));
 const stub = fileURLToPath(new URL(`./tools/stubs/agy-models-slow.${process.platform === 'win32' ? 'cmd' : 'mjs'}`, import.meta.url));
 if (process.platform !== 'win32') chmodSync(stub, 0o755);
@@ -108,10 +112,26 @@ async function checkEntry(entry) {
   }
   log('antigravity present; gemini/kiro/forge absent');
 
+  // 身分：呼叫端只從 MCP 註冊看得到 `node .../dist/server.js`，認不出這是哪個
+  // repo／npm 套件。2026-09-09 改名後，去查外部紀錄拿到的是改名前的答案。
+  const identity = modelsPayload.server;
+  check(identity?.name === PKG.name && identity?.version === PKG.version,
+    `${entry.name} models 說得出自己的套件名與版本`,
+    `name=${identity?.name} version=${identity?.version}`);
+  check(typeof identity?.repository === 'string'
+    && identity.repository.startsWith('https://')
+    && !identity.repository.endsWith('.git')
+    && identity.repository.endsWith(PKG_SLUG),
+    `${entry.name} server.repository 是可瀏覽網址而不是 git URL`,
+    `repository=${identity?.repository}`);
+
   const doctor = await client.callTool({ name: 'doctor', arguments: {} });
   const doctorPayload = JSON.parse(doctor.content[0].text);
   const avail = Object.keys(doctorPayload).filter((k) => k !== 'checks' && doctorPayload[k].available).join(', ');
   log(`doctor available CLIs = ${avail}`);
+  check(JSON.stringify(doctorPayload.server) === JSON.stringify(modelsPayload.server),
+    `${entry.name} doctor 與 models 回報同一個身分`,
+    `doctor=${JSON.stringify(doctorPayload.server)}`);
 
   const list = await client.callTool({ name: 'list_processes', arguments: {} });
   log(`list_processes: ${list.content[0].text.trim()}`);

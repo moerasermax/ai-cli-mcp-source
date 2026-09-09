@@ -12,6 +12,7 @@ import { buildCatalogV2 } from './catalog-v2.js';
 import type { AgentId } from '../agents/types.js';
 import { acceptsConfiguredEffort } from '../core/reasoning.js';
 import { consumeNotice } from '../core/updater.js';
+import { getServerIdentity } from '../core/identity.js';
 import {
   describeUserConfig,
   loadUserConfigSnapshot,
@@ -354,6 +355,15 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
   const { config } = snapshot;
   return {
     updateNotice: consumeNotice(),
+    /*
+      這個 server 自己的身分（npm 套件名、版本、repo）。
+
+      呼叫端多半是另一個 AI，而它從 MCP 註冊只看得到一行
+      `node <path>/dist/server.js` —— 認得出「有 ai-cli 這組工具」，
+      認不出對應哪個 repo。2026-09-09 改名後，去查外部紀錄拿到的是舊答案。
+      身分由工具自己講，才不會依賴外部紀錄有沒有跟上。見 core/identity.ts。
+    */
+    server: getServerIdentity(),
     aliases: getEffectiveAliasDetails(config).map((alias) => {
       // 只回報「真的會被送進 CLI」的 effort，規則與 command-builder 送出時共用同一個
       // acceptsConfiguredEffort：agent 不支援 reasoning（agy / direct-api），或值不在該 agent
