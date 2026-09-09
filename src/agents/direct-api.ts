@@ -504,6 +504,63 @@ export function listConfiguredProviderKeys(): string[] {
   return Object.keys(loadProvidersConfig().providers);
 }
 
+export interface ConfiguredProviderSummary {
+  /** 可以用來派工的前綴（provider key 本身，加上指向它的內建簡寫）。 */
+  prefixes: string[];
+  baseUrl: string;
+  /**
+   * **設定檔裡點名過的 model**，不是這個 provider 的完整目錄。
+   * 來源是 `model_extra_body` 的 key——會被特別設定的通常就是實際在用的那幾顆。
+   */
+  knownModels: string[];
+  /** 直接可以複製去用的 model 參數。 */
+  example: string;
+}
+
+/**
+ * 這台機器上有哪些 direct-api provider 可以派工。
+ *
+ * 為什麼需要：`DIRECT_API_MODELS` 只有四個佔位字串（`or-<model>` 之類），
+ * 所以 `models` 的回傳**看不出這台機器實際設了什麼**——2026-09-09 有人在另一個專案問
+ * 「NVIDIA 的模型呢」，答案是工具根本沒告訴他。已設定的 provider 是本機狀態，
+ * 只有讀 providers.json 才知道。
+ *
+ * 三條硬性規則：
+ * 1. **永不回傳 api_key。** 這個結構會被原樣送進工具回傳。
+ * 2. **永不丟錯。** providers.json 壞掉不該讓整個 `models` 陣亡——回 `note` 說明讀不到，
+ *    讓呼叫端看得出是「讀不到」而不是「沒有設定」。誠實的降級標示比空陣列有用。
+ * 3. **不查網路。** 只讀本機設定檔；列舉 provider 的完整目錄要打 API，那是 `models`
+ *    的同步路徑不能做的事（2026-09-05 agy 那次的教訓）。
+ */
+export function describeConfiguredProviders(): {
+  configured: Record<string, ConfiguredProviderSummary>;
+  note: string | null;
+} {
+  let providers: Record<string, ProviderConfig>;
+  try {
+    providers = loadProvidersConfig().providers;
+  } catch (error) {
+    return { configured: {}, note: `讀不到 ${providersPath()}：${(error as Error).message}` };
+  }
+  const configured: Record<string, ConfiguredProviderSummary> = {};
+  for (const [name, provider] of Object.entries(providers)) {
+    const prefixes = [
+      name,
+      ...Object.entries(PROVIDER_PREFIX_ALIASES)
+        .filter(([, target]) => target === name)
+        .map(([alias]) => alias),
+    ];
+    const knownModels = Object.keys(provider.model_extra_body ?? {});
+    configured[name] = {
+      prefixes,
+      baseUrl: provider.base_url,
+      knownModels,
+      example: `${prefixes[prefixes.length - 1]}-${knownModels[0] ?? '<model>'}`,
+    };
+  }
+  return { configured, note: null };
+}
+
 function getProviderConfig(providerName: string): ProviderConfig {
   const config = loadProvidersConfig();
   const provider = config.providers[providerName];

@@ -7,6 +7,42 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（讓機器知道自己有什麼、還缺什麼）
+
+- **`models` 現在列得出這台機器設定了哪些 direct-api provider**（`directApiProviders`）。
+  舊的 `direct-api` 陣列只有四個佔位字串（`or-<model>` 之類），**看不出本機實際設了什麼**——
+  2026-09-09 有人在另一個專案問「NVIDIA 的模型呢」，而工具根本沒告訴他。
+  已設定的 provider 是本機狀態，不在版控也不在靜態清單裡，只有讀 `providers.json` 才知道。
+  新欄位給每個 provider 的可用前綴（含 `or` / `ds` 這類內建簡寫）、`base_url`、
+  `model_extra_body` 裡點名過的 model，以及一個可以直接複製去派工的 `example`。
+  `src/agents/direct-api.ts`（`describeConfiguredProviders`）、`src/models/catalog.ts`
+
+  三條硬性規則：**永不回傳 `api_key`**（這個結構會原樣進工具回傳）、
+  **永不丟錯**（`providers.json` 壞掉時回 `note` 說明讀不到，不能讓整個 `models` 陣亡——
+  「讀不到」與「沒設定」對呼叫端是兩件事）、**不查網路**（只讀本機檔案；
+  列舉 provider 的完整目錄要打 API，那是 `models` 同步路徑不能做的事）。
+
+- **更新完畢後的提醒現在會列出「需要人在那台機器上動手」的事**（`postUpdateActions`）。
+  自動更新帶得動 repo 裡的東西，帶不動每台機器自己的狀態：`providers.json` 的 API 金鑰
+  不在版控裡，`~/.claude/plugins/` 的副本 `git pull` 也碰不到。這種事只有站在那台機器前的人
+  做得到，而他不會知道要做——除非我們說。`src/core/updater.ts`
+
+  **提醒綁 commit，不是固定文字**：key 是引入那件事的 commit，只有當這次更新真的包含
+  該 commit 時才附上。所以每台機器只會看到一次，已經更新過的不會再被提醒。
+  寫成固定文字的話會變成每次更新都出現的永久噪音，然後被忽略。
+
+  目前有兩則：移除驗證閘門的 plugin（`4a06d74`）、要用 NVIDIA 就自己加 provider（`b8f7865`）。
+
+### 測試
+
+- `verify-extra-body.mjs` 42 → 48 項（新增 provider 列舉：不外流金鑰、內建簡寫要列出、
+  設定檔壞掉回 note 不丟錯）。
+- `verify-update.mjs` 45 → 51 項（新增提醒綁 commit：不相關的 commit 不給提醒、
+  短碼只比對前綴不是任意位置）。
+- 突變 64 → 69，逐一實測全部 KILLED。其中兩個第一版是被**編譯器**殺掉的而不是斷言——
+  那證明不了測試有效，改成型別合法的形式（`baseUrl` 誤填成 `api_key`、`prefixes` 只留
+  provider key）之後才是真的由斷言抓到。
+
 ### 新增（direct-api 的重試）
 
 - 新增 429／5xx 的退避重試。共享的免費端點在尖峰會限流與卸載——NVIDIA 自己的故障排除文件寫明

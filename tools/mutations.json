@@ -485,5 +485,45 @@
     "to": "    if (!isRetryableStatus(response.status) || attempt >= maxRetries + 2) {",
     "expect": "重試次數必須等於設定值，不能自己多送",
     "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "baseUrl 誤填成 api_key（金鑰隨工具回傳外流）",
+    "file": "src/agents/direct-api.ts",
+    "from": "baseUrl: provider.base_url,",
+    "to": "baseUrl: provider.api_key,",
+    "expect": "這個結構會原樣進工具回傳，不可含金鑰",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "providers.json 壞掉時往上丟錯（整個 models 陣亡）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    return { configured: {}, note: `讀不到 ${providersPath()}：${(error as Error).message}` };",
+    "to": "    throw error;",
+    "expect": "讀不到要回 note，不能讓 models 掛掉",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "只列 provider key，內建簡寫被吃掉（使用者不知道可以用 or-）",
+    "file": "src/agents/direct-api.ts",
+    "from": "    const prefixes = [\r\n      name,\r\n      ...Object.entries(PROVIDER_PREFIX_ALIASES)\r\n        .filter(([, target]) => target === name)\r\n        .map(([alias]) => alias),\r\n    ];",
+    "to": "    const prefixes = [name];",
+    "expect": "openrouter 要同時列出 or",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "更新後提醒改成無條件附上（變成每次都出現的永久噪音）",
+    "file": "src/core/updater.ts",
+    "from": "  return POST_UPDATE_ACTIONS.filter(({ sha }) => commits.some((c) => c.sha.startsWith(sha))).map(",
+    "to": "  return POST_UPDATE_ACTIONS.filter(() => true).map(",
+    "expect": "不相關的 commit 不該給提醒",
+    "script": "verify-update.mjs"
+  },
+  {
+    "name": "短碼比對用 includes 而非 startsWith（任意位置含該片段就誤中）",
+    "file": "src/core/updater.ts",
+    "from": "commits.some((c) => c.sha.startsWith(sha))",
+    "to": "commits.some((c) => c.sha.includes(sha))",
+    "expect": "短碼只比對前綴",
+    "script": "verify-update.mjs"
   }
 ]

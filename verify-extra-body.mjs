@@ -33,7 +33,7 @@ function writeProviders(providers) {
 
 // 動態 import 一律提到頂層用 top-level await：ok() 只吃同步函式，
 // 在裡面 await 會讓斷言錯誤被吞掉而永遠 PASS（2026-09-08 的假綠燈教訓）。
-const { loadProvidersConfig, resolveExtraBody, directApiAgent } = await import(
+const { loadProvidersConfig, resolveExtraBody, directApiAgent, describeConfiguredProviders } = await import(
   './dist/agents/direct-api.js'
 );
 
@@ -423,6 +423,55 @@ const rOnlySuccess = await runWith([200], FAST);
 ok('一次就成功時不發 retry 事件', () => {
   assert.strictEqual(rOnlySuccess.calls, 1);
   assert.ok(!rOnlySuccess.events.includes('"type":"retry"'));
+});
+
+
+// ---------------------------------------------------------------- models 看得到 provider
+// 2026-09-09：另一個專案問「NVIDIA 的模型呢」，答案是 models 工具根本沒說。
+// DIRECT_API_MODELS 只有四個佔位字串，已設定的 provider 是**本機狀態**，
+// 不在版控也不在靜態清單裡，只有讀 providers.json 才知道。
+console.log('\n[models 看得到已設定的 provider]');
+
+ok('列出已設定的 provider 與可用前綴', () => {
+  writeProviders({ nv: { ...BASE }, openrouter: { base_url: 'https://x.test/v1', api_key: 'k' } });
+  const d = describeConfiguredProviders();
+  assert.deepStrictEqual(Object.keys(d.configured).sort(), ['nv', 'openrouter']);
+  assert.deepStrictEqual(d.configured.nv.prefixes, ['nv']);
+  assert.deepStrictEqual(d.configured.openrouter.prefixes, ['openrouter', 'or'], '內建簡寫也要列出來');
+  assert.strictEqual(d.note, null);
+});
+
+ok('★ 永遠不回傳 api_key', () => {
+  writeProviders({ nv: { base_url: 'https://x.test/v1', api_key: 'nvapi-SUPER-SECRET' } });
+  const dumped = JSON.stringify(describeConfiguredProviders());
+  assert.ok(!dumped.includes('SUPER-SECRET'), '這個結構會原樣進工具回傳，不可含金鑰');
+  assert.ok(!dumped.includes('api_key'), '連欄位名都不該出現');
+});
+
+ok('knownModels 來自 model_extra_body 的 key', () => {
+  writeProviders({ nv: { ...BASE, model_extra_body: { 'a/b': { max_tokens: 1 }, 'c/d': {} } } });
+  const nv = describeConfiguredProviders().configured.nv;
+  assert.deepStrictEqual(nv.knownModels, ['a/b', 'c/d']);
+  assert.strictEqual(nv.example, 'nv-a/b', 'example 要能直接複製去派工');
+});
+
+ok('沒有 model_extra_body 時 example 用佔位字串', () => {
+  writeProviders({ nv: { ...BASE } });
+  assert.strictEqual(describeConfiguredProviders().configured.nv.example, 'nv-<model>');
+});
+
+ok('★ providers.json 壞掉時回 note，不丟錯（不能讓整個 models 陣亡）', () => {
+  writeFileSync(providersPath, '{ this is not json', 'utf-8');
+  const d = describeConfiguredProviders();
+  assert.deepStrictEqual(d.configured, {}, '讀不到就是空的');
+  assert.ok(d.note && d.note.includes('讀不到'), '要說出是讀不到而不是沒設定，實際：' + d.note);
+});
+
+ok('provider 缺 api_key 時也是回 note 不丟錯', () => {
+  writeProviders({ nv: { base_url: 'https://x.test/v1' } });
+  const d = describeConfiguredProviders();
+  assert.deepStrictEqual(d.configured, {});
+  assert.ok(d.note);
 });
 
 console.log(failures === 0 ? '\n全部通過 ✅' : `\n有 ${failures} 項失敗 ❌`);

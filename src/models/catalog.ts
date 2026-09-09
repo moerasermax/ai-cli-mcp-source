@@ -7,7 +7,7 @@
  */
 
 import { listAgents, getAgent, selectAgentForModel } from '../agents/registry.js';
-import { resolveDirectApiModel } from '../agents/direct-api.js';
+import { describeConfiguredProviders, resolveDirectApiModel } from '../agents/direct-api.js';
 import { buildCatalogV2 } from './catalog-v2.js';
 import type { AgentId } from '../agents/types.js';
 import { acceptsConfiguredEffort } from '../core/reasoning.js';
@@ -305,6 +305,15 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
     dynamicModelBackends: {
       'direct-api': DIRECT_API_DYNAMIC_BACKEND,
     },
+    /*
+      這台機器實際設定了哪些 direct-api provider。
+
+      上面的 `direct-api` 陣列只有四個佔位字串（`or-<model>` 之類），看不出本機
+      設了什麼——2026-09-09 有人在另一個專案問「NVIDIA 的模型呢」，而工具根本沒說。
+      已設定的 provider 是**本機狀態**，不在版控也不在靜態清單裡，只有讀
+      providers.json 才知道。不含 api_key；讀不到時回 note 而不是丟錯。
+    */
+    directApiProviders: describeConfiguredProviders(),
     userConfig: {
       ...describeUserConfig(snapshot),
       builtinAliasModel: MODEL_ALIASES,

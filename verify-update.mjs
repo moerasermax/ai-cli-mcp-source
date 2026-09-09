@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import { applyUpdate, checkForUpdate, clearNoticeOnStartup, consumeNotice, getUpdateStatus, spawnUpdateCommand } from './dist/core/updater.js';
+import { applyUpdate, checkForUpdate, clearNoticeOnStartup, consumeNotice, getUpdateStatus, postUpdateActions, spawnUpdateCommand } from './dist/core/updater.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-update with spaces-'));
@@ -323,5 +323,36 @@ try {
   Object.assign(process.env, savedEnv);
   rmSync(TEMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
+
+// ---- 更新完畢後需要人動手的提醒（POST_UPDATE_ACTIONS）----
+// 自動更新帶得動程式碼，帶不動每台機器自己的狀態：providers.json 的金鑰不在版控裡、
+// ~/.claude/plugins/ 的副本 git pull 碰不到。這種事只有人做得到，而他不會知道要做。
+{
+  const full = (short) => short + "0".repeat(40 - short.length);
+  const gate = full("4a06d74");
+  const nvidia = full("b8f7865");
+
+  check("帶進閘門移除的 commit 時，提醒要移除 plugin",
+    postUpdateActions([{ sha: gate }]).length === 1 &&
+    postUpdateActions([{ sha: gate }])[0].includes("plugin uninstall"));
+
+  check("★ 帶進 NVIDIA 那個 commit 時，提醒要自己加 provider",
+    postUpdateActions([{ sha: nvidia }]).length === 1 &&
+    postUpdateActions([{ sha: nvidia }])[0].includes("providers.json") &&
+    postUpdateActions([{ sha: nvidia }])[0].includes("nvapi-"));
+
+  check("兩個都帶進來就給兩則", postUpdateActions([{ sha: gate }, { sha: nvidia }]).length === 2);
+
+  // 這條是整個機制的重點：已經更新過的機器不該再被提醒，否則會變成永久噪音而被忽略。
+  check("★ 不相關的 commit 不給提醒（不能變成每次都出現的固定文字）",
+    postUpdateActions([{ sha: full("deadbee") }]).length === 0);
+
+  check("沒有 commit 時不給提醒", postUpdateActions([]).length === 0);
+
+  // 短碼比對必須是前綴，不能是「包含」——否則任何含有該片段的 sha 都會誤中。
+  check("短碼只比對前綴，不是任意位置",
+    postUpdateActions([{ sha: "00000004a06d74" + "0".repeat(26) }]).length === 0);
+}
+
 console.log(`PASS: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

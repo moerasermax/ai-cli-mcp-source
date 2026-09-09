@@ -162,6 +162,21 @@ model, in `providers.json`:
 `model_extra_body` is keyed by the model name as sent to the provider (the part
 after the provider prefix) and overrides `extra_body` field by field.
 
+
+### Seeing what this machine has
+
+`models` returns a `directApiProviders` block listing the providers configured in
+`providers.json` — their usable prefixes (including built-in shorthands like `or`),
+base URL, whatever models `model_extra_body` names, and a copy-pasteable `example`.
+
+The static `direct-api` array is four placeholder strings, so without this there is
+no way to tell from a tool result what this machine can actually reach. Configured
+providers are local state: not in version control, not in any static list.
+
+The block never contains `api_key`, and never throws — an unreadable `providers.json`
+comes back as a `note` rather than taking the whole `models` call down, because
+"cannot read it" and "nothing configured" are different answers.
+
 ### retry
 
 Shared free endpoints throttle and shed load: NVIDIA's own troubleshooting docs say

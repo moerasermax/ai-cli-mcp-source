@@ -54,6 +54,55 @@ const stateDir = (): string => process.env.AI_CLI_STATE_DIR || join(homedir(), '
 const statePath = (): string => join(stateDir(), 'update.json');
 const lockPath = (): string => join(stateDir(), 'update.lock');
 
+/**
+ * 「程式碼過去了，但那台機器還不能用」的缺口。
+ *
+ * 自動更新帶得動 repo 裡的東西，帶不動每台機器自己的狀態——`providers.json` 的 API 金鑰
+ * 不在版控裡，`~/.claude/plugins/` 的副本 `git pull` 也碰不到。這種事只有站在那台機器前
+ * 的人做得到，而他不會知道要做，除非我們說。
+ *
+ * **key 是引入這件事的 commit。** 只有當這次更新真的包含那個 commit 時才附上提醒，
+ * 所以每台機器只會看到一次——已經更新過的機器不會再被提醒，而這正是它跟「在提示裡
+ * 寫一段固定文字」的差別：後者會變成每次更新都出現的永久噪音，然後被忽略。
+ */
+const POST_UPDATE_ACTIONS: ReadonlyArray<{ sha: string; action: string }> = [
+  {
+    sha: '4a06d74',
+    action:
+      '【要動手】程式碼修改驗證閘門已移除，但 Claude Code plugin 是安裝時複製到 ' +
+      '~/.claude/plugins/ 的副本，git pull 碰不到它——不手動移除的話它會繼續用舊版判定擋你。\n' +
+      '  在 Claude Code 輸入：/plugin uninstall ai-cli-verification-gate@ai-cli-mcp\n' +
+      '                      /plugin marketplace remove ai-cli-mcp\n' +
+      '  然後跑：node tools/check-gate-removed.mjs（檢查七處，全乾淨回 exit 0；只回報不改設定）',
+  },
+  {
+    sha: 'b8f7865',
+    action:
+      '【要動手，想用才需要】NVIDIA 免費 API（build.nvidia.com）現在接得上了，' +
+      '但金鑰與設定不在版控裡，每台機器要自己加。\n' +
+      '  編 ~/.local/share/ai-cli/providers.json，加一筆 nv：\n' +
+      '    base_url: https://integrate.api.nvidia.com/v1\n' +
+      '    api_key : 你自己的 nvapi- 金鑰（去 build.nvidia.com 申請，免費、不用信用卡）\n' +
+      '    retry   : { "max_retries": 3, "initial_delay_ms": 1000 }\n' +
+      '    model_extra_body: nemotron-3.5-lightning-30b-a3b → reasoning_effort "none"、' +
+      'nemotron-3-ultra-550b-a55b → "medium"、muse-glimmer-30b → max_tokens 16384\n' +
+      '  ⚠️ 那個檔是整份 fail-closed，任何一筆寫壞會連 openrouter/dashscope 一起掛，先備份。\n' +
+      '  實測 10/10 的三顆：nv-openai/gpt-oss-20b（最快）、' +
+      'nv-nvidia/nemotron-3.5-lightning-30b-a3b（1M context）、nv-meta/muse-glimmer-30b（較難的 coding）',
+  },
+];
+
+/**
+ * 這次更新帶進來的 commit 裡，有哪些需要人動手的後續。
+ *
+ * 用 startsWith 比對短 sha：`git log` 給的是完整 sha，而上面的表寫短碼比較好讀。
+ */
+export function postUpdateActions(commits: ReadonlyArray<{ sha: string }>): string[] {
+  return POST_UPDATE_ACTIONS.filter(({ sha }) => commits.some((c) => c.sha.startsWith(sha))).map(
+    ({ action }) => action
+  );
+}
+
 export function getUpdatePolicy(): UpdatePolicy {
   const value = process.env.AI_CLI_AUTO_UPDATE;
   return value === 'off' || value === 'check' ? value : 'on';
@@ -309,7 +358,8 @@ export async function applyUpdate(options: UpdateOptions = {}): Promise<UpdateRe
       const tab = line.indexOf('\t');
       return { sha: line.slice(0, tab), subject: line.slice(tab + 1) };
     });
-    const notice = `ai-cli 已更新至最新版（${prev.slice(0, 7)} → ${target.slice(0, 7)}，${commits.length} 個 commit），請重新啟動 MCP（Claude Code：/mcp 重連）。更新內容請至 ${await changesUrl(root, branch)} 查看\n${commits.map((c) => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n')}`;
+    const actions = postUpdateActions(commits);
+    const notice = `ai-cli 已更新至最新版（${prev.slice(0, 7)} → ${target.slice(0, 7)}，${commits.length} 個 commit），請重新啟動 MCP（Claude Code：/mcp 重連）。更新內容請至 ${await changesUrl(root, branch)} 查看\n${commits.map((c) => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n')}${actions.length ? `\n\n這次更新有 ${actions.length} 件事需要你在這台機器上動手：\n\n${actions.join('\n\n')}` : ''}`;
     const state: UpdateState = { ...readState(), checkedAt: new Date().toISOString(), branch,
       local: target, remote: target, behind: 0, available: false,
       lastApplied: { at: new Date().toISOString(), from: prev, to: target, ok: true, commits, message: notice },
