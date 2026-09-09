@@ -7,6 +7,26 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 變更（改名：repo 與 npm scope）
+
+- **GitHub repo `ai-cli-mcp-source` → `tkflyc-ai-cli`**，**npm 套件改以
+  `@tkflyc/ai-cli-mcp` 發佈**（原規劃的 `@moerasermax/ai-cli-mcp` 未曾發佈，
+  因此沒有遷移成本）。
+
+  改名有兩個目的。一是**與上游區隔**：本專案是 mkXultra/ai-cli-mcp 的衍生，
+  沿用近似名稱容易被讀成冒名或同一專案（詳見 NOTICE 的實測重疊數據）。
+  二是**收攏到 tkflyc 生態鏈**：既有的 `tkflyc-database` / `tkflyc-monitor` /
+  `tkflyc-planner` / `tkflyc-search` 已成命名慣例，`@tkflyc` scope 讓日後的
+  knowledge-mcp、planner 收在同一個命名空間下。
+
+  **GitHub 會自動轉址舊網址**，既有的 clone、書籤與 `git remote` 不會斷；
+  本 repo 的 remote 仍已更新為新網址。
+
+  ⚠️ **binary 名稱（`ai-cli` / `ai-cli-mcp`）與 MCP 註冊名（`ai-cli`）刻意不動。**
+  它們是使用者每天打的指令與各機器 `settings.json` 裡的既有設定，跟著 repo 改名
+  等於為了門面去破壞所有機器的設定。**本機原始碼目錄路徑同樣不動**——
+  它被寫在 MCP 註冊指令裡。（Claude，moerasermax 指示）
+
 ### 新增（上游歸屬）
 
 - **新增 `NOTICE`，並在 LICENSE 版權行下方標示衍生關係**。本專案是
@@ -32,7 +52,7 @@
 
 ### 新增（對外發佈：npm 套件、CI、安全政策）
 
-- **改為可發佈的 npm 套件 `@moerasermax/ai-cli-mcp`**：移除 `package.json` 的
+- **改為可發佈的 npm 套件 `@tkflyc/ai-cli-mcp`**：移除 `package.json` 的
   `"private": true`，補 `license` / `repository` / `bugs` / `keywords` / `files` /
   `publishConfig.access=public`。
 
@@ -919,9 +939,9 @@ Antigravity 可用；**Kiro 沒額度**（CLI 回 `Not logged in`）、**Forge �
 - Windows 上優先解析 `.cmd`/`.exe` 而非 extensionless shim。
 - 移除已壞掉的 gemini 殘留；usage 外掛路徑改由 `AI_CLI_USAGE_PLUGIN_BIN` 環境變數設定。
 
-[Unreleased]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.1.1...HEAD
-[4.1.1]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.1.0...v4.1.1
-[4.1.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v4.0.0...v4.1.0
-[4.0.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v3.1.0...v4.0.0
-[3.1.0]: https://github.com/moerasermax/ai-cli-mcp-source/compare/v3.0.0...v3.1.0
-[3.0.0]: https://github.com/moerasermax/ai-cli-mcp-source/releases/tag/v3.0.0
+[Unreleased]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.1.0...v4.1.1
+[4.1.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.0.0...v4.1.0
+[4.0.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v3.1.0...v4.0.0
+[3.1.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/moerasermax/tkflyc-ai-cli/releases/tag/v3.0.0

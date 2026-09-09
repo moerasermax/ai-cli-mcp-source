@@ -1,7 +1,7 @@
 # ai-cli-mcp
 
-[![CI](https://github.com/moerasermax/ai-cli-mcp-source/actions/workflows/ci.yml/badge.svg)](https://github.com/moerasermax/ai-cli-mcp-source/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/%40moerasermax%2Fai-cli-mcp)](https://www.npmjs.com/package/@moerasermax/ai-cli-mcp)
+[![CI](https://github.com/moerasermax/tkflyc-ai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/moerasermax/tkflyc-ai-cli/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40tkflyc%2Fai-cli-mcp)](https://www.npmjs.com/package/@tkflyc/ai-cli-mcp)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Run local AI CLIs — Claude, Codex, Antigravity (`agy`) — and **any third-party
@@ -19,14 +19,14 @@ Requires Node `^20.19.0 || >=22.12.0`.
 From npm — nothing to build:
 
 ```bash
-claude mcp add ai-cli -s user -- npx -y @moerasermax/ai-cli-mcp
+claude mcp add ai-cli -s user -- npx -y @tkflyc/ai-cli-mcp
 ```
 
 From source — if you intend to change it:
 
 ```bash
-git clone https://github.com/moerasermax/ai-cli-mcp-source
-cd ai-cli-mcp-source
+git clone https://github.com/moerasermax/tkflyc-ai-cli
+cd tkflyc-ai-cli
 npm install     # triggers build via the prepare script and produces dist/
 claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 ```
@@ -331,7 +331,7 @@ the CLI/MCP entry points. What is new here:
   AI and only sees the return value, so the return value has to say what is
   actually known.
 
-The package is published as `@moerasermax/ai-cli-mcp`; the unscoped
+The package is published as `@tkflyc/ai-cli-mcp`; the unscoped
 `ai-cli-mcp` name on npm belongs to upstream.
 
 ## License

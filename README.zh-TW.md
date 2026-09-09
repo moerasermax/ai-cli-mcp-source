@@ -9,8 +9,8 @@
 ## 快速開始（clone 下來直接用）
 
 ```bash
-git clone <repo-url> ai-cli-mcp-source
-cd ai-cli-mcp-source
+git clone <repo-url> tkflyc-ai-cli
+cd tkflyc-ai-cli
 npm install                                          # 會自動觸發 build，產生 dist/
 claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 ```
@@ -28,7 +28,7 @@ claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 成功後 stderr 與 MCP `notifications/message`（warning）會提示：
 
 ```text
-ai-cli 已更新至最新版（1234567 → abcdef0，2 個 commit），請重新啟動 MCP（Claude Code：/mcp 重連）。更新內容請至 https://github.com/moerasermax/ai-cli-mcp-source/blob/master/CHANGELOG.md 查看
+ai-cli 已更新至最新版（1234567 → abcdef0，2 個 commit），請重新啟動 MCP（Claude Code：/mcp 重連）。更新內容請至 https://github.com/moerasermax/tkflyc-ai-cli/blob/master/CHANGELOG.md 查看
 abcdef0 fix: 最新修正標題
 7654321 feat: 另一個改動標題
 ```
@@ -630,4 +630,4 @@ clone，而後者又衍生自 Peter Steinberger 的 `claude-code-mcp`（MIT）�
   `failed`；`doctor` 對沒驗的項目回 `null` 而不是 `false`。呼叫端是 AI，它只看得到
   回傳值，所以回傳值必須說出「實際知道什麼」。
 
-套件發佈為 `@moerasermax/ai-cli-mcp`；npm 上不帶 scope 的 `ai-cli-mcp` 屬於上游。
+套件發佈為 `@tkflyc/ai-cli-mcp`；npm 上不帶 scope 的 `ai-cli-mcp` 屬於上游。
