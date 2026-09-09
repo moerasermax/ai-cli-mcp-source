@@ -7,6 +7,29 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（上游歸屬）
+
+- **新增 `NOTICE`，並在 LICENSE 版權行下方標示衍生關係**。本專案是
+  [mkXultra/ai-cli-mcp](https://github.com/mkXultra/ai-cli-mcp)（MIT）的 clone 後重寫，
+  而上游又衍生自 Peter Steinberger 的 `claude-code-mcp`（MIT）。原本的 LICENSE 只寫
+  `Copyright 2026 YC (moerasermax)`，**把前面兩層的版權聲明都拿掉了**。
+
+  MIT 的條件是「上述版權聲明與本授權聲明必須包含在所有副本或**實質部分**中」。
+  以上游 v2.23.0 為基準實測：本專案 1,980 行實質原始碼（去空白、去註解、
+  長度 ≥20、去重）中有 **299 行（約 15%）**與上游相同，且**集中在 MCP 工具表面**
+  —— 工具名稱、description 字串、input schema，以及 CLI/MCP 進入點。
+  逐檔最高的是 `bin/ai-cli-mcp.ts` 100%、`core/peek.ts` 75%、`core/process-result.ts` 65%、
+  `app/cli.ts` 60%。這已經構成「實質部分」，該補歸屬。
+
+  **為什麼是加分不是扣分**：重疊的 15% 落在別人第一眼看到的介面上，不標歸屬
+  會被讀成冒名；標了之後，真正的事實才講得出來——接手一個停更專案、重寫 85%、
+  把五個寫死的後端換成 registry 架構，並補上 direct-api、熔斷器、provenance 模型目錄、
+  自動更新與 liveness。NOTICE 裡直接寫出實測數字，而不是含糊的「based on」。
+  （Claude，moerasermax 指示）
+
+- README（en/zh-TW）新增「與上游原專案的關係」段落，`package.json` 的 `files`
+  加入 `NOTICE`，確保它隨每個 npm 副本一起散布。（Claude，moerasermax 指示）
+
 ### 新增（對外發佈：npm 套件、CI、安全政策）
 
 - **改為可發佈的 npm 套件 `@moerasermax/ai-cli-mcp`**：移除 `package.json` 的

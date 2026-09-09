@@ -302,6 +302,42 @@ claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 claude mcp add ai-cli -s user -- node "$PWD\dist\server.js"
 ```
 
+## Relationship to the original project
+
+This project began as a clone of [mkXultra/ai-cli-mcp](https://github.com/mkXultra/ai-cli-mcp)
+(MIT), which is itself derived from Peter Steinberger's `claude-code-mcp` (MIT).
+Upstream is no longer being updated. See [NOTICE](NOTICE) for the full
+attribution and the retained MIT terms.
+
+It has since been substantially rewritten. Measured against upstream v2.23.0,
+about 15% of this tree's substantive source lines are still identical —
+concentrated in the MCP tool surface (tool names, descriptions, schemas) and
+the CLI/MCP entry points. What is new here:
+
+- **Registry architecture.** Upstream hard-coded five backends. Here,
+  `src/agents/` holds one file per CLI and is the only extension point;
+  `src/core/` is the machinery and does not change when a backend is added.
+- **`direct-api`** — bring any third-party OpenAI-compatible provider, rather
+  than only the CLIs someone else compiled in.
+- **Circuit breaker** for start-rate and duplicate-prompt storms, so an
+  orchestration loop cannot turn into anomalous traffic against a provider.
+- **ConPTY runner** for CLIs that only produce output on a real TTY.
+- **Model catalog with provenance** — every entry says where it came from and
+  whether it is dispatchable — plus a dispatch guidance table.
+- **Background self-update** with subprocess apply and rollback.
+- **Honest return values.** `wait` returns liveness on timeout instead of
+  throwing; job state distinguishes `lost` from `failed`; `doctor` returns
+  `null` for checks it did not perform rather than `false`. The caller is an
+  AI and only sees the return value, so the return value has to say what is
+  actually known.
+
+The package is published as `@moerasermax/ai-cli-mcp`; the unscoped
+`ai-cli-mcp` name on npm belongs to upstream.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+This project is a derivative work of software originally released under the
+MIT License. The original copyright notices and the retained MIT terms are in
+[NOTICE](NOTICE), which is distributed with every copy.

@@ -607,3 +607,27 @@ claude mcp add ai-cli -s user -- node "$PWD\dist\server.js"
 - ConPTY 與各 agent 行為以 registry 重構。3.0.0 當時對外 MCP 行為與舊 dist 等價，
   **但之後已經分歧**：4.0.0 移除了 OpenCode agent 與 `oc-*` model routing（改用 direct-api），
   並新增 `set_config` 與 `query_usage` 兩個工具（目前共 11 個）。詳見 `CHANGELOG.md`。
+
+## 與上游原專案的關係
+
+本專案起初是 [mkXultra/ai-cli-mcp](https://github.com/mkXultra/ai-cli-mcp)（MIT）的
+clone，而後者又衍生自 Peter Steinberger 的 `claude-code-mcp`（MIT）。上游已停止更新。
+完整歸屬與保留的 MIT 條款見 [NOTICE](NOTICE)。
+
+此後經過大幅重寫。以上游 v2.23.0 為基準實測，本專案 1,980 行實質原始碼中有 299 行
+（約 15%）仍與上游相同，**集中在 MCP 工具表面**（工具名稱、description、schema）
+與 CLI/MCP 進入點。以下是本專案新增的部分：
+
+- **registry 架構**。上游把五個後端寫死；這裡 `src/agents/` 一個 CLI 一個檔、是唯一
+  擴充點，`src/core/` 是機器本體，加後端不動它。
+- **`direct-api`** —— 自己接任何第三方 OpenAI-compatible provider，而不是只能用
+  別人編進去的那幾個 CLI。
+- **熔斷器**，擋爆量啟動與重複 prompt，避免框架迴圈變成對供應商的異常流量。
+- **ConPTY runner**，給只在真 TTY 下才輸出的 CLI。
+- **帶 provenance 的模型目錄**（每筆說得出出處與能不能派工）＋ 派工建議表。
+- **背景自動更新**（subprocess apply + rollback）。
+- **會說實話的回傳值**。`wait` 逾時回 liveness 而不是丟錯；job 狀態區分 `lost` 與
+  `failed`；`doctor` 對沒驗的項目回 `null` 而不是 `false`。呼叫端是 AI，它只看得到
+  回傳值，所以回傳值必須說出「實際知道什麼」。
+
+套件發佈為 `@moerasermax/ai-cli-mcp`；npm 上不帶 scope 的 `ai-cli-mcp` 屬於上游。

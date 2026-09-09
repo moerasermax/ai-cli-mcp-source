@@ -36,6 +36,7 @@
     "README.zh-TW.md",
     "CHANGELOG.md",
     "LICENSE",
+    "NOTICE",
     "SECURITY.md"
   ],
   "publishConfig": {
