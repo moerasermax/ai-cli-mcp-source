@@ -1,25 +1,46 @@
-> English version: [README.md](README.md)
+> English version: [README.md](README.md)（英文版是精簡的設計說明；完整參考以本頁為準）
 
-# ai-cli-mcp（自有可控版）
+# ai-cli-mcp
+
+[![CI](https://github.com/moerasermax/tkflyc-ai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/moerasermax/tkflyc-ai-cli/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40tkflyc%2Fai-cli-mcp)](https://www.npmjs.com/package/@tkflyc/ai-cli-mcp)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 把 Claude / Codex / Antigravity(agy) 等本機 AI CLI，
 以及**任何第三方 OpenAI-compatible API**（透過 direct-api，自己接）包成 MCP 工具，支援背景 job。這是**從原始碼自行維護**的版本，採用 registry-based
 架構，新增 AI agent 只需新增一個檔案。
 
-## 快速開始（clone 下來直接用）
+## 快速開始
+
+**從 npm——不用編譯：**
 
 ```bash
-git clone <repo-url> tkflyc-ai-cli
+claude mcp add ai-cli -s user -- npx -y @tkflyc/ai-cli-mcp
+```
+
+**從原始碼——你打算改它，或想要自動更新：**
+
+```bash
+git clone https://github.com/moerasermax/tkflyc-ai-cli
 cd tkflyc-ai-cli
 npm install                                          # 會自動觸發 build，產生 dist/
 claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 ```
 
-`dist/` 不進版控，所以一定要編譯過才能用。`npm install` 會經由 `prepare` script
+`dist/` 不進版控，所以**從原始碼裝**的那條一定要編譯過才能用。`npm install` 會經由 `prepare` script
 自動跑 `npm run build`，正常情況下不需要另外手動 build。
 需要 Node `^20.19.0 || >=22.12.0`。細節與 PowerShell 版指令見下方「掛到 Claude Code」。
 
+⚠️ **兩條路的差別不只在要不要編譯。** 自動更新需要一個含 `.git` 與 `package.json`
+的 clone（見下方「自動更新」），所以 **npm／npx 安裝拿不到自動更新**——換版本要自己
+來。想確定跑的是哪一版，就在指令裡把版本釘住（`@tkflyc/ai-cli-mcp@<版本>`）。
+`doctor` 回傳的 `update.supported` 表示這份安裝是否符合原始碼更新的前置條件。
+
 ## 自動更新
+
+**前提：這一節只適用於「從原始碼 clone」的安裝。** 更新器要求 repo 根目錄同時有
+`.git` 與 `package.json`，所以 npm／npx 裝的那份完全不會自動更新，`doctor` 的
+`update.supported` 會是 `false`。
 
 三個 MCP 入口都在 transport 連線後正常服務，**3 秒後背景檢查 → 子程序背景套用 → 下次啟動生效**。
 預設每小時檢查一次 `origin`；其他機器 push 新 commit 後，這台機器會在下一輪檢查發現。
@@ -77,8 +98,13 @@ ai-cli doctor                 # 本機診斷與已保存的 update 區塊，不�
 `check`／`off` 模式要手動套用時，先將 `AI_CLI_AUTO_UPDATE` 改為 `on`。
 更新內容網址優先取 `package.json.homepage`，否則由 GitHub origin 推導該分支的 `CHANGELOG.md`。
 
-**安全提醒：這是 public repo，協作者都有 push 權限。push 到 master 等於部署到所有啟用自動更新的機器，
-push 前必須確認 `npm test` 全綠。**
+⚠️ **安全提醒：push 到 master 要當成部署——push 前必須確認 `npm test` 全綠。**
+這是 public repo，任何有寫入權限的人都能觸發它。
+
+追蹤 `master` 且啟用自動更新的原始碼安裝，會在之後某一輪檢查**嘗試**拉取並套用。但不一定成功：
+工作樹髒、追蹤的是別的分支（`AI_CLI_UPDATE_BRANCH`）、無法 fast-forward、或鎖被別的更新程序持有，
+都會在 pull 之前就中止；install／build／`doctor` 煙霧測試失敗則會**嘗試**回滾，而回滾本身也可能失敗。
+所以「一定傳出去了」和「應該沒傳出去」都不能假設。
 
 ## 架構
 
@@ -92,7 +118,8 @@ src/
 ├─ core/                  # 框架本體，新增 agent 時「不用動」
 │   ├─ command-builder.ts     # model routing + 指令組裝協調
 │   ├─ process-service.ts     # 記憶體版 job 管理（MCP 用）
-│   ├─ file-process-service.ts# 檔案版 job 管理（ai-cli CLI 的 detached 用）
+│   ├─ file-process-service.ts# 檔案版 job 管理（`ai-cli` CLI 用；pipe 子程序走 detached，
+│   │                         #   PTY 不 detach，direct-api 沒有子程序、同步跑完才返回）
 │   ├─ pty-runner.ts          # ConPTY（agy 等需要真實 TTY 的 CLI）
 │   ├─ binary-resolver.ts     # CLI 二進位解析
 │   ├─ user-config.ts        # ~/.local/share/ai-cli/config.json 讀寫（依內容快取）
@@ -155,7 +182,7 @@ npm run typecheck  # 只型別檢查
 | `AI_CLI_BREAKER_MAX_STARTS` | 視窗內最大啟動次數，超過視為爆量（預設 `30`） |
 | `AI_CLI_BREAKER_DUP_LIMIT` | 視窗內「同一 agent + 同一 prompt」最大次數，超過視為迴圈（預設 `6`） |
 | `AI_CLI_BREAKER_COOLDOWN_SEC` | 觸發後的開路冷卻秒數（預設 `120`） |
-| `AI_CLI_DEFAULT_REASONING_EFFORT` | 覆寫 `config.json` 的 reasoning 預設值（見下節） |
+| `AI_CLI_DEFAULT_REASONING_EFFORT` | 覆寫 `config.json` 的 reasoning 預設值（見下方「使用者設定檔（config.json）」） |
 
 ## 模型目錄的出處與查詢時間
 
@@ -203,6 +230,11 @@ OpenRouter、阿里雲 DashScope、NVIDIA 的 NIM 目錄、DeepSeek、Groq、tog
 
 它不是單次補全的薄包裝：跑的是完整 agent loop，模型拿得到 `read_file` / `write_file` /
 `bash`，可以真的改檔案、跑指令。
+
+⚠️ **CLI 這條路有一個例外**：`ai-cli run` 派 direct-api 時不啟動子程序，也就沒有東西可以
+detach——指令會**等到請求結束才返回**，回的是終局狀態而不是可輪詢的 pid。所以下方
+「等待端怎麼知道 AI 還活著」教的 wait／peek 輪詢模式，在 CLI ＋ direct-api 這個組合上用不到。
+MCP 的 `run` 不受影響，direct-api 一樣立刻回 pid。
 
 ### 設定檔
 
@@ -391,7 +423,7 @@ including `reasoning_content` and `tool_calls`”；DeepSeek V4 更硬——帶 
 |------|------|
 | `defaultReasoningEffort` | 呼叫端沒帶 `reasoning_effort` 時，所有支援 reasoning 的 agent 套用的預設 |
 | `aliasReasoningEffort` | 針對特定 model/alias 的覆蓋，優先於 `defaultReasoningEffort` |
-| `aliasModel` | 把 alias 重新指向另一個 model，優先於 `catalog.ts` 寫死的 `MODEL_ALIASES`（見下節） |
+| `aliasModel` | 把 alias 重新指向另一個 model，優先於 `catalog.ts` 寫死的 `MODEL_ALIASES`（見下方「alias 重新指向」） |
 
 檔案中它不認識的欄位會原封保留，`set_config` 寫入時也不會被吃掉。
 
@@ -634,3 +666,10 @@ clone，而後者又衍生自 Peter Steinberger 的 `claude-code-mcp`（MIT）�
   回傳值，所以回傳值必須說出「實際知道什麼」。
 
 套件發佈為 `@tkflyc/ai-cli-mcp`；npm 上不帶 scope 的 `ai-cli-mcp` 屬於上游。
+
+## 授權
+
+Apache-2.0，見 [LICENSE](LICENSE)。
+
+本專案是衍生作品，原始程式最初以 MIT 授權釋出。原始的著作權聲明與保留的 MIT 條款在
+[NOTICE](NOTICE)，它隨每一份副本散布（已列入 `package.json` 的 `files`）。

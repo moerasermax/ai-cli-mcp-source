@@ -22,7 +22,7 @@ From npm — nothing to build:
 claude mcp add ai-cli -s user -- npx -y @tkflyc/ai-cli-mcp
 ```
 
-From source — if you intend to change it:
+From source — if you intend to change it, or want auto-update:
 
 ```bash
 git clone https://github.com/moerasermax/tkflyc-ai-cli
@@ -35,13 +35,20 @@ claude mcp add ai-cli -s user -- node "$PWD/dist/server.js"
 use. `npm install` runs it through the `prepare` script, so a separate
 `npm run build` is normally unnecessary.
 
+⚠️ **The two paths differ in more than building.** Auto-update requires a clone with
+`.git` and `package.json` (see **Auto-update** below), so an npm/npx install never
+updates itself — moving to a new version is something you do yourself. Pin the
+version in the command (`@tkflyc/ai-cli-mcp@<version>`) if you need to know exactly
+which one is running.
+`doctor` reports whether this installation meets the source-update precondition
+in `update.supported`.
+
 ## What it does
 
 Each supported CLI becomes a tool you can call from an MCP client. Jobs run in the
 background: `run` returns a PID immediately, and `list_processes`, `peek`, `wait` and
-`get_result` observe it while it works. Three entry points — the MCP server, the
-`ai-cli` command line, and the detached file-backed runner — are equivalent in
-behavior; they differ only in where job state lives.
+`get_result` observe it while it works. Two surfaces expose this — the MCP server and
+the `ai-cli` command line — and they differ in where job state lives.
 
 ## Architecture
 
@@ -54,7 +61,7 @@ src/
 ├─ core/                  the framework; untouched when adding an agent
 │   ├─ command-builder.ts     model routing and command assembly
 │   ├─ process-service.ts     in-memory job management (MCP)
-│   ├─ file-process-service.ts file-backed job management (detached CLI)
+│   ├─ file-process-service.ts file-backed job management (CLI)
 │   ├─ pty-runner.ts          ConPTY, for CLIs that need a real TTY
 │   ├─ circuit-breaker.ts     start-rate and duplicate-prompt breaker
 │   ├─ updater.ts             background check, subprocess apply, rollback
@@ -66,6 +73,13 @@ src/
 
 The split is the point: `agents/` is data about each CLI, `core/` is the machinery.
 A new backend never requires editing the machinery.
+
+Job state lives in memory for the MCP server and in files for the CLI, so a CLI job
+can be observed by a later command. Pipe-based CLI jobs run through a detached
+wrapper and outlive the command that started them. The PTY path — used for CLIs that
+only produce output on a real TTY — is not detached, and `direct-api` starts no
+subprocess at all: on the CLI it runs in-process and blocks until the request
+finishes, while the MCP server still returns a PID immediately.
 
 ## Adding an AI agent
 
@@ -126,7 +140,12 @@ recorded, so the outcome is genuinely unknown — which is not the same as faile
 
 ## Auto-update
 
-All three entry points serve normally after the transport connects, then check in the
+**Precondition: this section applies only to a source clone.** The updater requires
+`.git` and `package.json` in the repo root, so an npm/npx install never updates
+itself and `doctor` reports `update.supported: false`.
+
+All three MCP entry points (`dist/server.js`, `dist/bin/ai-cli-mcp.js`, and
+`dist/bin/ai-cli.js mcp`) serve normally after the transport connects, then check in the
 background ~3 seconds later and apply updates in a subprocess; the new version takes
 effect on the next start. Nothing blocks startup, and no running server or job is
 killed.
@@ -139,6 +158,16 @@ killed.
 
 Also honored: `AI_CLI_UPDATE_CHECK_INTERVAL_SEC` (default `3600`),
 `AI_CLI_UPDATE_BRANCH`, and `AI_CLI_STATE_DIR` (default `~/.local/state/ai-cli`).
+
+⚠️ **Treat a push to `master` as a deployment: `npm test` must be green before you
+push.** This is a public repo, and anyone with write access can trigger that.
+
+A source install that tracks `master` with auto-update on will try to fetch and apply
+it on a later check. It does not always land: a dirty tree, a different tracked
+branch (`AI_CLI_UPDATE_BRANCH`), a non-fast-forward or a held lock stops it before
+the pull, and a failed install, build or `doctor` smoke test triggers a rollback
+attempt — which can itself fail. So neither "it went everywhere" nor "it went
+nowhere" is safe to assume.
 
 ## direct-api
 
@@ -313,7 +342,7 @@ it is a fork that diverged on architecture. If you want the original, use
 for the full attribution and the retained MIT terms.
 
 It has since been substantially rewritten. Measured against upstream v2.23.0,
-about 15% of this tree's substantive source lines are still identical —
+299 of this tree's 1,980 substantive source lines (about 15%) are still identical —
 concentrated in the MCP tool surface (tool names, descriptions, schemas) and
 the CLI/MCP entry points. What is new here:
 
@@ -343,4 +372,5 @@ Apache-2.0. See [LICENSE](LICENSE).
 
 This project is a derivative work of software originally released under the
 MIT License. The original copyright notices and the retained MIT terms are in
-[NOTICE](NOTICE), which is distributed with every copy.
+[NOTICE](NOTICE), which ships with every copy — it is in the repo and
+listed in `package.json`'s `files`, so it travels with the npm package too.
