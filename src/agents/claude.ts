@@ -23,6 +23,28 @@ const CLAUDE_TOOLS_BY_CAPABILITY: Record<string, readonly string[]> = {
   'analysis/produce': [], // 產出走 stdout，不需要工具
 };
 
+/**
+ * 嚴格模式一律拒絕的工具。**這是唯一真的擋得住的那一半**（見 buildStrictCommand 的註解）。
+ *
+ * 列舉式清單有一個明顯的弱點：新工具出現時它會過期，而過期的樣子是「悄悄放行」。
+ * 所以真正的守門不是這份清單完不完整，是
+ * `verify-mcp-capabilities.mjs` 裡那條**真的叫模型寫檔、再檢查檔案在不在**的斷言——
+ * 清單漏了什麼，那條會紅。清單是手段，行為驗證才是保證。
+ *
+ * `Task` 要擋是因為它會派生子 agent，而子 agent 不繼承這裡的限制；
+ * `Bash` 則是最明顯的繞道（`echo > file`）。
+ */
+const DENIED_WHEN_STRICT: readonly string[] = [
+  'Write',
+  'Edit',
+  'NotebookEdit',
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'Task',
+  'SlashCommand',
+];
+
 function buildStrictCommand(
   input: BuildCommandInput,
   capabilities: readonly string[]
@@ -40,12 +62,32 @@ function buildStrictCommand(
   }
   /*
     與 buildCommand 的差別：**沒有 --dangerously-skip-permissions**。
-    --allowedTools 是白名單；--strict-mcp-config 與 --disable-slash-commands
-    擋掉使用者的全域客製（那是使用者的互動環境，不是受託任務該有的面）。
+
+    ⚠️ **`--allowedTools` 不是白名單。** 這一行原本的註解寫著「是白名單」，
+    而 2026-09-09 的實測推翻了它：
+
+      claude --allowedTools Read,Glob,Grep --strict-mcp-config
+             --disable-slash-commands -p "用 Write 建立 a.txt"
+      → 檔案真的被建立了。
+
+    `--allowedTools` 的語意是「**這些不用問**」（預先核准），不是「只能用這些」。
+    在 `-p` 非互動模式下，沒有列出的工具照樣跑得動。同一輪也試過
+    `--permission-prompts none`——**一樣擋不住**。
+
+    真正擋得住的只有 `--disallowedTools`（同一輪實測：加了就寫不進去，
+    而且一般問答不受影響）。`--permission-mode plan` 也擋得住，但它會把模型
+    推進「規劃」心態、不直接回答問題，不適合「我只想問一句話」的唯讀回合。
+
+    **這個缺陷從 exec 的嚴格模式上線那天就在**：畫面說唯讀、程序其實能寫檔。
+    它沒有被發現，是因為既有的斷言只驗「參數有沒有送出去」，沒有驗
+    「它真的擋得住」——參數對了不等於行為對了。verify-mcp-capabilities.mjs
+    現在有一條**真的叫模型寫檔、再檢查檔案在不在**的行為斷言。
   */
   const args = [
     '--allowedTools',
     [...tools].join(','),
+    '--disallowedTools',
+    DENIED_WHEN_STRICT.join(','),
     '--strict-mcp-config',
     '--disable-slash-commands',
     '--output-format',
