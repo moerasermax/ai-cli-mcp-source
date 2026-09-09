@@ -8,6 +8,59 @@
 
 ## [Unreleased]
 
+### 修正（🔴 嚴格模式一直擋不住寫入）
+
+- **`ai-cli exec` 的嚴格模式（唯讀）從上線那天起就擋不住寫入。** 如果你把 `exec`
+  當成「模型只能讀、不會動我的檔案」在用，那個保證一直不成立。
+
+  `--allowedTools` 的語意是「**這些不用問**」（預先核准），不是「只能用這些」。
+  實測 `claude --allowedTools Read,Glob,Grep --strict-mcp-config
+  --disable-slash-commands -p "用 Write 建立 a.txt"`，檔案真的被建立了；
+  同一輪試過 `--permission-prompts none` 也一樣擋不住。
+
+  改用 `--disallowedTools`（實測擋得住，一般問答不受影響）。`--permission-mode plan`
+  也擋得住，但它會把模型推進規劃心態、不直接回答，不適合「我只想問一句話」的唯讀回合。
+
+  **這個缺陷沒被發現，是因為既有斷言只驗「參數有沒有送出去」**——旗標對了、畫面說唯讀、
+  程序其實能寫檔。新增 `verify-strict-behaviour.mjs`：**不看參數，只看結果**——叫模型
+  寫一個檔案，再去看那個檔案在不在。它會真的呼叫 CLI、用掉額度，所以不進預設
+  `npm test`，用 `npm run verify:strict-behaviour`。
+  `src/agents/claude.ts`、`verify-strict-behaviour.mjs`（`697b721`）
+  （由 Claude 依該 commit 訊息補記 CHANGELOG；改動本身不是本人所寫）
+
+### 新增（唯讀回合不再只有 exec 走得到）
+
+- **MCP `run` 新增 `capabilities` 參數。** `exec` 從一開始就有嚴格模式，但那條路只有
+  `exec` 走得到——MCP `run` 一律走一般組裝，帶著 `--dangerously-skip-permissions` /
+  `--dangerously-bypass-approvals-and-sandbox`。於是任何透過 MCP 使用這個框架的呼叫端，
+  就算自己不做 git 快照，模型仍有完整寫入能力。**「我不做快照」不等於「它不會寫檔」**——
+  那樣做出來的唯讀回合是一個沒有回復點的可寫回合，比什麼都不做更糟。
+
+  不給 `capabilities` 就是既有行為；給了就走 agent 的 strict builder，agent 沒有
+  strict builder 就丟錯、**不退回**一般模式（fail-closed）。
+
+  三個判準：`undefined`（沒有意見）與 `[]`（什麼都不給）**分得開**，折成同一件事等於
+  讓要求限制的呼叫端拿到全開權限而不自知；`process-service` 與 `file-process-service`
+  **兩條啟動路徑都轉送**，只有一條擋得住的話呼叫端要看運氣；`exec.ts` 那份自己的
+  fail-closed 收掉改走同一個入口，因為**權限政策抄兩份的下場，是其中一份哪天漏改
+  而沒有人發現**。順帶修掉舊版傳給 strict 的 `reasoningEffort` 是 `?? ''`（跳過 alias
+  解析與設定檔預設）的不一致。
+
+  `verify-mcp-capabilities.mjs`（8 條，已進 `npm test`）釘住：不給＝既有行為、
+  給了＝零危險旗標、空陣列仍 strict、沒有 strict builder 就拒絕、schema 宣告了也真的
+  轉送、兩條啟動路徑都收。
+
+  ⚠️ **已知邊界**：codex 的 strict builder 帶 `--ephemeral`，可能不保存原生 session，
+  影響下一輪 `resume`。不影響檔案唯讀保證，但要用唯讀回合續接前得先釘一條驗收。
+
+  ⚠️ **這是 `core/` 改動，但沒有 CONTRIBUTING §5.1 要求的獨立稽核紀錄。**
+  本條只補了 §3.2 的行為變化，稽核那一件沒有補——沒發生過的事不能事後寫成發生過。
+  `src/app/mcp.ts`、`src/core/command-builder.ts`、`src/core/process-service.ts`、
+  `src/core/file-process-service.ts`、`src/app/exec.ts`、`verify-mcp-capabilities.mjs`
+  （`b9ad530`）
+  （由 Claude 依該 commit 訊息補記 CHANGELOG；改動本身不是本人所寫）
+
+
 ### 新增（工具說得出自己是誰）
 
 - **`doctor` 與 `models` 的回傳新增 `server` 欄位**：`name` / `version` /
