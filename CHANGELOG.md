@@ -8,6 +8,36 @@
 
 ## [Unreleased]
 
+## [6.1.1] - 2026-09-09
+
+### 修正（stdout 在管道上被截斷）
+
+- **`ai-cli models` 之類的子命令在 pipe 上會吐出殘缺輸出。** `bin/ai-cli.ts`
+  對 `exec` / `update` 以外的子命令直接呼叫 `process.exit()`，但 stdout 是 pipe
+  時寫入是非同步的——行程會在緩衝區還有資料時就結束。
+
+  原本的註解已經寫明這個危險，只是把適用範圍判斷錯了：理由是「其他子命令印的是
+  一次性的 JSON」。**一次性不等於小。** macOS 的 pipe buffer 是 8 KiB，而
+  `models` 的 payload 實測 **12,478 bytes**，於是呼叫端拿到的是在第 8192 位元組
+  被切斷的 JSON——不報錯、不留痕跡，只有 `JSON.parse` 炸在一個看不出根因的位置。
+
+  改成 `exitAfterFlush()`：用空寫入的 callback 確認前面的資料已交給 OS，再強制
+  退出；保留強制退出是因為某些子命令有殘留的計時器/handle 會讓事件迴圈不空
+  （那正是當初加 `process.exit()` 的原因）。另加 2 秒保險上限，對端關閉時寧可
+  截斷也不要永遠不退出。（Claude，moerasermax 指示）
+
+- `verify-catalog-source.mjs` 補上具名的回歸測試，並在 payload 未超過 8 KiB 時
+  **明講「這次沒測到截斷」而不是靜靜通過**——一條在條件不成立時假裝自己有效的
+  測試，比沒有測試更糟。（Claude，moerasermax 指示）
+
+### 附註：6.1.0 沒有發到 npm
+
+  tag `v6.1.0` 與其 GitHub Release 存在，但**從未發佈到 npm**：CI 在
+  macos + node 20.19 上抓到上述截斷，發佈前就擋下來了。這正是前一版把 POSIX
+  從 `continue-on-error` 升為閘門的直接回報——升級的隔一個 commit 它就攔到一個
+  Windows 與 Linux 都看不見的真 bug。tag 不重寫（推出去的 tag 不該改），
+  npm 的第一個對齊版本是 6.1.1。
+
 ## [6.1.0] - 2026-09-09
 
 **這一版的第一個目的是把 npm 上的內容與 git tag 對齊。**

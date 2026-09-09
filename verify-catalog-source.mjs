@@ -297,6 +297,27 @@ try {
     env: { ...process.env, AI_CLI_AUTO_UPDATE: 'off', AI_CLI_CATALOG_CACHE_PATH: join(TEMP, 'cli-cache.json') }, timeout: 10000,
   });
   check(rowOf(JSON.parse(cli.stdout).catalogV2).source === 'vendor-cli', 'ai-cli models 等待 refresh 後回 payload');
+
+  // ★ stdout 排空回歸測試。
+  //
+  // 曾經：`bin/ai-cli.ts` 對 exec/update 以外的子命令直接 `process.exit()`，
+  // 而 stdout 是 pipe 時寫入非同步——macOS 的 pipe buffer 8 KiB，`models`
+  // 的 payload 超過它，呼叫端就拿到在第 8192 位元組切斷的殘缺 JSON。
+  // 上面那條 JSON.parse 會炸，但錯誤訊息（position 8192）看不出根因，
+  // 所以這裡把「守的是什麼」明講出來。
+  //
+  // 先確認這次真的走到 8 KiB 以上，否則這條測試等於沒測到東西——
+  // 這比讓它靜靜地通過誠實。
+  const bytes = Buffer.byteLength(cli.stdout, 'utf8');
+  if (bytes <= 8192) {
+    console.log(`  [SKIP] models payload 只有 ${bytes} bytes，未超過 pipe buffer，這次沒測到截斷`);
+  } else {
+    check(
+      cli.stdout.trimEnd().endsWith('}'),
+      `★ 大於 pipe buffer 的 stdout 要完整排空才退出（${bytes} bytes）`,
+      `尾端：${JSON.stringify(cli.stdout.slice(-40))}`
+    );
+  }
 }
 
 // ── 3b. ★ 加了 --model 之後，既有 alias 不得因此壞掉 ──────────
