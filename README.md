@@ -223,6 +223,36 @@ Slowing down alone never reached 100%; retrying did, and at the faster rate. Eve
 pacing trades every request's latency for a few requests' success, while backoff pays
 only when the server actually refuses.
 
+
+### replay_reasoning — models that want their own thinking back
+
+Some models require the previous assistant turn to be replayed *complete*, including
+its reasoning. Kimi-K3's model card: "clients must pass back the complete assistant
+message, including `reasoning_content` and `tool_calls`". DeepSeek V4 goes further —
+with `tools` in play, omitting it returns **400**.
+
+```json
+"nv": { "replay_reasoning": ["moonshotai/kimi-k3"] }
+```
+
+`true` covers every model of that provider; an array names them individually.
+
+**Off by default, and deliberately not a built-in model list.** `reasoning_content`
+is not part of OpenAI's assistant message schema, and "OpenAI-compatible" does not
+promise unknown fields are ignored — Azure AI Model Inference defaults `extra-parameters`
+to `error`. A hardcoded allow-list would also go stale the way every other hardcoded
+model list here has.
+
+The replayed value is *that turn's* reasoning, not the run's accumulated text —
+otherwise each round would re-append everything before it. It applies to every
+assistant turn, not only the ones carrying tool calls: the final answer is written to
+the session file and becomes a prior turn when you continue with the same
+`session_id`.
+
+Measured caveat: Kimi-K3 completed a three-round tool chain correctly *without* the
+replay, and the docs do not state what omitting it breaks. This follows the stated
+contract; it is not a fix for an observed failure.
+
 ### Knowing what this machine can reach
 
 `models` returns a `directApiProviders` block: each configured provider's usable

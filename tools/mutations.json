@@ -525,5 +525,37 @@
     "to": "commits.some((c) => c.sha.includes(sha))",
     "expect": "短碼只比對前綴",
     "script": "verify-update.mjs"
+  },
+  {
+    "name": "呼叫端無條件開啟回送（對所有端點多送未知欄位）",
+    "file": "src/agents/direct-api.ts",
+    "from": "buildAssistantMessage(turn, config.replayReasoning === true)",
+    "to": "buildAssistantMessage(turn, true)",
+    "expect": "沒設定的 model 不可多送 reasoning_content",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "陣列比對忽略 model 名（同 provider 底下全部都送）",
+    "file": "src/agents/direct-api.ts",
+    "from": "  return Array.isArray(setting) && setting.includes(modelName);",
+    "to": "  return Array.isArray(setting);",
+    "expect": "只有列出的 model 才送",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "用 state.reasoningText 而非 turn（第二輪會把第一輪的推理再附一次）",
+    "file": "src/agents/direct-api.ts",
+    "from": "  if (replayReasoning && turn.reasoningText) {\r\n    message.reasoning_content = turn.reasoningText;",
+    "to": "  if (replayReasoning) {\r\n    message.reasoning_content = turn.reasoningText;",
+    "expect": "沒有 reasoning 時要省略欄位，不可送空字串",
+    "script": "verify-extra-body.mjs"
+  },
+  {
+    "name": "replay_reasoning 不合法時靜默退回不送（設定寫了卻沒作用）",
+    "file": "src/agents/direct-api.ts",
+    "from": "  throw new Error(\r\n    `Invalid providers.json at ${targetPath}: provider \"${providerName}\" replay_reasoning `",
+    "to": "  return undefined;\r\n  throw new Error(\r\n    `Invalid providers.json at ${targetPath}: provider \"${providerName}\" replay_reasoning `",
+    "expect": "不合法的設定要丟錯，不靜默丟棄",
+    "script": "verify-extra-body.mjs"
   }
 ]

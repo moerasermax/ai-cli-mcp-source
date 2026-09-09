@@ -7,6 +7,42 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+### 新增（reasoning_content 回送）
+
+- 新增 `providers.json` 的 `replay_reasoning`：把上一輪 assistant 的 `reasoning_content`
+  回送給要求保留它的模型。`true` = 該 provider 全部 model，陣列 = 只送列出的那幾個。
+  `src/agents/direct-api.ts`（`resolveReplayReasoning`、`buildAssistantMessage`）、`src/agents/types.ts`
+
+  **為什麼要**：Kimi-K3 的 model card 寫 “clients must pass back the complete assistant
+  message, including `reasoning_content` and `tool_calls`”；DeepSeek V4 帶 `tools` 時
+  少送會 **400**。而 direct-api 重建 assistant message 時只保留 `content` 與 `tool_calls`，
+  推理內容直接丟掉——那個訊息不只送下一輪，也會寫進 session 檔，所以跨請求續聊同樣遺失。
+
+  **為什麼預設關閉、而且不做內建白名單**：`reasoning_content` 不在 OpenAI 的 assistant
+  message schema 裡，而「OpenAI-compatible」不保證未知欄位被忽略（Azure AI Model Inference
+  的 `extra-parameters` 預設是 `error`）。至於白名單——這個專案的每一份硬編 model 清單最後
+  都過期了，再加一份只是換個地方犯同一個錯。
+
+  兩個實作細節：回送的是**這一輪**的推理而非整次 run 的累積（用後者第二輪會把第一輪再附一次）；
+  **每個 assistant turn 都保存**而不只是帶 tool_calls 的那些（最後一輪會進 session，
+  續聊時就是歷史 turn）。
+
+**誠實的但書**：實測 Kimi-K3 在**不回送**的情況下也能正確走完三輪工具鏈，
+而官方文件沒有寫少送會怎樣。所以這是照契約做，**不是修一個看得見的當機**。
+端到端派工驗證做不到——kimi-k3 的 429 額度爭用連 8 次指數退避都打不穿（實測 3/10）。
+能證明的是：單元測試確認欄位正確組出且只給設定過的 model，
+手動探測確認真實端點收得下（200 OK）。
+
+### 測試
+
+- `verify-extra-body.mjs` 48 → 60 項（設定解析、四種不合法值要丟錯、開啟時串流分段的
+  reasoning 要接起來、關閉時即使端點有回也不能送、同 provider 底下沒列到的 model 不送、
+  端點沒回時要省略欄位而不是送空字串）。
+- 突變 69 → 73，逐一實測全部 KILLED。其中一個原本 SURVIVED——`buildAssistantMessage`
+  的預設參數 `= false` **永遠用不到**（呼叫端每次都明確傳值），所以改它不影響任何行為。
+  照 2026-09-08 的既有做法處理：把測不到的東西移除（參數改成必填），
+  突變改打在真正會執行的呼叫點上。
+
 ### 新增（讓機器知道自己有什麼、還缺什麼）
 
 - **`models` 現在列得出這台機器設定了哪些 direct-api provider**（`directApiProviders`）。

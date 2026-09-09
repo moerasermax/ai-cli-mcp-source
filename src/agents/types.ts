@@ -65,6 +65,8 @@ export interface DirectApiCommandConfig {
   extraBody?: Record<string, unknown>;
   /** 429/5xx 的重試設定（providers.json 的 retry）；省略時用內建預設。 */
   retry?: { maxRetries: number; initialDelayMs: number };
+  /** 是否把上一輪的 reasoning_content 回送（providers.json 的 replay_reasoning）。 */
+  replayReasoning?: boolean;
 }
 
 export interface DirectRunIO {

@@ -189,6 +189,11 @@ interface ProviderConfig {
   api_key: string;
   /** 429/5xx 的重試設定；省略時用 DEFAULT_RETRY。 */
   retry?: RetryConfig;
+  /**
+   * 哪些 model 需要把上一輪的 `reasoning_content` 回送。
+   * `true` = 這個 provider 的所有 model；陣列 = 只有列出的那幾個。省略 = 都不送。
+   */
+  replay_reasoning?: true | string[];
   /** 併進 /chat/completions request body 的額外欄位（provider 層預設）。 */
   extra_body?: Record<string, unknown>;
   /** 同上，但只套用在特定 model 上；與 provider 層合併時以這裡為準。 */
@@ -231,6 +236,13 @@ interface ChatMessage {
   content?: ChatContent | null;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
+  /**
+   * 上一輪 assistant 的推理內容，回送給要求保留它的模型。
+   *
+   * **不是 OpenAI Chat Completions 的標準欄位**，所以只在明確設定過的 model 上送——
+   * 詳見 `resolveReplayReasoning`。
+   */
+  reasoning_content?: string;
 }
 
 interface SessionFile {
@@ -373,6 +385,51 @@ function normalizeRetryConfig(
   };
 }
 
+/**
+ * 解析 `replay_reasoning`。接受 `true`（整個 provider）或 model 名稱陣列。
+ */
+function normalizeReplayReasoning(
+  providerName: string,
+  value: unknown,
+  targetPath: string
+): true | string[] | undefined {
+  if (value === undefined) return undefined;
+  if (value === true) return true;
+  if (Array.isArray(value) && value.every((m) => typeof m === 'string' && m.trim())) {
+    return [...(value as string[])];
+  }
+  throw new Error(
+    `Invalid providers.json at ${targetPath}: provider "${providerName}" replay_reasoning ` +
+      'must be true or an array of model names.'
+  );
+}
+
+/**
+ * 這次要不要把上一輪的 `reasoning_content` 回送？
+ *
+ * **預設不送。** `reasoning_content` 不在 OpenAI Chat Completions 的 assistant schema 裡，
+ * 而「OpenAI-compatible」不等於「未知欄位一定被忽略」——Azure AI Model Inference 的
+ * `extra-parameters` 預設就是 `error`。所以這是 opt-in，不是猜出來的。
+ *
+ * 為什麼不寫成內建的 model 白名單：今天才學到硬編清單會過期（codex 的靜態清單裡還躺著
+ * 三個帳號用不了的 model，`/v1/models` 回的 nano id 甚至是打不通的舊寫法）。
+ * 再加一份會過期的表，只是把同一個錯誤換個地方犯。
+ *
+ * 已知要求回送的（2026-09-09 查證，寫在文件裡供設定時參考）：
+ * - `moonshotai/kimi-k3` —— model card：“clients must pass back the complete assistant
+ *   message, including `reasoning_content` and `tool_calls`”。不送會怎樣官方沒寫，
+ *   而實測三輪工具鏈不送也能正確完成，所以這是照契約做，不是修一個看得見的當機。
+ * - DeepSeek V4 帶 `tools` 時 —— 官方文件說少送會 **400**，這個是硬的。
+ */
+export function resolveReplayReasoning(
+  provider: Pick<ProviderConfig, 'replay_reasoning'>,
+  modelName: string
+): boolean {
+  const setting = provider.replay_reasoning;
+  if (setting === true) return true;
+  return Array.isArray(setting) && setting.includes(modelName);
+}
+
 function normalizeProviderConfig(
   providerName: string,
   value: unknown,
@@ -387,6 +444,7 @@ function normalizeProviderConfig(
 
   const extraBody = normalizeExtraBody(providerName, 'extra_body', record.extra_body, targetPath);
   const retry = normalizeRetryConfig(providerName, record.retry, targetPath);
+  const replayReasoning = normalizeReplayReasoning(providerName, record.replay_reasoning, targetPath);
 
   let modelExtraBody: Record<string, Record<string, unknown>> | undefined;
   if (record.model_extra_body !== undefined) {
@@ -413,6 +471,7 @@ function normalizeProviderConfig(
     api_key: apiKey.trim(),
   };
   if (retry) config.retry = retry;
+  if (replayReasoning !== undefined) config.replay_reasoning = replayReasoning;
   if (extraBody) config.extra_body = extraBody;
   if (modelExtraBody) config.model_extra_body = modelExtraBody;
   return config;
@@ -650,6 +709,7 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
       apiKey: provider.api_key,
       ...(extraBody ? { extraBody } : {}),
       ...(provider.retry ? { retry: provider.retry } : {}),
+      ...(resolveReplayReasoning(provider, input.providerModel) ? { replayReasoning: true } : {}),
     },
   };
 }
@@ -1310,13 +1370,23 @@ async function consumeResponse(response: Response, state: StreamState, io: Direc
   return turn;
 }
 
-function buildAssistantMessage(turn: CompletionTurn): ChatMessage {
+function buildAssistantMessage(turn: CompletionTurn, replayReasoning: boolean): ChatMessage {
   const message: ChatMessage = {
     role: 'assistant',
     content: turn.assistantText || (turn.toolCalls.length > 0 ? null : ''),
   };
   if (turn.toolCalls.length > 0) {
     message.tool_calls = turn.toolCalls;
+  }
+  /*
+    用 `turn.reasoningText`（這一輪）而不是 `state.reasoningText`（整次 run 的累積）——
+    後者會讓第二輪把第一輪的推理再附一次，越滾越長。
+
+    **每一個 assistant turn 都保存，不是只有帶 tool_calls 的那些。** 最後一輪沒有
+    tool call 的回覆會寫進 session，下次用同一個 session_id 續聊時它就是歷史 assistant turn。
+  */
+  if (replayReasoning && turn.reasoningText) {
+    message.reasoning_content = turn.reasoningText;
   }
   return message;
 }
@@ -1547,7 +1617,7 @@ async function runDirect(cmd: BuiltCommand, io: DirectRunIO): Promise<void> {
         turn.assistantText = strippedAssistantText;
       }
     }
-    messages.push(buildAssistantMessage(turn));
+    messages.push(buildAssistantMessage(turn, config.replayReasoning === true));
     if (!toolsEnabled || turn.toolCalls.length === 0) {
       reachedLimit = false;
       break;

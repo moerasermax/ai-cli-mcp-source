@@ -33,7 +33,7 @@ function writeProviders(providers) {
 
 // 動態 import 一律提到頂層用 top-level await：ok() 只吃同步函式，
 // 在裡面 await 會讓斷言錯誤被吞掉而永遠 PASS（2026-09-08 的假綠燈教訓）。
-const { loadProvidersConfig, resolveExtraBody, directApiAgent, describeConfiguredProviders } = await import(
+const { loadProvidersConfig, resolveExtraBody, directApiAgent, describeConfiguredProviders, resolveReplayReasoning } = await import(
   './dist/agents/direct-api.js'
 );
 
@@ -472,6 +472,125 @@ ok('provider 缺 api_key 時也是回 note 不丟錯', () => {
   const d = describeConfiguredProviders();
   assert.deepStrictEqual(d.configured, {});
   assert.ok(d.note);
+});
+
+
+// ---------------------------------------------------------------- reasoning_content 回送
+// kimi-k3 的 model card：「clients must pass back the complete assistant message,
+// including reasoning_content and tool_calls」。DeepSeek V4 帶 tools 時少送會 400。
+// 但 reasoning_content 不是 OpenAI 的標準 assistant 欄位，而「OpenAI-compatible」
+// 不等於「未知欄位一定被忽略」——所以這是 opt-in，預設不送。
+console.log('\n[reasoning_content 回送]');
+
+ok('replay_reasoning: true → 這個 provider 的所有 model 都送', () => {
+  writeProviders({ nv: { ...BASE, replay_reasoning: true } });
+  const cfg = loadProvidersConfig().providers.nv;
+  assert.strictEqual(resolveReplayReasoning(cfg, 'any/model'), true);
+});
+
+ok('陣列 → 只有列出的 model 送', () => {
+  writeProviders({ nv: { ...BASE, replay_reasoning: ['moonshotai/kimi-k3'] } });
+  const cfg = loadProvidersConfig().providers.nv;
+  assert.strictEqual(resolveReplayReasoning(cfg, 'moonshotai/kimi-k3'), true);
+  assert.strictEqual(resolveReplayReasoning(cfg, 'openai/gpt-oss-20b'), false, '沒列到的不能送');
+});
+
+ok('★ 沒設定 → 不送（預設安全，不猜）', () => {
+  writeProviders({ nv: { ...BASE } });
+  assert.strictEqual(resolveReplayReasoning(loadProvidersConfig().providers.nv, 'x'), false);
+});
+
+for (const [label, bad] of [
+  ['是字串', 'kimi'],
+  ['是 false', false],
+  ['陣列裡有非字串', ['ok', 123]],
+  ['陣列裡有空字串', ['ok', '  ']],
+]) {
+  ok(`replay_reasoning ${label} → 丟錯`, () => {
+    writeProviders({ nv: { ...BASE, replay_reasoning: bad } });
+    assert.throws(() => loadProvidersConfig(), /replay_reasoning/);
+  });
+}
+
+/** 跑一輪工具迴圈，回傳第二次 request 的 messages。 */
+async function captureSecondTurn({ providers, model, reasoningChunks, withToolCall = true }) {
+  writeProviders(providers);
+  const bodies = [];
+  let call = 0;
+  globalThis.fetch = async (_url, init = {}) => {
+    bodies.push(JSON.parse(String(init.body)));
+    call += 1;
+    const encoder = new TextEncoder();
+    const events = [];
+    if (call === 1) {
+      for (const r of reasoningChunks) events.push({ choices: [{ delta: { reasoning_content: r } }] });
+      if (withToolCall) {
+        events.push({
+          choices: [{
+            delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
+            finish_reason: 'tool_calls',
+          }],
+        });
+      } else {
+        events.push({ choices: [{ delta: { content: 'done' }, finish_reason: 'stop' }] });
+      }
+    } else {
+      events.push({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] });
+    }
+    const sse = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';
+    return new Response(
+      new ReadableStream({ start(c) { c.enqueue(encoder.encode(sse)); c.close(); } }),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } }
+    );
+  };
+  const cmd = directApiAgent.buildCommand({
+    cliPath: '', cwd: tempRoot, prompt: 'hi', resolvedModel: model,
+    rawModel: `nv-${model}`, reasoningEffort: '', providerName: 'nv', providerModel: model,
+  });
+  await directApiAgent.runDirect(cmd, noop);
+  return bodies;
+}
+
+const KIMI = 'moonshotai/kimi-k3';
+const onCfg = { nv: { ...BASE, replay_reasoning: [KIMI] } };
+
+const replayed = await captureSecondTurn({
+  providers: onCfg, model: KIMI, reasoningChunks: ['想了', '一下'],
+});
+ok('★ 開啟時：第二輪的 assistant message 帶完整 reasoning_content', () => {
+  assert.strictEqual(replayed.length, 2, '應該打兩次');
+  const asst = replayed[1].messages.find((m) => m.role === 'assistant');
+  assert.strictEqual(asst.reasoning_content, '想了一下', '串流分段要接起來');
+  assert.ok(asst.tool_calls?.length, 'tool_calls 也要在');
+});
+
+ok('reasoning_content 在 assistant message 裡，不是 request 頂層', () => {
+  assert.strictEqual(replayed[1].reasoning_content, undefined);
+});
+
+const notReplayed = await captureSecondTurn({
+  providers: { nv: { ...BASE } }, model: KIMI, reasoningChunks: ['想了一下'],
+});
+ok('★ 沒開啟時不送（即使端點有回 reasoning）', () => {
+  const asst = notReplayed[1].messages.find((m) => m.role === 'assistant');
+  assert.strictEqual(asst.reasoning_content, undefined, '未設定的 model 不可多送未知欄位');
+});
+
+const otherModel = await captureSecondTurn({
+  providers: onCfg, model: 'openai/gpt-oss-20b', reasoningChunks: ['想了一下'],
+});
+ok('★ 同一個 provider 底下沒列到的 model 不送', () => {
+  const asst = otherModel[1].messages.find((m) => m.role === 'assistant');
+  assert.strictEqual(asst.reasoning_content, undefined);
+});
+
+const noReasoning = await captureSecondTurn({
+  providers: onCfg, model: KIMI, reasoningChunks: [],
+});
+ok('端點沒回 reasoning 時省略欄位，不要送空字串', () => {
+  const asst = noReasoning[1].messages.find((m) => m.role === 'assistant');
+  assert.ok(!('reasoning_content' in asst), '不可序列化成空字串或 undefined');
 });
 
 console.log(failures === 0 ? '\n全部通過 ✅' : `\n有 ${failures} 項失敗 ❌`);

@@ -295,6 +295,36 @@ endpoint 在高需求時會回 **429 或 503**，並建議「短暫等待後重�
 **放慢速率到不了 100%，重試才到**，而且速率還更快。均勻放慢是拿所有請求的時間去換
 少數請求的成功率；退避重試只在服務端真的拒絕時才付出等待。
 
+
+### replay_reasoning：把上一輪的推理回送
+
+有些模型要求上一輪的 assistant message **完整**回送，包含它自己的推理內容。
+Kimi-K3 的 model card 原句是 “clients must pass back the complete assistant message,
+including `reasoning_content` and `tool_calls`”；DeepSeek V4 更硬——帶 `tools` 時
+少送會直接 **400**。
+
+```json
+"nv": { "replay_reasoning": ["moonshotai/kimi-k3"] }
+```
+
+`true` 代表這個 provider 的所有 model 都送，陣列則只送列出的那幾個。
+
+> **預設關閉，而且刻意不做內建的 model 白名單。**
+> `reasoning_content` 不在 OpenAI 的 assistant message schema 裡，而「OpenAI-compatible」
+> 不保證未知欄位會被忽略——Azure AI Model Inference 的 `extra-parameters` 預設就是 `error`。
+> 至於為什麼不寫死一份清單：這個專案的每一份硬編 model 清單最後都過期了
+> （codex 的靜態清單裡還躺著三個帳號用不了的 model），再加一份只是換個地方犯同一個錯。
+
+兩個實作細節：
+
+- 回送的是**這一輪**的推理（`turn.reasoningText`），不是整次 run 的累積值。用後者的話
+  第二輪會把第一輪的推理再附一次，越滾越長。
+- **每一個 assistant turn 都保存**，不是只有帶 `tool_calls` 的那些。最後一輪沒有工具呼叫的
+  回覆會寫進 session 檔，下次用同一個 `session_id` 續聊時它就是歷史 assistant turn。
+
+**實測的但書**：Kimi-K3 在**不回送**的情況下也能正確走完三輪工具鏈，而官方文件
+沒有寫少送會怎樣。所以這是照契約做，不是修一個看得見的當機。
+
 ### 這台機器接得到什麼
 
 `models` 的回傳有一個 `directApiProviders`：每個已設定 provider 的可用前綴
