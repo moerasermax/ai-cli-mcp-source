@@ -7,6 +7,26 @@
 維護規則見 [CONTRIBUTING.md](./CONTRIBUTING.md)：**每次改動都要在此補一行。**
 
 ## [Unreleased]
+
+## [6.1.0] - 2026-09-09
+
+**這一版的第一個目的是把 npm 上的內容與 git tag 對齊。**
+
+⚠️ **npm 上的 `6.0.0` 不對應 git tag `v6.0.0`。** 它是從超前該 tag **13 個 commit**
+的樹發佈出去的——除了發佈整備（npm 套件化、CI、SECURITY.md、上游歸屬、改名）
+之外，還含 tag 之後就一直堆在 `[Unreleased]` 的既有功能（`replay_reasoning`、
+429/5xx 退避重試、派工建議表進工具回傳、SessionStart hook 進版控、`extra_body`）。
+tag `v6.0.0`（`162c635`）裡連 `NOTICE` 都還不存在。
+
+這是發佈當下沒注意到的順序錯誤：先發了套件，才想到樹早已超前 tag。**從 6.1.0 起，
+npm 版本一律從打了 tag 的 commit 發佈**，讓「這個 tarball 對應哪個 commit」有唯一答案。
+npm 上的 6.0.0 保留不刪（刪掉會讓已經裝到的人壞掉），改以 deprecate 標註它的實際來源。
+
+這件事本身就是本專案那條原則的應用：**說得出自己的出處，比看起來乾淨重要。**
+一個對不上 tag 的 tarball，跟一個回 `false` 卻其實沒檢查的 `doctor` 是同一類問題。
+
+以下是本版收錄的全部內容。
+
 ### 變更（CI：POSIX 從實驗性升為閘門）
 
 - **`test-posix` 移除 `continue-on-error`，改為與 Windows 同級的閘門，並補上
