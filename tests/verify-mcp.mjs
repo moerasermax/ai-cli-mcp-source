@@ -5,7 +5,7 @@
 // 但這支腳本當時硬編 `C:\Users\Moera\...\dist\server.js`，只測得到其中一個入口，
 // 於是那個 bug 從框架初版活到 4.1.1 都沒被抓到。典型的假綠燈。
 // 路徑一律相對本檔解析，不要再寫死任何機器上的絕對路徑。
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,13 +17,13 @@ const logs = [];
 const log = (...a) => logs.push(a.join(' '));
 process.on('exit', () => writeFileSync('mcp-test-out.txt', logs.join('\n') + '\n'));
 
-const dist = (relative) => fileURLToPath(new URL(`./dist/${relative}`, import.meta.url));
-const PKG = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'));
+const dist = (relative) => fileURLToPath(new URL(`../dist/${relative}`, import.meta.url));
+const PKG = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
 // 從 git URL 另外算一次 owner/repo：**不呼叫 src 的 normalizeRepositoryUrl**。
 // 用同一段邏輯驗同一段邏輯等於沒驗（這個專案吃過三次這種假綠燈的虧）。
 const PKG_SLUG = String(PKG.repository?.url ?? '').replace(/\.git$/, '').split('/').slice(-2).join('/');
 const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-mcp-smoke-'));
-const stub = fileURLToPath(new URL(`./tools/stubs/agy-models-slow.${process.platform === 'win32' ? 'cmd' : 'mjs'}`, import.meta.url));
+const stub = fileURLToPath(new URL(`../tools/stubs/agy-models-slow.${process.platform === 'win32' ? 'cmd' : 'mjs'}`, import.meta.url));
 if (process.platform !== 'win32') chmodSync(stub, 0o755);
 let passed = 0;
 let failures = 0;

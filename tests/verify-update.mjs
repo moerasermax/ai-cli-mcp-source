@@ -3,7 +3,7 @@
  * 最小 fixture 用 node marker 代替 tsc；真實 MCP 用 slow-agent stub，不呼叫供應商。
  * 每次失敗印 FAIL <名稱>，供 mutation harness 精確辨識，不能拿任意非零 exit 當 KILLED。
  */
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,9 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import { applyUpdate, checkForUpdate, clearNoticeOnStartup, consumeNotice, getUpdateStatus, postUpdateActions, spawnUpdateCommand } from './dist/core/updater.js';
+import { applyUpdate, checkForUpdate, clearNoticeOnStartup, consumeNotice, getUpdateStatus, postUpdateActions, spawnUpdateCommand } from '../dist/core/updater.js';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-update with spaces-'));
 const TRACE = join(TEMP, 'git-trace.jsonl');
 const URL = 'https://github.com/moerasermax/ai-cli-mcp-source/blob/master/CHANGELOG.md';
@@ -230,11 +230,11 @@ try {
     await clearNoticeOnStartup();
     check('舊 process 重複啟動清除函式仍保留 notice', disk(f).notice === state.notice && state.notice !== null);
     // 新的模組實例代表全新的 process 啟動，只讀這個 fixture 的 HEAD。
-    const restarted = await import(`./dist/core/updater.js?restart=${serial}`);
+    const restarted = await import(`../dist/core/updater.js?restart=${serial}`);
     const result = await restarted.clearNoticeOnStartup();
     check('新版 HEAD 等於 lastApplied.to 清 notice', result.notice === null && disk(f).notice === null && /ai-cli 已是最新版/.test(result.reason)
       && disk(f).lastApplied.from === prev);
-    const secondRestart = await import(`./dist/core/updater.js?secondRestart=${serial}`);
+    const secondRestart = await import(`../dist/core/updater.js?secondRestart=${serial}`);
     const again = await secondRestart.clearNoticeOnStartup();
     check('提示已清除後再次啟動不再重複回報', again.reason === undefined && again.notice === null, JSON.stringify(again));
   });

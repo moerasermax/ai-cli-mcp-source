@@ -106,7 +106,7 @@ through `src/core/circuit-breaker.ts` first, which watches for two loop signatur
 
 Either one opens the breaker for `AI_CLI_BREAKER_COOLDOWN_SEC`, during which starts
 are refused with an explicit error, after which it recovers on its own. Normal usage
-does not trip it. Verify with `npm run build && node verify-breaker.mjs`.
+does not trip it. Verify with `npm run build && node tests/verify-breaker.mjs`.
 
 ## Knowing whether the AI is still alive
 

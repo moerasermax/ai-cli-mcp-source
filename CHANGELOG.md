@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+### 變更（測試腳本改置於 `tests/`，無對外行為變化）
+
+- **15 支 `verify-*.mjs` 從 repo 根目錄移進 `tests/`。** 根目錄本來被這排測試檔塞滿，
+  訪客第一屏看不出這 repo 在做什麼；搬進 `tests/` 後根目錄只剩 README / 設定 / 授權等
+  頂層檔。這是純搬移，`npm test` 內容、CI、突變 harness 覆蓋範圍都不變。
+- 搬移的路徑處理：每支測試以「自己所在目錄的上一層」為基準讀 `dist/`、`src/`、`tools/`
+  （`const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))`；`new URL` / 相對 import
+  一律改成 `../`）。連帶更新 `package.json` 的 test script 前綴、`tools/mutation-test.mjs`
+  跑腳本時補 `tests/`、以及 README / CONTRIBUTING / CLAUDE.md 的位置與支數敘述
+  （順手把 CONTRIBUTING 過時的「十支」更正為實際的十三支）。
+- typecheck / build / npm test（13 支、零 FAIL）在新位置全綠。（Claude）
+
 ## [6.2.0] - 2026-09-10
 
 ### 新增（本機 OpenAI 相容端點也能當 provider）

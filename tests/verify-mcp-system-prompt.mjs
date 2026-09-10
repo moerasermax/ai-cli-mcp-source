@@ -27,12 +27,12 @@
  * 用法：node verify-mcp-system-prompt.mjs
  */
 
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const results = [];
 function check(ok, name, detail = '') {
   results.push([ok, name, detail]);

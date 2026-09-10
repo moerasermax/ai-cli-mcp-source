@@ -1,11 +1,11 @@
 // direct-api 基本驗證：mock fetch，不打真實 provider。
 // 執行前需先 npm run build。
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import assert from 'node:assert';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProcessService } from './dist/core/process-service.js';
+import { ProcessService } from '../dist/core/process-service.js';
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'aicli-direct-api-'));
 // 清理掛在 exit 上，不能只放在最後一行 —— assertion 中途拋錯時那行根本跑不到，

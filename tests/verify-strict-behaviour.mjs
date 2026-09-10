@@ -20,7 +20,7 @@
  * 用法：node verify-strict-behaviour.mjs
  */
 
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,7 @@ import { pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const results = [];
 let skipped = 0;
 function check(ok, name, detail = '') {

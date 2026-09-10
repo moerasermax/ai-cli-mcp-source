@@ -34,7 +34,7 @@ function writeProviders(providers) {
 // 動態 import 一律提到頂層用 top-level await：ok() 只吃同步函式，
 // 在裡面 await 會讓斷言錯誤被吞掉而永遠 PASS（2026-09-08 的假綠燈教訓）。
 const { loadProvidersConfig, resolveExtraBody, directApiAgent, describeConfiguredProviders, resolveReplayReasoning } = await import(
-  './dist/agents/direct-api.js'
+  '../dist/agents/direct-api.js'
 );
 
 let failures = 0;

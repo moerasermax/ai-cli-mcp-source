@@ -3,14 +3,14 @@
  * job 暫存檔在 repo/dist；設定與更新狀態由 test-env 隔離，完全不碰使用者目錄。
  * 失敗必須印 stdout 的 `FAIL <名稱>`，供 tools/mutation-test.mjs 指認對應斷言。
  */
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TEMP = mkdtempSync(join(ROOT, 'dist', 'verify-liveness-'));
 const CONFIG = join(process.env.AI_CLI_CONFIG_DIR, 'config.json');
 const backup = existsSync(CONFIG) ? readFileSync(CONFIG) : null;
@@ -288,7 +288,7 @@ async function edgeChecks(ProcessService, FileProcessService, buildLiveness, emp
     entry.process.stderr.emit('data', Buffer.from('警告'));
     check('Memory stderr counts UTF-8 bytes', service.getProcessResult(run.pid).liveness.stderrBytes === Buffer.byteLength('警告'));
     check('Memory stderr updates last output', typeof service.getProcessResult(run.pid).liveness.sinceLastOutputSec === 'number');
-    const { getAgent } = await import('./dist/agents/registry.js');
+    const { getAgent } = await import('../dist/agents/registry.js');
     const directAgent = getAgent('direct-api');
     const originalRunDirect = directAgent.runDirect;
     let release;
@@ -328,10 +328,10 @@ async function edgeChecks(ProcessService, FileProcessService, buildLiveness, emp
 try {
   mkdirSync(dirname(CONFIG), { recursive: true });
   writeFileSync(CONFIG, '{}\n');
-  const { ProcessService } = await import('./dist/core/process-service.js');
-  const { FileProcessService } = await import('./dist/core/file-process-service.js');
-  const { buildLiveness, emptyOutputStats } = await import('./dist/core/liveness.js');
-  const { LivenessEventExtractor, PeekEventExtractor } = await import('./dist/core/peek-extractor.js');
+  const { ProcessService } = await import('../dist/core/process-service.js');
+  const { FileProcessService } = await import('../dist/core/file-process-service.js');
+  const { buildLiveness, emptyOutputStats } = await import('../dist/core/liveness.js');
+  const { LivenessEventExtractor, PeekEventExtractor } = await import('../dist/core/peek-extractor.js');
   await attempt('MCP checks', mcpChecks);
   await attempt('File checks', () => fileChecks(FileProcessService));
   await attempt('edge checks', () => edgeChecks(ProcessService, FileProcessService, buildLiveness, emptyOutputStats, LivenessEventExtractor, PeekEventExtractor));

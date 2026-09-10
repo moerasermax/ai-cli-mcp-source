@@ -12,7 +12,7 @@ process.on('exit', () => writeFileSync('e2e-out.txt', logs.join('\n') + '\n'));
 const transport = new StdioClientTransport({
   command: 'node',
   // 相對本檔解析，不要寫死任何機器上的絕對路徑。
-  args: [fileURLToPath(new URL('./dist/server.js', import.meta.url))],
+  args: [fileURLToPath(new URL('../dist/server.js', import.meta.url))],
 });
 const client = new Client({ name: 'e2e', version: '1.0.0' }, { capabilities: {} });
 await client.connect(transport);

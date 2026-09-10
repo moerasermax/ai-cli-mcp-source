@@ -23,12 +23,12 @@
  * 用法：node verify-agy-parse.mjs
  */
 
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const results = [];
 function check(ok, name, detail = '') {
   results.push([ok, name, detail]);

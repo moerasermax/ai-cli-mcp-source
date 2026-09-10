@@ -17,12 +17,12 @@
  * 用法：node verify-exec-contract.mjs
  */
 
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(ROOT, 'dist', 'bin', 'ai-cli.js');
 
 const results = [];

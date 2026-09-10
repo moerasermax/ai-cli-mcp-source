@@ -1,6 +1,6 @@
 // 純邏輯驗證：直接餵 33 次不同 prompt 給已編譯的 CircuitBreaker，
 // 確認 rate 門檻（maxStarts=30）在第 31 次觸發。不啟動任何 AI 子程序。
-import { CircuitBreaker, loadCircuitBreakerConfig } from './dist/core/circuit-breaker.js';
+import { CircuitBreaker, loadCircuitBreakerConfig } from '../dist/core/circuit-breaker.js';
 
 const cfg = loadCircuitBreakerConfig();
 console.log('loaded config =', cfg);

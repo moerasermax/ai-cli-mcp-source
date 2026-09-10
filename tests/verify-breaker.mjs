@@ -3,7 +3,7 @@
  * 用注入的假時鐘驅動，確認 rate / duplicate 觸發、冷卻恢復、disabled / warn 模式。
  * 執行：npm run build && node verify-breaker.mjs
  */
-import { CircuitBreaker } from './dist/core/circuit-breaker.js';
+import { CircuitBreaker } from '../dist/core/circuit-breaker.js';
 import assert from 'node:assert';
 
 let failures = 0;

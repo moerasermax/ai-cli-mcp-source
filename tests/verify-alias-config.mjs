@@ -11,13 +11,13 @@
  * 用法：node verify-alias-config.mjs
  */
 
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CONFIG = join(process.env.AI_CLI_CONFIG_DIR, 'config.json');
 
 /**

@@ -18,7 +18,7 @@
  * 用法：node verify-catalog-source.mjs
  */
 
-import './tools/stubs/catalog-test-env.mjs';
+import '../tools/stubs/catalog-test-env.mjs';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-catalog-source-'));
 const CACHE = join(TEMP, 'catalog-cache.json');
 const envKeys = ['AI_CLI_CATALOG_CACHE_PATH', 'AGY_CLI_NAME', 'AI_CLI_DISCOVER_TIMEOUT_MS',

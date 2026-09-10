@@ -128,7 +128,7 @@ for (const [i, mutation] of MUTATIONS.entries()) {
   writeFileSync(path, normalized.replace(mutation.from, mutation.to));
   const build = buildAll();
   const { code, out } =
-    build.code !== 0 ? { code: -1, out: `BUILD FAILED\n${build.out}` } : run([scriptOf(mutation)]);
+    build.code !== 0 ? { code: -1, out: `BUILD FAILED\n${build.out}` } : run([join('tests', scriptOf(mutation))]);
   writeFileSync(path, originalBytes);
 
   // 期待：這個突變讓測試失敗，而且失敗的是我們指定的那條斷言。
