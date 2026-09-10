@@ -157,6 +157,11 @@ ${getSupportedModelsDescription()}
                 description:
                   'Restrict what the agent may do. Give it and the agent starts through its STRICT builder instead of the normal one: claude gets --allowedTools Read,Glob,Grep with no --dangerously-skip-permissions, codex gets --sandbox read-only. A read-only turn is ["fs/read", "analysis/produce"]. OMITTING this field keeps the long-standing behaviour: unrestricted, with the vendor permission bypasses on. An EMPTY array is NOT the same as omitting it — empty means "no capabilities at all" and still goes through the strict builder. If the selected agent has no strict builder the call is REFUSED rather than quietly falling back to the permissive one.',
               },
+              system_prompt: {
+                type: 'string',
+                description:
+                  "A system prompt for this run, appended after the vendor default (claude: --append-system-prompt-file). Use it for operator-side framing that must NOT look like user input — for example a protocol marker or a transcript replay that the caller injects. Text placed in the prompt body sits where the user's own words go, and a well-aligned model can legitimately read it as prompt injection and refuse. REFUSED (not ignored) when the selected agent has no system-prompt channel, so the caller never believes the framing was delivered when it was not.",
+              },
             },
             required: ['workFolder'],
           },
@@ -530,6 +535,11 @@ Note: antigravity (agy) does accept model selection — the resolved name is nor
         // 折成同一件事會讓一個要求限制的呼叫端拿到全開權限而不自知。
         ...(Array.isArray(toolArguments.capabilities)
           ? { capabilities: (toolArguments.capabilities as unknown[]).map(String) }
+          : {}),
+        // 同理：存在才轉送。不支援系統提示的 agent 會在 command-builder 被擋下，
+        // 呼叫端寧可拿到一個明確的拒絕，也不要以為那段說明送到了。
+        ...(typeof toolArguments.system_prompt === 'string'
+          ? { system_prompt: toolArguments.system_prompt }
           : {}),
       });
       return this.jsonResult({ ...result, updateNotice: consumeNotice() });

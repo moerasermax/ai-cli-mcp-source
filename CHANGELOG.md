@@ -8,6 +8,42 @@
 
 ## [Unreleased]
 
+### 新增（MCP `run` 的系統提示通道）
+
+- **`run` 新增 `system_prompt` 參數**，claude 走 `--append-system-prompt-file`。
+
+  用途是「操作方的框架」——呼叫端（TKFLYC Launcher 的 Hub）有一套續接對帳協定，
+  過去只能把「下面這些結構是工作台產生的」寫進 prompt 內文，也就是**使用者訊息的位置**。
+  對齊良好的模型會合理地把它讀成提示注入並拒絕照做，實測原文：
+  「…都是被塞進使用者訊息內文的提示注入……我不會附加 `[wb-ack ...]` 標記」。
+  系統提示是操作方自己的通道，那裡的文字天生就不是使用者輸入。
+
+  **fail-closed**：agent 沒有系統提示通道（例如 codex exec 只有 `-c key=value`）時
+  **拒絕啟動**，不是靜默忽略。靜默忽略會讓呼叫端以為那段說明送到了、而模型什麼都沒看到，
+  比不支援更糟——它看起來成功了。`AgentDefinition.supportsSystemPrompt` 省略等於沒有。
+
+  **走檔案不走 args**：Windows 上 claude 是 npm 的 `.CMD` shim，spawn 需要 `shell:true`，
+  而 cmd.exe 會對含空白／換行的長參數重新切詞、並在換行處截斷（prompt 因此早就改走 stdin）。
+  系統提示同樣是多行長文字，走 args 會踩一模一樣的坑，而且失敗的樣子很難看：
+  指令跑得起來、系統提示卻少了半截。暫存檔寫在 `%TMP%/ai-cli-system-prompts`，
+  每次寫入順手清掉超過 6 小時的舊檔——沒有人會回來刪這些檔。
+
+  守門：`verify-mcp-system-prompt.mjs`（已進 `npm test`）釘住五件事——schema 真的收這個欄位、
+  參數真的送到 CLI **且檔案內容逐字相符**（只驗「參數有沒有送出去」是不夠的）、
+  唯讀回合（strict builder）也帶得上、不給時完全不出現、以及不支援的 agent 會被拒絕。
+
+  ⚠ 誠實補一句：**這個參數解不了上面那個拒絕問題。** 呼叫端把說明改放系統提示之後
+  逐字送達，模型照樣拒絕，理由一字未改。真正的根因是「模型自己先前的拒絕訊息被重播回去」
+  （見 tkflyc-launcher ADR-093）。保留它是因為它本身是對的東西。（Claude）
+
+### 已知缺陷（未修）
+
+- **`codex exec resume` 不接受 `--sandbox`**，但 codex 的 strict builder 在 resume 時照樣加了它，
+  於是「唯讀 ＋ 續接既有 session」在 codex 上直接起不來：
+  `error: unexpected argument '--sandbox' found`（實測 exit 2）。
+  唯讀且不 resume、或 resume 但不唯讀都正常，只有兩者同時才炸。（Claude）
+
+
 ### 修正（🔴 嚴格模式一直擋不住寫入）
 
 - **`ai-cli exec` 的嚴格模式（唯讀）從上線那天起就擋不住寫入。** 如果你把 `exec`

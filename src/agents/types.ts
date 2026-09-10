@@ -42,6 +42,11 @@ export interface BuildCommandInput {
   rawModel: string;
   reasoningEffort: string;
   sessionId?: string;
+  /**
+   * 這一回合的系統提示。只有宣告 `supportsSystemPrompt` 的 agent 收得到；
+   * command-builder 對其他 agent 會直接拒絕，不會靜默丟掉。
+   */
+  systemPrompt?: string;
   /** direct-api 專用：provider key（providers.json 中的 key）。 */
   providerName?: string;
   /** direct-api 專用：實際送到 provider 的 model 名稱。 */
@@ -174,6 +179,12 @@ export interface AgentDefinition {
   reasoning: ReasoningSupport;
 
   /** 組裝實際 CLI 指令。 */
+  /**
+   * 這個 agent 的 CLI 有沒有系統提示通道（claude 的 --append-system-prompt-file）。
+   * 省略等於沒有：command-builder 會拒絕帶 system_prompt 的呼叫，而不是靜默丟掉。
+   */
+  supportsSystemPrompt?: boolean;
+
   buildCommand(input: BuildCommandInput): BuiltCommand;
 
   /**

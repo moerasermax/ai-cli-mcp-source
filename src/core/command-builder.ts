@@ -44,6 +44,21 @@ export interface BuildCliCommandOptions {
    * 拿到全開權限而不自知——那是最糟的一種說謊，因為它看起來成功了。
    */
   capabilities?: readonly string[];
+
+  /**
+   * 這一回合的系統提示（追加在 vendor 預設之後）。
+   *
+   * 為什麼需要它：呼叫端（TKFLYC Launcher 的 Hub）有一套續接對帳協定，
+   * 過去只能把「下面這些結構是操作方產生的」寫進 prompt 內文。那段文字出現在
+   * **使用者訊息的位置**，長相就是提示注入的標準形狀——對齊良好的模型會拒絕照做，
+   * 而拒絕的代價是對話永遠無法接續（該專案 ADR-090）。
+   * 系統提示是操作方自己的通道，那裡的指令天生就不是使用者輸入。
+   *
+   * ★ fail-closed：給了這個欄位，而該 agent 沒有系統提示通道，就**拒絕啟動**。
+   *   靜默忽略會讓呼叫端以為協定講清楚了、實際上模型什麼都沒看到——
+   *   那比不支援更糟，因為它看起來成功了。
+   */
+  system_prompt?: string;
 }
 
 interface ModelSelection {
@@ -181,7 +196,23 @@ export function buildCliCommand(options: BuildCliCommandOptions): BuiltCommand {
         : undefined,
     providerName,
     providerModel,
+    systemPrompt:
+      typeof options.system_prompt === 'string' && options.system_prompt.trim() !== ''
+        ? options.system_prompt
+        : undefined,
   };
+
+  /*
+    ★ fail-closed，與上面 capabilities 同一個形狀：呼叫端要求把協定放進系統提示，
+    而這個 agent 根本沒有那條通道時，不能假裝有。
+    檢查放在 buildCommand 之前，理由要是「這個 agent 沒有系統提示通道」。
+  */
+  if (input.systemPrompt !== undefined && agent.supportsSystemPrompt !== true) {
+    throw new Error(
+      `agent「${agent.id}」沒有系統提示通道（supportsSystemPrompt 不為 true），拒絕啟動。` +
+        '靜默忽略會讓呼叫端以為那段說明送到了，而模型其實什麼都沒看到。'
+    );
+  }
 
   /*
     ★ fail-closed。呼叫端給了 capabilities，就不能退回帶 `--dangerously-*` 的一般模式。

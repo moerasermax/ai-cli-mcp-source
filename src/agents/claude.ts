@@ -3,14 +3,55 @@
  * 行為 1:1 還原 dist：cli-builder.js claude 分支 + parsers.js parseClaudeOutput。
  */
 
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { AgentDefinition, BuildCommandInput, BuiltCommand } from './types.js';
 import { debugLog } from '../core/debug.js';
 
 const CLAUDE_MODELS = ['sonnet', 'sonnet[1m]', 'opus', 'opusplan', 'haiku'] as const;
 
 const CLAUDE_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+const SYSTEM_PROMPT_DIR = join(tmpdir(), 'ai-cli-system-prompts');
+const SYSTEM_PROMPT_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * 系統提示走**檔案**，不走 args。
+ *
+ * 理由就寫在本檔 buildCommand 的註解裡：Windows 上 claude 是 npm 的 .CMD shim，
+ * spawn 需要 shell:true，而 cmd.exe 會對含空白／換行的長參數重新切詞、並在換行處截斷。
+ * prompt 因此改走 stdin。系統提示同樣是多行長文字，走 args 會踩一模一樣的坑，
+ * 而且失敗的樣子很難看：指令跑得起來、系統提示卻少了半截。
+ */
+function writeSystemPromptFile(text: string): string {
+  mkdirSync(SYSTEM_PROMPT_DIR, { recursive: true });
+  pruneStaleSystemPrompts();
+  const path = join(
+    SYSTEM_PROMPT_DIR,
+    `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.txt`
+  );
+  writeFileSync(path, text, 'utf8');
+  return path;
+}
+
+/** 每次寫入順手清過期的：沒有人會回來刪這些檔，累積起來就是一個沒人看的垃圾堆。 */
+function pruneStaleSystemPrompts(): void {
+  try {
+    const now = Date.now();
+    for (const name of readdirSync(SYSTEM_PROMPT_DIR)) {
+      if (!name.startsWith('sp_')) continue;
+      const full = join(SYSTEM_PROMPT_DIR, name);
+      try {
+        if (now - statSync(full).mtimeMs > SYSTEM_PROMPT_TTL_MS) unlinkSync(full);
+      } catch {
+        /* 清不掉某一個不該擋住這次呼叫 */
+      }
+    }
+  } catch {
+    /* 目錄剛建好或被外部刪掉，都不是錯 */
+  }
+}
 
 /**
  * 能力 → 這個 vendor 的嚴格限制。
@@ -49,7 +90,7 @@ function buildStrictCommand(
   input: BuildCommandInput,
   capabilities: readonly string[]
 ): BuiltCommand {
-  const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId } = input;
+  const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId, systemPrompt } = input;
   const tools = new Set<string>();
   for (const capability of capabilities) {
     const mapped = CLAUDE_TOOLS_BY_CAPABILITY[capability];
@@ -94,6 +135,7 @@ function buildStrictCommand(
     'stream-json',
     '--verbose',
   ];
+  if (systemPrompt) args.push('--append-system-prompt-file', writeSystemPromptFile(systemPrompt));
   if (sessionId) args.push('-r', sessionId, '--fork-session');
   if (reasoningEffort) args.push('--effort', reasoningEffort);
   args.push('-p');
@@ -102,8 +144,11 @@ function buildStrictCommand(
 }
 
 function buildCommand(input: BuildCommandInput): BuiltCommand {
-  const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId } = input;
+  const { cliPath, cwd, prompt, resolvedModel, reasoningEffort, sessionId, systemPrompt } = input;
   const args = ['--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'];
+  if (systemPrompt) {
+    args.push('--append-system-prompt-file', writeSystemPromptFile(systemPrompt));
+  }
   if (sessionId) {
     args.push('-r', sessionId, '--fork-session');
   }
@@ -188,6 +233,10 @@ function parseOutput(stdout: string): unknown {
 
 export const claudeAgent: AgentDefinition = {
   id: 'claude',
+  // claude CLI 有 --append-system-prompt-file，所以這個 agent 收得下系統提示。
+  // 沒有宣告的 agent（例如 codex exec，只有 -c key=value）會被 command-builder 擋下來，
+  // 而不是把那段說明默默丟掉。
+  supportsSystemPrompt: true,
   models: CLAUDE_MODELS,
   // fallback：任何沒被其他 agent 認領的 model 都走 claude
   matchesModel: () => true,
