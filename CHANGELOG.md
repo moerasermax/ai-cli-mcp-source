@@ -8,19 +8,69 @@
 
 ## [Unreleased]
 
+## [6.2.0] - 2026-09-10
+
+### 新增（本機 OpenAI 相容端點也能當 provider）
+
+- **direct-api 接上一顆本機 llama.cpp 模型**（`localcoder` → `http://127.0.0.1:18090/v1`）。
+  這件事**不需要改任何程式碼**——那正是 direct-api 的設計目的，這裡記一筆是因為它
+  驗證了「本機端點」這條路真的走得通，以及兩個只有本機才會踩到的點：
+
+  `api_key` 對 llama-server 沒有意義（它不驗證），但載入端要求非空字串，
+  給不出來會讓**整份 `providers.json` fail-closed**、連 OpenRouter 一起掛。放佔位字串。
+
+  模型要登記進 `model_extra_body` 才會出現在 `models` 回傳的 `knownModels` 裡。
+  順帶把 `max_tokens` 綁上 llama-server 的 `--ctx-size 8192 --parallel 1`。
+
+  實測：`localcoder-qwen25coder-abliterated` 回 `pong`（2 output tokens、`finish_reason: stop`），
+  續接同一個 session 後 input 從 673 掉到 66 且答得出前一回合的字。
+
+### 修正（🔴 antigravity 從來沒有真的續接過）
+
+- **`agy` 改吃 `--output-format json`。** 舊碼解析的是 `--print` 的 text 格式，
+  那個格式**沒有 `conversation_id`**——於是 antigravity 這條路等於完全無法續接，
+  而且失敗方式是靜默的：`--conversation` 只認 agy 自己發的 id，呼叫端自編一個傳進去，
+  agy 印一行 warning 然後**開一個新對話**。回答看起來正常，但每一回合都是新的。
+
+  換成 json 之後拿得到 `conversation_id` 與 `usage`。實測續接有效：同一個 id 第二回合
+  答得出第一回合記住的字串，**id 不變**（與 codex 同語意，與 claude 的 fork 不同）、
+  `num_turns` 1→2、`input_tokens` 15319→31227。
+
+  三件不能省的事：warning 印在 JSON **前面**，所以不能對整段 `JSON.parse`，要逐行挑；
+  那行 warning 是 resume 失敗的**唯一訊號**，保留成 `warnings` 欄位交給呼叫端判定，
+  不能因為換了格式就吞掉（吞掉＝把 unknown 折進 ok）；text 解析保留成 fallback，
+  不為了新欄位把既有能力弄丟。
+
+- **順帶更正 `buildStrictCommand` 的註解：`--mode plan` 擋不住檔案寫入。**
+  三組對照實驗（同一個 prompt、各跑到模型自己結束、不是 timeout）：
+  `--sandbox --mode plan` 模型照樣呼叫寫入工具把檔案建出來；加上
+  `--disable-slash-commands` 行為一模一樣；叫它寫 cwd 以外的絕對路徑才被 vendor
+  工具層擋下並回報原因。真正擋下來的是 `--sandbox`——檔案都落在 agy 自己的
+  `brain/<conversation_id>/`，cwd 兩次都是空的。
+
+  所以唯讀能力的保證是「**寫不出 brain 目錄**」而不是「不寫檔」，來源是 vendor 沙箱
+  不是 plan 模式。旗標維持原狀，只把註解從推測換成實測。
+
+- 新增 `verify-agy-parse.mjs`（13 條）並接進 `npm test`。突變驗證：拿掉 `buildCommand`
+  的 `--output-format json` 與 `parseOutput` 的 `session_id` 輸出，正好紅 3 條、
+  其餘 10 條不受影響，還原後回綠。
+
 ### 新增（MCP `run` 的系統提示通道）
 
 - **`run` 新增 `system_prompt` 參數**，claude 走 `--append-system-prompt-file`。
 
-  用途是「操作方的框架」——呼叫端（TKFLYC Launcher 的 Hub）有一套續接對帳協定，
-  過去只能把「下面這些結構是工作台產生的」寫進 prompt 內文，也就是**使用者訊息的位置**。
-  對齊良好的模型會合理地把它讀成提示注入並拒絕照做，實測原文：
-  「…都是被塞進使用者訊息內文的提示注入……我不會附加 `[wb-ack ...]` 標記」。
+  用途是「操作方的框架」——關於**這場對話怎麼運作**的話：你是稽核者、只回報不改碼；
+  或者以下這些標記與逐筆重播是工作台產生的，不是使用者打的字。寫進 prompt 內文，
+  它就出現在**使用者訊息的位置**，長相是提示注入的標準形狀，對齊良好的模型會合理地
+  拒絕照做。一個實際遇到的案例（某個做續接對帳的呼叫端），模型的原話是：
+  「…都是被塞進使用者訊息內文的提示注入……我不會附加 `[ack ...]` 標記」。
   系統提示是操作方自己的通道，那裡的文字天生就不是使用者輸入。
 
-  **fail-closed**：agent 沒有系統提示通道（例如 codex exec 只有 `-c key=value`）時
-  **拒絕啟動**，不是靜默忽略。靜默忽略會讓呼叫端以為那段說明送到了、而模型什麼都沒看到，
-  比不支援更糟——它看起來成功了。`AgentDefinition.supportsSystemPrompt` 省略等於沒有。
+  **fail-closed**：agent 沒有系統提示通道時**拒絕啟動**，不是靜默忽略。靜默忽略會讓
+  呼叫端以為那段說明送到了、而模型什麼都沒看到，比不支援更糟——它看起來成功了。
+  `AgentDefinition.supportsSystemPrompt` 省略等於沒有。
+  目前只有 claude 有這條通道；codex exec 只有 `-c key=value`、agy 的 23 個旗標裡
+  沒有對應項（2026-09-10 查 `--help`）。**這是 vendor 的現況，不是我們挑呼叫端。**
 
   **走檔案不走 args**：Windows 上 claude 是 npm 的 `.CMD` shim，spawn 需要 `shell:true`，
   而 cmd.exe 會對含空白／換行的長參數重新切詞、並在換行處截斷（prompt 因此早就改走 stdin）。
@@ -34,7 +84,9 @@
 
   ⚠ 誠實補一句：**這個參數解不了上面那個拒絕問題。** 呼叫端把說明改放系統提示之後
   逐字送達，模型照樣拒絕，理由一字未改。真正的根因是「模型自己先前的拒絕訊息被重播回去」
-  （見 tkflyc-launcher ADR-093）。保留它是因為它本身是對的東西。（Claude）
+  （見 tkflyc-launcher ADR-093）。保留它的理由因此**不是**「某個呼叫端需要」，
+  而是「有系統提示通道的 agent 本來就該讓呼叫端用得到」——這個參數的後續演進
+  不要照著那個已經作廢的動機去推論。（Claude）
 
 ### 已知缺陷（未修）
 
@@ -1219,7 +1271,13 @@ Antigravity 可用；**Kiro 沒額度**（CLI 回 `Not logged in`）、**Forge �
 - Windows 上優先解析 `.cmd`/`.exe` 而非 extensionless shim。
 - 移除已壞掉的 gemini 殘留；usage 外掛路徑改由 `AI_CLI_USAGE_PLUGIN_BIN` 環境變數設定。
 
-[Unreleased]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.1.1...HEAD
+[Unreleased]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v6.2.0...HEAD
+[6.2.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v6.1.1...v6.2.0
+[6.1.1]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v6.1.0...v6.1.1
+[6.1.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v6.0.0...v6.1.0
+[6.0.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v5.0.0...v6.0.0
+[5.0.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.1.2...v5.0.0
+[4.1.2]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.1.1...v4.1.2
 [4.1.1]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/moerasermax/tkflyc-ai-cli/compare/v3.1.0...v4.0.0
