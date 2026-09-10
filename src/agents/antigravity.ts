@@ -219,7 +219,34 @@ function buildStrictCommand(
       所以這裡只接受**唯讀類**能力；任何其他能力一律拒絕，
       而不是假設 plan 模式擋得住。
   */
-  const args = ['--sandbox', '--mode', 'plan', '--disable-slash-commands'];
+  /*
+    ★ 2026-09-10 對照實驗：**`--mode plan` 擋不住檔案寫入**，這三個旗標的組合
+      給不出「不改檔案」的保證。原始證據（同一個 prompt「建立 probe.txt，直接動手做」，
+      gemini-3.8-flash-low，各跑到模型自己結束、不是 timeout）：
+
+        A  --sandbox --mode plan                            → 模型呼叫寫入工具，檔案建出來了
+        B  --sandbox --mode plan --disable-slash-commands   → 同上，行為一模一樣
+
+      B 另外會印 `warning: --mode plan has no effect while slash command expansion
+      is disabled.`——一度以為那就是缺口，拿掉 --disable-slash-commands 就能換回
+      「不改檔案」。**A 組推翻了這個推論**：plan 生效與否，模型照樣寫得出檔案。
+
+      真正擋下來的是 `--sandbox`：兩組的檔案都落在 agy 自己的
+      `~/.gemini/antigravity-cli/brain/<conversation_id>/`，**cwd 兩次都是空的**。
+      第三組直接叫它寫一個 cwd 以外的絕對路徑，被 vendor 的工具層自己擋掉並回報：
+
+        `write_to_file` 工具僅允許在指定工作區或 Artifact 路徑
+        （…\brain\<conversation_id>\）內操作，無法直接將檔案寫入外部絕對路徑 …
+
+      所以這裡的保證是「**寫不出 brain 目錄**」，不是「不寫檔」。
+      對唯讀能力（fs/read、analysis/produce）而言這仍然成立——使用者的檔案動不到——
+      但保證來自 vendor 的沙箱，不是來自 plan 模式。上面那段「不假設 plan 模式擋得住」
+      的判斷是對的，這裡只是把它從推測換成實測。
+
+      既然 plan 換不到東西，就把 --disable-slash-commands 保留——
+      它至少擋掉 prompt 裡的 slash/skill 展開，是真的有作用的那一個。
+  */
+  const args = ['--sandbox', '--mode', 'plan', '--disable-slash-commands', '--output-format', 'json'];
   if (sessionId) args.push('--conversation', sessionId);
   const cliModel = normalizeAgyModel(resolvedModel);
   if (cliModel !== null) args.push('--model', cliModel);
@@ -232,7 +259,8 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
   // - agy 用 --print (-p) 做非互動單次模式
   // - --dangerously-skip-permissions 自動核准工具呼叫
   // - cwd 自動作為 workspace
-  const args = ['--dangerously-skip-permissions'];
+  // --output-format json：conversation_id 與 usage 只有這個格式拿得到（見 parseOutput）。
+  const args = ['--dangerously-skip-permissions', '--output-format', 'json'];
   if (sessionId) {
     args.push('--conversation', sessionId);
   }
@@ -254,23 +282,84 @@ function buildCommand(input: BuildCommandInput): BuiltCommand {
   return { cliPath, args, cwd, agent: 'antigravity', prompt, resolvedModel };
 }
 
+/** `致 User\n---\n<body>\n---` 這個信封；剝不掉就原樣回。 */
+function unwrapAgyBody(text: string): string {
+  const trimmed = text.trim();
+  const blockMatch = trimmed.match(/^致\s*User\s*\r?\n---\r?\n([\s\S]+?)\r?\n---\s*$/);
+  return blockMatch ? blockMatch[1].trim() : trimmed;
+}
+
 /**
- * agy --print 輸出格式（v1.0.2）：
- *   致 User
- *   ---
- *   <body 多行>
- *   ---
- * 沒有 JSON、沒有 token stats、沒有 session_id。
+ * agy --print 的輸出。
+ *
+ * ★ 2026-09-10：改吃 `--output-format json`。舊註解寫「沒有 JSON、沒有 token
+ *   stats、沒有 session_id」——那是**只讀 text 格式**的結果，不是 CLI 的事實。
+ *
+ *   為什麼非改不可：`--conversation` 只認 agy 自己發的 id。呼叫端自編一個傳進去，
+ *   agy 印 `warning: conversation "<id>" not found` 然後**開一個新的對話**
+ *   （實測 2026-09-10）。所以拿不到 conversation_id ＝ 這個 agent 完全無法續接，
+ *   而且失敗方式是靜默的：看起來有回答，其實每一回合都是新的。
+ *
+ *   v1.1.9 的 json 格式（實測原文）：
+ *     {"conversation_id":"80a644dd-…","status":"SUCCESS",
+ *      "response":"致 User\n---\n<body>\n---\n",
+ *      "duration_seconds":8.36,"num_turns":2,
+ *      "usage":{"input_tokens":31227,"output_tokens":545,"thinking_tokens":523,…}}
+ *
+ *   續接實測：同一個 id 第二回合答得出第一回合記住的字串，
+ *   **id 不變**（與 codex 同語意，與 claude 的 fork 不同）、`num_turns` 1→2、
+ *   `input_tokens` 15319→31227。
+ *
+ *   兩件不能省的事：
+ *   ① warning 印在 JSON **前面**，所以不能對整段 `JSON.parse`，要逐行挑。
+ *      而且那行 warning 是 resume 失敗的唯一訊號，必須保留給呼叫端判定，
+ *      不能因為換了格式就把它吞掉（吞掉＝把 unknown 折進 ok）。
+ *   ② text 解析保留成 fallback：舊版 agy、或哪天 json 格式又變，
+ *      至少本文還拿得到，不要為了新欄位把既有能力弄丟。
  */
 function parseOutput(stdout: string): unknown {
   if (!stdout) return null;
   const trimmed = stdout.trim();
   if (!trimmed) return null;
-  const blockMatch = trimmed.match(/^致\s*User\s*\r?\n---\r?\n([\s\S]+?)\r?\n---\s*$/);
-  if (blockMatch) {
-    return { message: blockMatch[1].trim() };
+
+  const lines = trimmed.split(/\r?\n/);
+  const preamble: string[] = [];
+  for (const line of lines) {
+    const candidate = line.trim();
+    if (!candidate.startsWith('{')) {
+      if (candidate) preamble.push(candidate);
+      continue;
+    }
+    let parsed: {
+      conversation_id?: unknown;
+      status?: unknown;
+      response?: unknown;
+      usage?: unknown;
+      num_turns?: unknown;
+    };
+    try {
+      parsed = JSON.parse(candidate) as typeof parsed;
+    } catch {
+      // 這一行不是完整的 JSON（可能是本文裡剛好以 { 開頭）——繼續往下找。
+      if (candidate) preamble.push(candidate);
+      continue;
+    }
+    if (typeof parsed.response !== 'string') continue;
+    return {
+      message: unwrapAgyBody(parsed.response),
+      ...(typeof parsed.conversation_id === 'string' && parsed.conversation_id !== ''
+        ? { session_id: parsed.conversation_id }
+        : {}),
+      ...(typeof parsed.status === 'string' ? { status_text: parsed.status } : {}),
+      ...(parsed.usage !== undefined && parsed.usage !== null ? { tokens: parsed.usage } : {}),
+      ...(typeof parsed.num_turns === 'number' ? { num_turns: parsed.num_turns } : {}),
+      // `warning: conversation "…" not found` 會落在這裡。呼叫端據此判 resume 失敗。
+      ...(preamble.length > 0 ? { warnings: preamble } : {}),
+    };
   }
-  return { message: trimmed };
+
+  // fallback：text 格式（或 json 解析全數落空）。
+  return { message: unwrapAgyBody(trimmed) };
 }
 
 function resolveAntigravityLocalPath(): string {
