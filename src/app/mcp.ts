@@ -112,7 +112,9 @@ export class AiCliMcpServer {
 
 **IMPORTANT**: This tool now returns immediately with a PID. Use other tools to check status and get results.
 
-**Supported models**:
+**Candidate models** — this is NOT an allowlist. claude is the routing catch-all, so a name that is
+absent from this list may still run; call the models tool and read "modelListCaveat" before concluding
+that a model is unsupported. Conversely, a name listed here may have been retired by the vendor.
 ${getSupportedModelsDescription()}
 
 **Prompt input**: You must provide EITHER prompt (string) OR prompt_file (file path), but not both.
@@ -261,7 +263,7 @@ ${getSupportedModelsDescription()}
         },
         {
           name: 'models',
-          description: 'List supported model names, model aliases, and dynamic backend discovery hints. Also reports the identity of this server itself (npm package, version, repository) in the "server" field.',
+          description: 'List candidate model names, model aliases, and dynamic backend discovery hints. Also reports the identity of this server itself (npm package, version, repository) in the "server" field. The per-agent arrays are NOT an allowlist: claude is the routing catch-all, so a name that is absent from them may still run — see the "modelListCaveat" field before concluding a model is unsupported.',
           inputSchema: { type: 'object', properties: {} },
         },
         {

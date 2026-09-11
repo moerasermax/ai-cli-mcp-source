@@ -28,7 +28,7 @@ Commands:
   doctor    Check supported AI CLI binaries
   update    Check/apply updates (update [--check] [--json])
   exec      Run an agent in the foreground (NDJSON frames, caller owns the process)
-  models    List supported models and aliases
+  models    List candidate models and aliases
   mcp       Start the MCP server
   usage     Report local AI CLI usage/quota across providers
   help      Show this help message
@@ -144,7 +144,7 @@ Options:
 
 export const MODELS_HELP_TEXT = `Usage: ai-cli models
 
-List supported models and aliases.
+List candidate models and aliases (candidates, not an allowlist — see modelListCaveat in the output).
 
 Options:
   --help, -h                   Show this help message

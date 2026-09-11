@@ -167,6 +167,38 @@ export const KNOWN_BAD_MODELS: ReadonlyArray<{ model: string; reason: string }> 
 ];
 
 
+/*
+  這份目錄的語意——**兩個方向都不是保證**。
+
+  `knownBadModels` 已經在處理「清單有但不能用」那一半；這裡補的是另一半，
+  也是實際踩過的那一半：2026-09-11 有呼叫端因為 `fable` 不在 claude 陣列裡
+  就判定「不支援」，繞去找替代方案——而正確答案是直接派就好。
+
+  誤判的根源不是少一筆，是**清單的呈現方式看起來像權威來源**，而它不是。
+  少一筆可以補；「讀的人以為它是全集」要靠工具自己講出來才會停。
+*/
+export const MODEL_LIST_CAVEAT = {
+  notAnAllowlist:
+    '頂層 claude / codex / antigravity / direct-api 四個陣列是候選建議，不是可派工模型的全集。'
+    + 'claude agent 是整個 routing 的 fallback（matchesModel 永遠回 true）：一個名稱會先經過 '
+    + 'direct-api 前綴解析、alias 展開、已移除模型（REMOVED_MODELS）攔截，走完這三關仍沒被'
+    + '其他 agent 認領的，就原樣交給 claude CLI 的 --model——只要 vendor CLI 認得那個名字'
+    + '就跑得起來，清單有沒有列它無關。查不到某個名稱時，先直接派派看，不要當成「不支援」'
+    + '（已移除的 kiro / forge 例外，那幾個會明確報錯，不是靜默落到 claude）。'
+    + '⚠️ 這條只適用於 run：set_config 設定 alias target 走的是 isKnownModelTarget()，'
+    + '那裡**是**白名單，所以派得動的名稱不一定設得成 alias——兩個介面對「認不認得」的語意相反。',
+  notAGuarantee:
+    '反方向同樣不成立：列在清單裡不代表此刻能用。vendor 會下架模型，帳號層級也可能擋下。'
+    + '已知的例子見 knownBadModels，但那份清單同樣是人工維護的，不會自動跟上。',
+  authority:
+    '要確定某個名稱現在能不能用，權威是 vendor CLI 自己（claude --help、~/.codex/models_cache.json、'
+    + 'agy models），不是這份 payload。四個陣列的新鮮度並不一致：claude 與 codex 是原始碼裡的'
+    + '手動清單，vendor 出新模型不會自動進來（fable 就是這樣漏掉的）；antigravity 則會把實查到'
+    + '且可路由的模型併進來，所以它跟得上 agy 的新模型；direct-api 那幾筆是前綴佔位字串，'
+    + '本機實際設了哪些 provider 要看 directApiProviders。逐筆的出處看 catalogV2 的 source 欄位'
+    + '（vendor-cli＝問過 vendor、builtin-fallback＝原始碼靜態值）。',
+} as const;
+
 export const MODEL_ALIAS_DETAILS: ModelAliasDetail[] = [
   { name: 'claude-ultra', resolvesTo: 'opus', agent: 'claude', defaultReasoningEffort: 'max' },
   { name: 'codex-ultra', resolvesTo: 'gpt-6-astra', agent: 'codex', defaultReasoningEffort: 'max' },
@@ -296,7 +328,7 @@ export function getModelParameterDescription(): string {
     ...byAgent.antigravity,
     ...byAgent['direct-api'],
   ];
-  return `The model to use. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto max reasoning), "agy-ultra" (Antigravity CLI). Standard: ${all
+  return `The model to use. The list below is NOT an allowlist: claude is the routing catch-all, so a name absent from it may still run — check the models tool's "modelListCaveat" before concluding a model is unsupported. Aliases: "claude-ultra" (auto max effort), "codex-ultra" (auto max reasoning), "agy-ultra" (Antigravity CLI). Standard: ${all
     .map((m) => `"${m}"`)
     .join(
       ', '
@@ -410,6 +442,11 @@ export function getModelsPayload(snapshot: ConfigSnapshot = loadUserConfigSnapsh
     */
     dispatchGuidance: DISPATCH_GUIDANCE,
     knownBadModels: KNOWN_BAD_MODELS,
+    /*
+      ★ 上面那四個陣列該怎麼讀。呼叫端是 AI，它只看得到 payload——
+      清單沒說自己不是全集，讀的人就會把它當全集。見 MODEL_LIST_CAVEAT 上方註解。
+    */
+    modelListCaveat: MODEL_LIST_CAVEAT,
     userConfig: {
       ...describeUserConfig(snapshot),
       builtinAliasModel: MODEL_ALIASES,

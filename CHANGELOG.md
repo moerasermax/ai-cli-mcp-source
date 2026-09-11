@@ -8,6 +8,27 @@
 
 ## [Unreleased]
 
+### 新增（`models` 不再假裝自己是可派工模型的全集）— issue #12
+
+- **`claude` 清單補上 `fable`**（`claude-fable-5`，放在最前代表最新一代）。
+  它一直派得動——依 issue 回報，`claude --help` 列它是合法別名，實測派工正常回應並自報
+  `claude-fable-5-1`——只是不在 `CLAUDE_MODELS` 這份手動維護的靜態清單裡。
+  （「別名確切指向哪個 model id」我沒有自己實測，所以原始碼註解不寫死全名。）（Claude）
+
+- **`models` payload 新增 `modelListCaveat`**（`notAnAllowlist` / `notAGuarantee` /
+  `authority`），`models` 工具描述也改寫成「這不是 allowlist」。
+
+  **補一筆不是修掉問題。** 真正的根因是 claude agent 是整個 routing 的 catch-all
+  （`matchesModel` 永遠回 `true`），任何沒被其他 agent 認領的名稱都會原樣交給
+  `claude --model`——**只要 vendor CLI 認得那個名字就跑得起來，清單有沒有列無關**。
+  於是這份清單兩個方向都不可靠：不在清單的可能能用（`fable`），在清單的可能不能用
+  （`gpt-5.4` 那批被帳號擋下，已在 `knownBadModels`）。
+
+  而它的呈現方式看起來像權威來源。2026-09-11 實際踩到的後果：呼叫端查不到 `fable`
+  → 判定「不支援」→ 繞去找替代方案，正確答案其實是直接派。`knownBadModels` 顧的是
+  「清單有但不能用」那一半，這次補的是另一半。**清單沒說自己不是全集，讀的人就會
+  當它是全集**——所以要工具自己講出來，寫在 README 只有人看得到，而在挑模型的是 AI。（Claude）
+
 ### 修正
 
 - **`package-lock.json` 對回改名與授權**（issue #11）。`062c8ef` 改了 `package.json`

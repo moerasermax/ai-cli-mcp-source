@@ -86,6 +86,20 @@ async function checkEntry(entry) {
   const elapsed = performance.now() - listStarted;
   check(elapsed < 1000, `${entry.name} 冷啟動 tools/list < 1 秒`, `${elapsed.toFixed(1)} ms`);
   const names = tools.tools.map((t) => t.name);
+  /*
+    工具描述才是呼叫端**最先讀到**的東西。issue #12 的情境是「AI 查不到 fable → 判定不支援」，
+    而一個只讀 run schema、從不呼叫 models 的呼叫端（很常見，因為 run 的描述已經把清單給它了）
+    會原封不動再踩一次。所以「這不是 allowlist」必須出現在 run 自己的描述裡，不是只在 payload。
+  */
+  const descOf = (name) => tools.tools.find((t) => t.name === name)?.description ?? '';
+  const runModelDesc =
+    tools.tools.find((t) => t.name === 'run')?.inputSchema?.properties?.model?.description ?? '';
+  check(/NOT an allowlist/i.test(descOf('run')) && /modelListCaveat/.test(descOf('run')),
+    `${entry.name} run 描述講明候選清單不是 allowlist 並指向 modelListCaveat`, descOf('run').slice(0, 200));
+  check(/NOT an allowlist/i.test(runModelDesc),
+    `${entry.name} run 的 model 參數描述也講明不是 allowlist`, runModelDesc.slice(0, 200));
+  check(/modelListCaveat/.test(descOf('models')),
+    `${entry.name} models 描述指向 modelListCaveat`, descOf('models').slice(0, 200));
   log(`list_tools (${names.length}): ${names.join(', ')}`);
 
   const missing = EXPECTED_TOOLS.filter((e) => !names.includes(e));

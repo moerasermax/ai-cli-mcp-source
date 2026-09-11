@@ -154,6 +154,29 @@ async function main(baseConfig) {
       !p.dispatchGuidance.some((g) => p.knownBadModels.some((b) => g.model === b.model)),
       '建議表不可推薦已知不能用的模型'
     );
+
+    // ---- 清單的語意：兩個方向都不是保證 ----
+    // knownBadModels 顧的是「清單有但不能用」；這裡顧的是另一半——
+    // 「不在清單但能用」。2026-09-11 有呼叫端因為 fable 不在陣列裡就判定不支援，
+    // 繞去找替代方案，而正確答案是直接派。清單沒說自己不是全集，讀的人就當它是。
+    check(
+      '★ models 帶 modelListCaveat（清單不是 allowlist，要工具自己講）',
+      Boolean(p.modelListCaveat?.notAnAllowlist && p.modelListCaveat?.notAGuarantee && p.modelListCaveat?.authority),
+      JSON.stringify(p.modelListCaveat)
+    );
+    check(
+      '★ caveat 要講出 catch-all 這個機制，不能只說「可能不完整」',
+      // 這裡必須用 ?.：欄位消失正是上一條在守的回歸，直接取值會 TypeError 讓整支中斷，
+      // 後面的斷言一條都不會跑，而 harness 只看 stdout 有沒有 FAIL 行，看不出這件事。
+      Boolean(p.modelListCaveat?.notAnAllowlist?.includes('catch-all') || p.modelListCaveat?.notAnAllowlist?.includes('fallback')),
+      p.modelListCaveat?.notAnAllowlist
+    );
+    // fable 是實際踩到的那一筆：claude --help 列它是合法別名，實測派得動。
+    check(
+      '★ claude 清單含 fable',
+      p.claude.includes('fable'),
+      JSON.stringify(p.claude)
+    );
   }
 
   writeConfig({ ...baseConfig, aliasModel: { 'codex-ultra': 'gpt-5.6-terra' } });

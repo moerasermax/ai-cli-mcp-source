@@ -9,7 +9,11 @@ import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'nod
 import type { AgentDefinition, BuildCommandInput, BuiltCommand } from './types.js';
 import { debugLog } from '../core/debug.js';
 
-const CLAUDE_MODELS = ['sonnet', 'sonnet[1m]', 'opus', 'opusplan', 'haiku'] as const;
+// 'fable' 放最前＝目前最新一代。它是 claude CLI 的別名；實測派工時模型自報
+// claude-fable-5-1，但「別名確切指向哪個 id」沒有實測過，所以這裡不寫死全名。
+// ⚠️ 這份清單是手動維護的，而 claude 是 catch-all（見下面的 matchesModel）：
+// 沒列進來的名稱照樣派得動。清單的語意見 catalog.ts 的 MODEL_LIST_CAVEAT。
+const CLAUDE_MODELS = ['fable', 'sonnet', 'sonnet[1m]', 'opus', 'opusplan', 'haiku'] as const;
 
 const CLAUDE_REASONING = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 

@@ -621,5 +621,50 @@
     "to": "  if (!/^/.test(stripped)) return url;",
     "expect": "認不出的形狀原樣回傳",
     "script": "verify-catalog-source.mjs"
+  },
+  {
+    "name": "CLAUDE_MODELS 漏掉 fable（清單與實際能力脫鉤）",
+    "file": "src/agents/claude.ts",
+    "from": "const CLAUDE_MODELS = ['fable', 'sonnet'",
+    "to": "const CLAUDE_MODELS = ['sonnet'",
+    "expect": "claude 清單含 fable"
+  },
+  {
+    "name": "models payload 不講「清單不是 allowlist」",
+    "file": "src/models/catalog.ts",
+    "from": "    modelListCaveat: MODEL_LIST_CAVEAT,\n",
+    "to": "",
+    "expect": "models 帶 modelListCaveat"
+  },
+  {
+    "name": "caveat 只說「可能不完整」，不講 catch-all 這個機制",
+    "file": "src/models/catalog.ts",
+    "from": "    + 'claude agent 是整個 routing 的 fallback（matchesModel 永遠回 true）：一個名稱會先經過 '",
+    "to": "    + '這份清單可能不完整。'",
+    "expect": "caveat 要講出 catch-all"
+  },
+  {
+    "name": "run 的工具描述改回「Supported models」（呼叫端仍會把候選清單當全集）",
+    "file": "src/app/mcp.ts",
+    "from": "**Candidate models** — this is NOT an allowlist.",
+    "to": "**Supported models**:",
+    "expect": "run 描述講明候選清單不是 allowlist",
+    "script": "verify-mcp.mjs"
+  },
+  {
+    "name": "run 的 model 參數描述拿掉 allowlist 警告",
+    "file": "src/models/catalog.ts",
+    "from": "The model to use. The list below is NOT an allowlist:",
+    "to": "The model to use.",
+    "expect": "model 參數描述也講明不是 allowlist",
+    "script": "verify-mcp.mjs"
+  },
+  {
+    "name": "models 的工具描述不再指向 modelListCaveat",
+    "file": "src/app/mcp.ts",
+    "from": "see the \"modelListCaveat\" field before concluding a model is unsupported.",
+    "to": "Some models may not be available.",
+    "expect": "models 描述指向 modelListCaveat",
+    "script": "verify-mcp.mjs"
   }
 ]
