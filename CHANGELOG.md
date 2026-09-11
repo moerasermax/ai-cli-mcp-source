@@ -10,6 +10,17 @@
 
 ### 修正
 
+- **`package-lock.json` 對回改名與授權**（issue #11）。`062c8ef` 改了 `package.json`
+  的套件名、`d4de74d` 換了授權，但 lockfile 兩次都沒跟上，停在 `ai-cli-mcp` / `6.1.1` /
+  無 `license`。後果是任何人跑 `npm install` 都會讓 lockfile 自己對回去，工作區立刻
+  多一筆自己沒改過的 `M package-lock.json`——內容還是正確的，於是每次都要重新判斷一次
+  能不能丟。
+
+  ⚠️ 本條初稿照抄了 issue 裡「name 不一致在某些 npm 版本會讓 `npm ci` 拒絕安裝」的說法，
+  **那是推論，而且自家 CI 就是反證**：三個平台都跑 `npm ci`，而 lockfile 從 `062c8ef`
+  改名起一直是舊 name，這期間 CI 全綠。`npm ci` 的同步檢查比對的是相依樹，不是根套件的
+  `name`。實際後果就只有「工作區每次變髒」這一項——那一項是實測過的。（Claude）
+
 - **突變 harness 跑不起來**：`tools/mutation-test.mjs` 驗基準時跑的是
   `run([script])`，但 `46c6e75` 把測試搬進 `tests/` 之後只改了套用突變後的那一行
   （`join('tests', …)`），基準那行沒改，於是必定停在「基準未通過，中止」。
