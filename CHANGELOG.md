@@ -42,6 +42,26 @@
   改名起一直是舊 name，這期間 CI 全綠。`npm ci` 的同步檢查比對的是相依樹，不是根套件的
   `name`。實際後果就只有「工作區每次變髒」這一項——那一項是實測過的。（Claude）
 
+- **`verify-catalog-source.mjs` 的逾時門檻改成從實測啟動成本推導**（issue #10）。
+  原本寫死 `AI_CLI_DISCOVER_TIMEOUT_MS=500`，而 spawn 一次 stub（win32 是
+  `.cmd` → `cmd.exe` → `node.exe`）的成本差一個數量級：本機實測 68–80 ms，
+  回報問題的那台消費端機器 763–886 ms，三次裡紅 3、3、2 支。
+
+  **這不是「測試比較嚴」，是那題什麼都沒驗到**：門檻在 node 開機完成前就觸發，
+  stub 連 `trace('started')` 都執行不到，trace 是空的、`pid` 是 `undefined`，
+  於是「逾時有沒有殺掉子程序」無從判斷——而失敗訊息指向產品。改門檻（500→1500）
+  只是把同一個坑推給下一台更慢的機器，所以改成先量一次實際 spawn 成本，
+  再取 `max(500, 成本 × 3)`，stub delay 維持 1:4 比例，相關斷言一併改成跟著門檻走。
+
+  另外補一條**前提斷言**：`started` 不存在時明說「門檻低於本機啟動成本」並印出
+  兩個數字，而不是讓它偽裝成產品沒殺掉程序。（Claude）
+
+- **逾時預算不再洩漏到不相干的斷言**（issue #10 的第二半）。切換到 `errorStub` 時
+  沒有還原 `AI_CLI_DISCOVER_TIMEOUT_MS`，於是「非零退出時 stderr 第一行怎麼取」
+  那兩題也吃到 500 ms 預算，跟 node 啟動成本賽跑並固定輸掉——回傳的是逾時訊息
+  而不是 stderr 內容。還原點從「再下一段」提前到切 stub 的當下。
+  **這一項是讓測試變準，不是變鬆。**（Claude）
+
 - **突變 harness 跑不起來**：`tools/mutation-test.mjs` 驗基準時跑的是
   `run([script])`，但 `46c6e75` 把測試搬進 `tests/` 之後只改了套用突變後的那一行
   （`join('tests', …)`），基準那行沒改，於是必定停在「基準未通過，中止」。
@@ -51,6 +71,49 @@
 - `verify-update.mjs` 的 fixture 網址從 `ai-cli-mcp-source` 換成 `tkflyc-ai-cli`。
   測試是自洽的（那個常數只是塞進假 package 的 `homepage` 再驗通知字串包含它），
   換成什麼都會過；留著舊 repo 名只會讓讀的人以為那是真實設定。（Claude）
+
+### 測試
+
+- 突變 **81 → 90**。新增的九個：`fable` 從清單移除、`modelListCaveat` 從 payload 拿掉、
+  caveat 不提 catch-all 機制、子程序在門檻觸發前沒跑起來、`started` 來得太晚、
+  還原行被刪掉，以及三個守工具描述的（`run` 描述改回「Supported models」、
+  `model` 參數描述拿掉警告、`models` 描述不再指向 `modelListCaveat`）。
+
+  其中「子程序沒跑起來」那個突變改過兩次形狀才站得住：先壓 `timeoutMs` 會連帶
+  縮短 stub delay（stub 反而來得及跑完），改成連 stub delay 一起釘住又在本機
+  SURVIVED——Windows 上 kill 掉 `.cmd` 外殼後 `node.exe` 仍會啟動並寫下 `started`。
+  最後直接注入那個狀態本身（stub 不寫 `started`）才殺得掉。
+  **只在慢機器上浮現的 bug，本機突變要注入的是它的「狀態」，不是它的「成因」。**（Claude）
+
+### 稽核紀錄（2026-09-11）
+
+這批不動 `core/`，所以 CONTRIBUTING §5.1 的稽核義務不強制；仍然跨家派了五個獨立稽核者，
+因為改的是**寫給另一個 AI 讀的文字**，而那種錯誤自己看不出來。
+
+- **gpt-5.6-sol（high，唯讀沙箱）** 六條，全部成立並修掉：`run` 的工具描述仍寫
+  「Supported models」（修法沒到達真正在挑模型的介面）、`authority` 錯稱四個陣列都是
+  靜態值（`modelsByAgent()` 會把 antigravity 實查到的模型併進來）、catch-all 敘述
+  漏掉 alias 解析與 `REMOVED_MODELS` 攔截、`started` 沒有時間戳所以證明不了「在門檻
+  觸發前啟動」、「預算洩漏」突變用 1 ms 製造的是另一個錯誤而非保護還原行、
+  CHANGELOG 把 `npm ci` 的推論寫成事實。它誠實聲明唯讀沙箱擋下了實跑，
+  沒有宣稱測試跑過。
+- **claude-ultra（唯讀沙箱）** 十一條，其中六條是 sol 沒看到的，全部成立並修掉：
+  斷言少一個 `?.`（欄位消失時是整支崩潰而非 FAIL，後面約 350 行都不會跑，
+  而 harness 只看 stdout 的 FAIL 行，看不出這件事）、前提斷言沒讓「指向產品」那條
+  閉嘴（慢機器上會同時紅兩條、訊息互相矛盾）、工具描述那一半零測試覆蓋、
+  caveat 沒講 `set_config` 的 alias target 走的**是**白名單（兩個介面語意相反）、
+  baseline 量測失敗時門檻會靜默退回 500（正好回到要修的狀態）、
+  `fable` 的「全名」在同一批改動裡有兩種說法。
+- **gemini-3.1-pro-high** 回「沒有發現」，六個點逐一宣告無異常——但其中「caveat 描述
+  完全符合實際程式行為」與 sol／ultra 查到的兩個事實錯誤直接衝突。**採信前兩者**
+  （已逐條回原始碼驗證）。
+- **nv-meta/muse-glimmer-30b** `exitCode: 0` 但 `message` 是空字串
+  （`finish_reason: tool_loop_limit`，燒掉約 100 萬 input token 卡在讀檔迴圈）。
+  **不計入同意**——這正是 ADR-085 ⑫「把 unknown 折進 ok」的形狀。
+- **nv-nvidia/nemotron-3-ultra-550b-a55b** 逾時未回，同樣不計入。
+
+修完之後又跑了一次錨點檢查，發現 caveat 改寫讓一個新突變的 `from` 失效——
+**改文字會讓既有突變悄悄變成 ERROR**，這點本批已驗證並修正。（Claude）
 
 ### 變更（測試腳本改置於 `tests/`，無對外行為變化）
 

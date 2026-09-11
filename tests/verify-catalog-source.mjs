@@ -236,27 +236,70 @@ try {
 
   // 不替換 discoverModels：用 AGY_CLI_NAME 經過真實 spawn + 計時 + kill + parser。
   agy.discoverModels = realDiscover;
-  process.env.AGY_STUB_DELAY_MS = '2000';
-  process.env.AI_CLI_DISCOVER_TIMEOUT_MS = '500';
+  /*
+    逾時門檻**不能寫死**，要從這台機器的實際啟動成本推出來。
+
+    spawn 一次 stub（win32 是 .cmd → cmd.exe → node.exe）的成本差到一個數量級：
+    開發機實測 68–80 ms，另一台消費端機器 763–886 ms。寫死 500 ms 的後果不是
+    「測試比較嚴」，是**這題什麼都沒驗到**——門檻在 node 開機完成前就觸發，
+    stub 連 trace('started') 都來不及寫，events 是空的、pid 是 undefined，
+    於是「有沒有殺掉子程序」根本無從判斷，而失敗訊息卻會指向產品。
+    （把 500 改成 1500 只是把同一個坑推給下一台更慢的機器。）
+  */
+  process.env.AGY_STUB_DELAY_MS = '0';
+  const baselineStarted = performance.now();
+  const baseline = await realDiscover(inspectCliBinary(agy.binary).resolvedPath);
+  const spawnCostMs = performance.now() - baselineStarted;
+  // 量測本身要成功。快速失敗（stub 路徑不對、chmod 沒生效…）量到的是失敗路徑的成本，
+  // max(500, …) 就把門檻退回 500——正好回到這次要修掉的狀態，而且沒有任何訊號。
+  check(baseline.models !== null, '門檻量測本身要成功（否則量到的是失敗路徑的成本）', JSON.stringify(baseline));
+  const timeoutMs = Math.max(500, Math.ceil(spawnCostMs * 3));
+  const stubDelayMs = timeoutMs * 4; // 維持原本 500:2000 的 1:4 比例
+  process.env.AGY_STUB_DELAY_MS = String(stubDelayMs);
+  process.env.AI_CLI_DISCOVER_TIMEOUT_MS = String(timeoutMs);
   const trace = join(TEMP, 'timeout-trace.jsonl');
   process.env.AGY_STUB_TRACE_PATH = trace;
   const timeoutStarted = performance.now();
+  const timeoutWallStart = Date.now(); // 與 stub 的 trace 時間戳同基準（stub 用 Date.now）
   const timeoutResult = await realDiscover(inspectCliBinary(agy.binary).resolvedPath);
-  check(timeoutResult.models === null && timeoutResult.note?.includes('逾時') && timeoutResult.note.includes('500'),
+  check(timeoutResult.models === null && timeoutResult.note?.includes('逾時') && timeoutResult.note.includes(String(timeoutMs)),
     '真實 discover 逾時回 null 與逾時原因', JSON.stringify(timeoutResult));
-  check(performance.now() - timeoutStarted < 1400, '逾時結果不等 2 秒 stub 結束');
-  await delay(Math.max(0, 2300 - (performance.now() - timeoutStarted)));
+  check(performance.now() - timeoutStarted < stubDelayMs * 0.7, '逾時結果不等 stub 自己結束');
+  await delay(Math.max(0, stubDelayMs + 300 - (performance.now() - timeoutStarted)));
   const events = existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n').map(JSON.parse) : [];
-  const pid = events.find((e) => e.event === 'started')?.pid;
+  const startedEvent = events.find((e) => e.event === 'started');
+  const pid = startedEvent?.pid;
+  /*
+    前提先驗，而且要驗「**在門檻觸發前**就啟動了」，不是只驗「曾經啟動過」。
+
+    只看 started 存不存在不夠：trace 是等 stub delay 過完才一次讀的，子程序若在
+    門檻觸發之後才真正跑起來（Windows 上 kill 掉 .cmd 外殼後，內層 node.exe 仍可能
+    稍後啟動並寫下 started），事後看一樣有 event，而下一條斷言會照樣過——
+    測到的就不是它想測的東西了。所以 trace 帶時間戳，這裡比對它落不落在門檻內。
+  */
+  check(Boolean(startedEvent) && startedEvent.t - timeoutWallStart < timeoutMs,
+    `逾時 kill 測試的前提：stub 在門檻觸發前就啟動（門檻 ${timeoutMs} ms、實測啟動成本 ${Math.round(spawnCostMs)} ms）`,
+    JSON.stringify({ timeoutMs, startedAfterMs: startedEvent ? startedEvent.t - timeoutWallStart : null, events }));
   let alive = false;
   try { if (pid) { process.kill(pid, 0); alive = true; } } catch { /* 已終止 */ }
-  check(Boolean(pid) && !alive && !events.some((e) => e.event === 'completed'),
+  // 條件式：**只有在 stub 真的跑起來時**才問「它被殺掉了嗎」。
+  // 否則前提不成立那次會同時噴兩條 FAIL，其中一條說是門檻問題、另一條照樣指向產品——
+  // 而上面那條前提斷言存在的意義就是不要再指錯方向。
+  check(!startedEvent || (!alive && !events.some((e) => e.event === 'completed')),
     '逾時必須 kill 子程序（不能留到它印出模型）', JSON.stringify(events));
   delete process.env.AGY_STUB_TRACE_PATH;
   clearCatalogCache({ disk: true });
   check(rowOf(await refreshCatalogV2({ force: true })).discoveryNote.includes('逾時'),
     '真實逾時原因進 catalog.discoveryNote');
   process.env.AGY_CLI_NAME = errorStub;
+  // 逾時預算到此為止。下面兩題測的是「非零退出時 stderr 第一行怎麼取」，跟逾時無關；
+  // 沿用上面那個緊門檻會讓它們跟 node 啟動成本賽跑並固定輸掉，回傳逾時訊息而不是
+  // stderr 內容——測到的是門檻，不是它想測的行為。（原本要到再下一段才還原，太晚。）
+  process.env.AI_CLI_DISCOVER_TIMEOUT_MS = '15000';
+  // 直接驗「還原」這件事本身。靠「stderr 取值會不會失敗」來守是不可靠的：
+  // 在快機器上就算沿用了緊門檻，error stub 仍可能在預算內跑完，回歸就悄悄溜過去。
+  check(Number(process.env.AI_CLI_DISCOVER_TIMEOUT_MS) >= 15000,
+    '非零退出那兩題不得沿用逾時預算（門檻必須已還原）', String(process.env.AI_CLI_DISCOVER_TIMEOUT_MS));
   clearCatalogCache({ disk: true });
   const errorResult = await realDiscover(inspectCliBinary(agy.binary).resolvedPath);
   check(errorResult.models === null && errorResult.note === 'Error: Eligibility check failed: stub network unavailable',

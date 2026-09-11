@@ -644,6 +644,30 @@
     "expect": "caveat 要講出 catch-all"
   },
   {
+    "name": "子程序在門檻觸發前還沒跑起來（慢機器上的實況：kill 測試等於什麼都沒驗）",
+    "file": "tools/stubs/agy-models-slow.mjs",
+    "from": "trace('started');\n",
+    "to": "",
+    "expect": "逾時 kill 測試的前提",
+    "script": "verify-catalog-source.mjs"
+  },
+  {
+    "name": "逾時預算洩漏到「非零退出取 stderr」那兩題（還原行被刪掉）",
+    "file": "tests/verify-catalog-source.mjs",
+    "from": "  process.env.AI_CLI_DISCOVER_TIMEOUT_MS = '15000';\n  // 直接驗「還原」",
+    "to": "  // 直接驗「還原」",
+    "expect": "門檻必須已還原",
+    "script": "verify-catalog-source.mjs"
+  },
+  {
+    "name": "stub 在門檻觸發後才啟動（started 存在但來得太晚——舊斷言看不出來）",
+    "file": "tools/stubs/agy-models-slow.mjs",
+    "from": "{ event, t: Date.now(), pid: process.pid, args:",
+    "to": "{ event, t: Date.now() + 60000, pid: process.pid, args:",
+    "expect": "逾時 kill 測試的前提",
+    "script": "verify-catalog-source.mjs"
+  },
+  {
     "name": "run 的工具描述改回「Supported models」（呼叫端仍會把候選清單當全集）",
     "file": "src/app/mcp.ts",
     "from": "**Candidate models** — this is NOT an allowlist.",

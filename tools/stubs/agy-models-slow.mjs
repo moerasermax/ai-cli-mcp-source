@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-/** 只列錄下的模型輸出，不連 vendor。預設慢 2 秒，trace 用來證明逾時真的殺掉程序。 */
+/**
+ * 只列錄下的模型輸出，不連 vendor。預設慢 2 秒，trace 用來證明逾時真的殺掉程序。
+ * 事件帶 `t`（Date.now）：光看 started 存不存在，證明不了它是在逾時門檻**觸發前**
+ * 啟動的——trace 是事後一次讀的，而子程序可能在門檻觸發後才真正跑起來。
+ */
 import { appendFileSync } from 'node:fs';
 const trace = (event) => {
   if (process.env.AGY_STUB_TRACE_PATH) {
     appendFileSync(process.env.AGY_STUB_TRACE_PATH,
-      `${JSON.stringify({ event, pid: process.pid, args: process.argv.slice(2) })}\n`);
+      `${JSON.stringify({ event, t: Date.now(), pid: process.pid, args: process.argv.slice(2) })}\n`);
   }
 };
 trace('started');
