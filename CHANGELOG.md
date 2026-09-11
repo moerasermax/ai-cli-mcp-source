@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+### 修正
+
+- **突變 harness 跑不起來**：`tools/mutation-test.mjs` 驗基準時跑的是
+  `run([script])`，但 `46c6e75` 把測試搬進 `tests/` 之後只改了套用突變後的那一行
+  （`join('tests', …)`），基準那行沒改，於是必定停在「基準未通過，中止」。
+  同一次搬移還漏了 `package.json` 的 `verify:strict-behaviour`（仍指根目錄的舊路徑），
+  一併修正。兩處都因為不在 `npm test` 的 `&&` 鏈上，CI 綠燈看不到。（Claude）
+
+- `verify-update.mjs` 的 fixture 網址從 `ai-cli-mcp-source` 換成 `tkflyc-ai-cli`。
+  測試是自洽的（那個常數只是塞進假 package 的 `homepage` 再驗通知字串包含它），
+  換成什麼都會過；留著舊 repo 名只會讓讀的人以為那是真實設定。（Claude）
+
 ### 變更（測試腳本改置於 `tests/`，無對外行為變化）
 
 - **15 支 `verify-*.mjs` 從 repo 根目錄移進 `tests/`。** 根目錄本來被這排測試檔塞滿，

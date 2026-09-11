@@ -17,7 +17,7 @@ import { applyUpdate, checkForUpdate, clearNoticeOnStartup, consumeNotice, getUp
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TEMP = mkdtempSync(join(tmpdir(), 'ai-cli-update with spaces-'));
 const TRACE = join(TEMP, 'git-trace.jsonl');
-const URL = 'https://github.com/moerasermax/ai-cli-mcp-source/blob/master/CHANGELOG.md';
+const URL = 'https://github.com/moerasermax/tkflyc-ai-cli/blob/master/CHANGELOG.md';
 const savedEnv = { ...process.env };
 process.env.GIT_TRACE2_EVENT = TRACE;
 // 不繼承機器上的 signing/hooks/更新分支等設定；只有本機 file transport 被允許。

@@ -101,7 +101,7 @@ const baselineStatus = exec('git', ['status', '--short']).out.trim();
     process.exit(1);
   }
   for (const script of SCRIPTS) {
-    const base = run([script]);
+    const base = run([join('tests', script)]);
     if (base.code !== 0) {
       console.error(`基準 ${script} 未通過，中止：`, base.out.slice(-800));
       process.exit(1);
